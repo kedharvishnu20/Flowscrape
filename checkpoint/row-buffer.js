@@ -14,45 +14,29 @@
  */
 
 import { logger } from '../utils/logger.js';
+import {
+  STORE_DATA_ROWS,
+  withStores,
+  requestAsPromise,
+} from './idb-schema.js';
 
 const MODULE = 'row-buffer';
 
 const FLUSH_INTERVAL_MS = 30_000;
 const FLUSH_ROWS_COUNT  = 50;
-const DB_NAME           = 'flowscrape_v3';
-const STORE_ROWS        = 'data_rows';
+
+// The database schema lives in idb-schema.js — see that module for why.
+const STORE_ROWS = STORE_DATA_ROWS;
 
 const _buffers     = new Map();
 const _flushTimers = new Map();
-let _idbDB      = null;
 
 // ── IDB helpers ───────────────────────────────────────────────────────────────
-async function _openDB() {
-  if (_idbDB) return _idbDB;
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onsuccess  = e => { _idbDB = e.target.result; resolve(_idbDB); };
-    req.onerror    = () => reject(req.error);
-    req.onupgradeneeded = e => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE_ROWS)) {
-        const store = db.createObjectStore(STORE_ROWS, { autoIncrement: true });
-        store.createIndex('runId', 'runId', { unique: false });
-      }
-    };
-  });
-}
-
 async function _writeRows(runId, rows) {
-  const db = await _openDB();
-  return new Promise((resolve, reject) => {
-    const tx    = db.transaction([STORE_ROWS], 'readwrite');
-    const store = tx.objectStore(STORE_ROWS);
+  return withStores([STORE_ROWS], 'readwrite', ({ [STORE_ROWS]: store }) => {
     for (const row of rows) {
       store.put({ runId, ...row });
     }
-    tx.oncomplete = resolve;
-    tx.onerror    = () => reject(tx.error);
   });
 }
 
@@ -144,15 +128,10 @@ export async function finalizeBuffer(runId) {
  * @returns {Promise<object[]>}
  */
 export async function readAllRows(runId) {
-  const db = await _openDB();
-  return new Promise((resolve, reject) => {
-    const tx    = db.transaction([STORE_ROWS], 'readonly');
-    const store = tx.objectStore(STORE_ROWS);
-    const index = store.index('runId');
-    const req   = index.getAll(IDBKeyRange.only(runId));
-    req.onsuccess = () => resolve(req.result ?? []);
-    req.onerror   = () => reject(req.error);
-  });
+  const rows = await withStores([STORE_ROWS], 'readonly', ({ [STORE_ROWS]: store }) =>
+    requestAsPromise(store.index('runId').getAll(IDBKeyRange.only(runId))),
+  );
+  return rows ?? [];
 }
 
 /**
@@ -160,19 +139,18 @@ export async function readAllRows(runId) {
  * @param {string} runId
  */
 export async function clearRows(runId) {
-  const db = await _openDB();
-  return new Promise((resolve, reject) => {
-    const tx    = db.transaction([STORE_ROWS], 'readwrite');
-    const store = tx.objectStore(STORE_ROWS);
-    const index = store.index('runId');
-    const req   = index.openKeyCursor(IDBKeyRange.only(runId));
-    req.onsuccess = (e) => {
-      const cursor = e.target.result;
-      if (cursor) { store.delete(cursor.primaryKey); cursor.continue(); }
-      else resolve();
-    };
-    req.onerror = () => reject(req.error);
-  });
+  return withStores([STORE_ROWS], 'readwrite', ({ [STORE_ROWS]: store }) =>
+    new Promise((resolve, reject) => {
+      const req = store.index('runId').openKeyCursor(IDBKeyRange.only(runId));
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(); return; }
+        store.delete(cursor.primaryKey);
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+    }),
+  );
 }
 
 // === END row-buffer.js ===

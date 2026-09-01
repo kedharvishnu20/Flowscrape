@@ -705,16 +705,34 @@ async function _stepExtract({ fields = [], schema = [] }, context = {}) {
     rawData[name] = els.map((el) => _extractValue(el, field));
   }
 
+  // Row assembly. Fields can legitimately match a different number of elements
+  // than the row count: a page title matches once and belongs on every row.
+  // But a field matching 3 of 10 rows is missing data, not a value to repeat —
+  // padding those with the first match (as this used to) invents data that
+  // looks real.
+  //
+  //   exactly 1 match  -> broadcast to every row (a shared, page-level value)
+  //   n matches, n > 1 -> positional; rows past n get null
+  //   0 matches        -> null everywhere
   const results = [];
   for (let i = 0; i < maxLen; i++) {
     const row = {};
     for (const field of extractors) {
       const name = field.name || "data";
-      // Match the exact row index, OR fall back to the generic 1st match (e.g., page title shared across 10 products)
-      row[name] =
-        rawData[name][i] !== undefined
-          ? rawData[name][i]
-          : rawData[name][0] || null;
+      const values = rawData[name];
+
+      let value;
+      if (values.length === 1) {
+        value = values[0];
+      } else if (i < values.length) {
+        value = values[i];
+      } else {
+        value = null;
+      }
+
+      // ?? not ||: "0", "" and false are real extracted values, and turning
+      // them into null loses out-of-stock counts, empty inputs and the like.
+      row[name] = value ?? null;
     }
     results.push(row);
   }

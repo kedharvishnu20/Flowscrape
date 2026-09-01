@@ -147,8 +147,10 @@ Labelled "Min. confidence to accept (0–100)". It is actually the **LLM escalat
 ### B-07 · HIGH · `EXTRACT` field type "Attr" can never work
 `injector.js:627` requires `field.type === "attribute" && field.attribute`, but the UI (`pipeline-builder.js`, `_addExtractField` and the EXTRACT config block) never provides an `attribute` key — there is no input for the attribute name. Selecting "Attr" silently falls through to text extraction.
 
-### B-08 · HIGH · `EXTRACT` row alignment corrupts data
-`injector.js:685-691` builds rows up to `maxLen` (the largest match count across fields) and pads short fields with `rawData[name][0]`. A page with 10 prices and 3 titles produces 10 rows where 7 repeat title #1 as though it were real data. Worse, `|| null` means legitimately falsy values (`"0"`, `""`, `"false"`) are converted to `null`.
+### B-08 · HIGH · `EXTRACT` row alignment invents data
+`injector.js:685-691` builds rows up to `maxLen` (the largest match count across fields) and pads short fields with `rawData[name][0]`. A page with 10 prices and 3 titles produces 10 rows where 7 repeat title #1 as though it were real data.
+
+*Corrected while fixing:* the entry also claimed `|| null` turned legitimately falsy values into `null`. Testing showed that expression sits only on the padding branch — a falsy value at a valid index was returned intact. The `??` change is still right, but the corruption was the padding alone.
 
 ### B-09 · HIGH · `CLICK` silently clicks the wrong element inside loops
 `injector.js:494-498`: when the selector matches nothing inside a `LOOP` child, the step falls back to clicking the **loop item root** (`usedRootFallback`). A typo'd selector therefore produces a plausible-looking successful click on a random container. There is no config flag to disable it and the fallback is only reported in the return value, which nothing inspects.

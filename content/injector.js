@@ -642,8 +642,17 @@ async function _stepExtract({ fields = [], schema = [] }, context = {}) {
   let maxLen = 1;
 
   const _extractValue = (el, field) => {
-    if (field.type === "attribute" && field.attribute)
+    if (field.type === "attribute") {
+      // Falling through to text here would look like a successful extraction
+      // of the wrong thing, which is how this went unnoticed while the UI had
+      // no way to supply an attribute name at all.
+      if (!field.attribute) {
+        throw new Error(
+          `EXTRACT field "${field.name || "unnamed"}" is set to Attr but has no attribute name.`,
+        );
+      }
       return el.getAttribute(field.attribute) ?? null;
+    }
     if (field.type === "html") return el.innerHTML;
 
     const tag = el.tagName.toLowerCase();

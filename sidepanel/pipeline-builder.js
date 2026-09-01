@@ -1718,13 +1718,23 @@ function generateConfigHtml(step) {
       html += `<div class="flex gap-2" style="margin-bottom:4px;align-items:center;">
         <input type="text" value="${esc(f.name || "")}"     disabled style="flex:1;">
         <input type="text" value="${esc(f.selector || "")}" disabled style="flex:2;">
-        <select data-action="update-extract-type" data-id="${step.id}" data-index="${fi}" style="flex:0.8;font-size:11px;padding:4px 6px;">
+        <select class="extract-type-select" data-id="${step.id}" data-index="${fi}" style="flex:0.8;font-size:11px;padding:4px 6px;">
           <option value="text" ${(f.type || "text") === "text" ? "selected" : ""}>Text</option>
           <option value="html" ${f.type === "html" ? "selected" : ""}>HTML</option>
           <option value="attribute" ${f.type === "attribute" ? "selected" : ""}>Attr</option>
         </select>
         <button class="btn btn-icon" style="color:var(--red);" data-action="remove-extract-field" data-id="${step.id}" data-index="${fi}">✕</button>
       </div>`;
+      if (f.type === "attribute") {
+        // Without a name there is nothing to read: injector requires
+        // field.attribute, so "Attr" used to fall through to text extraction.
+        html += `<div class="flex gap-2" style="margin:-2px 0 6px 0;align-items:center;">
+          <span style="flex:1;font-size:10px;color:var(--text-dim);text-align:right;">attribute</span>
+          <input type="text" class="extract-attr-input" data-id="${step.id}" data-index="${fi}"
+            value="${esc(f.attribute || "")}" placeholder="href, src, data-id…"
+            style="flex:2.8;font-size:11px;">
+        </div>`;
+      }
     });
     html += `</div>
     <div class="flex gap-2" style="margin-top:12px;align-items:flex-end;">
@@ -2036,15 +2046,6 @@ function bindDelegatedEvents() {
       case "remove-extract-field":
         _removeExtractField(id, parseInt(target.dataset.index, 10));
         break;
-      case "update-extract-type": {
-        const step = _findStepDeep(_pipeline.steps, id);
-        if (step?.config?.fields) {
-          step.config.fields[parseInt(target.dataset.index, 10)].type =
-            target.value;
-          saveState();
-        }
-        break;
-      }
       case "set-fill-mode": {
         const step = _findStepDeep(_pipeline.steps, id);
         if (step) {
@@ -2074,7 +2075,33 @@ function bindDelegatedEvents() {
 
   document.body.addEventListener("change", (e) => {
     const target = e.target;
+
+    // Extract field type. This was previously handled by the click listener,
+    // which fires before the user has picked an option, so the select never
+    // actually changed the stored type.
+    if (target instanceof HTMLSelectElement &&
+        target.classList.contains("extract-type-select")) {
+      const step = _findStepDeep(_pipeline.steps, target.dataset.id);
+      const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
+      if (!field) return;
+      field.type = target.value;
+      if (field.type !== "attribute") delete field.attribute;
+      saveState();
+      _rerenderCardConfig(step); // show or hide the attribute input
+      return;
+    }
+
     if (!(target instanceof HTMLInputElement)) return;
+
+    if (target.classList.contains("extract-attr-input")) {
+      const step = _findStepDeep(_pipeline.steps, target.dataset.id);
+      const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
+      if (!field) return;
+      field.attribute = target.value.trim();
+      saveState();
+      return;
+    }
+
     if (!target.classList.contains("upload-step-file-check")) return;
 
     const stepId = target.dataset.stepId;

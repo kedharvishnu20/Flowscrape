@@ -9,6 +9,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import { isExportableStepType, STEP_TYPES } from '../utils/step-types.js';
 
 const MODULE = 'pipeline-compiler';
 
@@ -85,6 +86,41 @@ export function serializePipeline(pipeline) {
     return out;
   };
   return JSON.stringify(sanitize(pipeline), null, 2);
+}
+
+/**
+ * Steps the script emitters cannot express.
+ *
+ * The emitters used to fall through to a `# TODO` comment for anything they did
+ * not handle, so an exported script looked complete, ran, and silently did less
+ * than the pipeline it came from. Callers use this to tell the user what will
+ * be missing before they download it.
+ *
+ * @param {object} ast - compiled pipeline
+ * @returns {Array<{ id: string, type: string, reason: string }>}
+ */
+export function findUnexportableSteps(ast) {
+  const found = [];
+
+  const walk = (steps) => {
+    for (const step of Array.isArray(steps) ? steps : []) {
+      if (!isExportableStepType(step.type)) {
+        found.push({
+          id: step.id ?? null,
+          type: step.type,
+          reason: STEP_TYPES[step.type]
+            ? 'runs inside the extension and has no standalone equivalent'
+            : 'unknown step type',
+        });
+      }
+      walk(step.children);
+      walk(step.ifBranch);
+      walk(step.elseBranch);
+    }
+  };
+
+  walk(ast?.steps);
+  return found;
 }
 
 // === END pipeline-compiler.js ===

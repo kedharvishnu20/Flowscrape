@@ -54,7 +54,7 @@
 
 | Limitation | Notes |
 |-----------|-------|
-| Emitters cover 11 of 21 step types | FILL, HOVER, SELECT, KEYBOARD, DRAG_DROP, UPLOAD_ACTIVITY, SCREENSHOT, PAGINATE, API_SNIFFER, PDF_EXTRACTION and AUTO_EXTRACT emit a `# TODO` comment. An exported script can silently do less than the pipeline (audit B-13) |
+| Four step types cannot be exported | UPLOAD_ACTIVITY, API_SNIFFER, PDF_EXTRACTION and AUTO_EXTRACT need the extension itself. They emit an explicit failure and are reported before download, rather than the silent `# TODO` comment they used to produce (audit B-13) |
 | Templates are not resolved | `{{loop.index}}` and friends are a runtime feature of the executor. The emitters copy config strings verbatim, so templates appear literally in the generated script (audit B-16) |
 | Only proxy credentials are redacted | The README's "credentials are always redacted" claim covers the proxy env vars only. A password typed into a FILL step is emitted as written (audit B-14) |
 | No Rust / Go emitters | Out of scope |

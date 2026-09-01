@@ -17,7 +17,6 @@ export function emitNode(pipeline) {
     "import { chromium } from 'playwright';",
     "import fs from 'fs';",
     "import path from 'path';",
-    "import csv from 'csv-parse/sync';",
     "",
     `const TARGET_ORIGIN = '${pipeline.targetOrigin ?? ""}';`,
     `const MIN_DELAY_MS  = 800;`,
@@ -77,11 +76,29 @@ function _emitNodeStep(step) {
         `// EXPORT → ${config.format ?? "csv"} (implement write here)`,
         "",
       ];
-    case "SCROLL":
+    case "SCROLL": {
+      // config.amount is what the UI writes; `value` was read here, so every
+      // exported scroll used the hardcoded default.
+      const amount = config.amount ?? config.value ?? 300;
+      if (config.mode === "selector" && config.selector) {
+        return [
+          `await page.locator('${esc(config.selector)}').scrollIntoViewIfNeeded();`,
+          "",
+        ];
+      }
+      if (config.mode === "percent") {
+        return [
+          `await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight * ${Number(amount) / 100}));`,
+          `await sleep(500);`,
+          "",
+        ];
+      }
       return [
-        `await page.evaluate(() => window.scrollBy(0, ${config.value ?? 300}));`,
+        `await page.evaluate(() => window.scrollBy(0, ${amount}));`,
+        `await sleep(500);`,
         "",
       ];
+    }
     case "LOOP": {
       const lines = [
         `// LOOP: ${config.type || 'count'} (max: ${config.max ?? 10})`,
@@ -119,9 +136,75 @@ function _emitNodeStep(step) {
       lines.push(`}`, "");
       return lines;
     }
+    case "FILL":
+    case "TYPE":
+      return _emitNodeFill(config, esc);
+
+    case "HOVER":
+      return [`await page.hover('${esc(config.selector)}');`, ""];
+
+    case "SELECT":
+      return [
+        `await page.selectOption('${esc(config.selector)}', '${esc(config.value)}');`,
+        "",
+      ];
+
+    case "KEYBOARD":
+      return [`await page.keyboard.press('${esc(_playwrightKey(config.key))}');`, ""];
+
+    case "SCREENSHOT":
+      return [`await page.screenshot({ path: \`screenshot_\${Date.now()}.png\` });`, ""];
+
+    case "PAGINATE":
+      return [
+        `await page.click('${esc(config.selector)}');`,
+        `await page.waitForLoadState('networkidle');`,
+        "",
+      ];
+
+    case "DRAG_DROP":
+      return [
+        `await page.dragAndDrop('${esc(config.source)}', '${esc(config.target)}');`,
+        "",
+      ];
+
     default:
-      return [`// TODO: ${type}`, ""];
+      // Not silently dropped: emitUnsupported collects these and the caller
+      // reports them, so an exported script cannot quietly do less than the
+      // pipeline it came from.
+      return [
+        `// UNSUPPORTED: '${type}' has no equivalent in a standalone script.`,
+        `throw new Error('FlowScrape step ${type} is not exportable');`,
+        "",
+      ];
   }
+}
+
+/** Playwright key names differ slightly from the panel's combo strings. */
+function _playwrightKey(key) {
+  return String(key ?? "Enter")
+    .split("+")
+    .map((part) => (part === "Ctrl" ? "Control" : part))
+    .join("+");
+}
+
+function _emitNodeFill(config, esc) {
+  const lines = [];
+  const fields =
+    config.mode === "multi" && Array.isArray(config.fields) && config.fields.length
+      ? config.fields
+      : [{ selector: config.selector, value: config.text }];
+
+  for (const field of fields) {
+    if (!field?.selector) continue;
+    lines.push(`await page.fill('${esc(field.selector)}', '${esc(field.value ?? "")}');`);
+  }
+  if (config.submitSelector) {
+    lines.push(`await page.click('${esc(config.submitSelector)}');`);
+    lines.push(`await page.waitForLoadState('networkidle');`);
+  }
+  lines.push("");
+  return lines;
 }
 
 function _extractNode(config) {

@@ -77,9 +77,11 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 
 | Finding | Commit | Notes |
 |---|---|---|
-| B-03 | *this batch* | Gate 6 reports authored origins; undeclared ones are blocked at execution, where a templated URL is finally known. Gates 2, 3, 4 and the FORM_FILL constraints now walk nested steps too |
+| B-03 | `d51d72a` | Gate 6 reports authored origins; undeclared ones are blocked at execution, where a templated URL is finally known. Gates 2, 3, 4 and the FORM_FILL constraints now walk nested steps too |
+| B-27 | `f7a742c` | One `_dispatchStep`; first behavioural tests for the executor |
+| B-13, B-15 | *this batch* | 6 more step types emitted; the remaining 4 fail loudly and are reported. SCROLL reads `config.amount` |
 
-**Still open:** C-09, C-10, C-12; B-10 through
+**Still open:** C-09, C-10, C-12; B-10 through B-12, B-14, B-16 through
 B-18, B-22 onward; D-01, D-02, D-07, D-09 through D-14; most of E; G-05 through
 G-09; I-02, I-04.
 

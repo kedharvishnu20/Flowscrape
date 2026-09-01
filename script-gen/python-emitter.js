@@ -124,12 +124,29 @@ function _emitStep(step) {
       return _emitFormFill(config);
     case "EXPORT":
       return _emitExport(config);
-    case "SCROLL":
+    case "SCROLL": {
+      // config.amount is what the UI writes; `value` was read here, so every
+      // exported scroll used the hardcoded default of 300px.
+      const amount = config.amount ?? config.value ?? 300;
+      if (config.mode === "selector" && config.selector) {
+        return [
+          `await page.locator("${_escStr(config.selector)}").scroll_into_view_if_needed()`,
+          "",
+        ];
+      }
+      if (config.mode === "percent") {
+        return [
+          `await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight * ${Number(amount) / 100})")`,
+          `await asyncio.sleep(0.5)`,
+          "",
+        ];
+      }
       return [
-        `await page.evaluate("window.scrollBy(0, ${config.value ?? 300})")`,
+        `await page.evaluate("window.scrollBy(0, ${amount})")`,
         `await asyncio.sleep(0.5)`,
         "",
       ];
+    }
     case "LOOP": {
       const lines = [
         `# LOOP: ${config.type || 'count'} (max: ${config.max ?? 10})`,
@@ -169,9 +186,92 @@ function _emitStep(step) {
       lines.push("");
       return lines;
     }
+    case "FILL":
+    case "TYPE":
+      return _emitFill(config);
+
+    case "HOVER":
+      return [
+        `# HOVER: ${config.selector ?? ""}`,
+        `await page.hover("${_escStr(config.selector ?? "")}")`,
+        "",
+      ];
+
+    case "SELECT":
+      return [
+        `# SELECT: ${config.selector ?? ""}`,
+        `await page.select_option("${_escStr(config.selector ?? "")}", "${_escStr(config.value ?? "")}")`,
+        "",
+      ];
+
+    case "KEYBOARD":
+      return [
+        `# KEYBOARD: ${config.key ?? "Enter"}`,
+        `await page.keyboard.press("${_escStr(_playwrightKey(config.key))}")`,
+        "",
+      ];
+
+    case "SCREENSHOT":
+      return [
+        "# SCREENSHOT",
+        `await page.screenshot(path=f"screenshot_{int(time.time() * 1000)}.png")`,
+        "",
+      ];
+
+    case "PAGINATE":
+      return [
+        `# PAGINATE: ${config.selector ?? ""}`,
+        `await page.click("${_escStr(config.selector ?? "")}")`,
+        `await page.wait_for_load_state("networkidle")`,
+        "",
+      ];
+
+    case "DRAG_DROP":
+      return [
+        `# DRAG_DROP: ${config.source ?? ""} -> ${config.target ?? ""}`,
+        `await page.drag_and_drop("${_escStr(config.source ?? "")}", "${_escStr(config.target ?? "")}")`,
+        "",
+      ];
+
     default:
-      return [`# TODO: implement step type "${type}"`, ""];
+      // Not silently dropped: emitUnsupported collects these and the caller
+      // reports them, so an exported script cannot quietly do less than the
+      // pipeline it came from.
+      return [
+        `# UNSUPPORTED: "${type}" has no equivalent in a standalone script.`,
+        `raise NotImplementedError("FlowScrape step ${type} is not exportable")`,
+        "",
+      ];
   }
+}
+
+/** Playwright key names differ slightly from the panel's combo strings. */
+function _playwrightKey(key) {
+  return String(key ?? "Enter")
+    .split("+")
+    .map((part) => (part === "Ctrl" ? "Control" : part))
+    .join("+");
+}
+
+function _emitFill(config) {
+  const lines = ["# FILL"];
+  const fields =
+    config.mode === "multi" && Array.isArray(config.fields) && config.fields.length
+      ? config.fields
+      : [{ selector: config.selector, value: config.text }];
+
+  for (const field of fields) {
+    if (!field?.selector) continue;
+    lines.push(
+      `await page.fill("${_escStr(field.selector)}", "${_escStr(field.value ?? "")}")`,
+    );
+  }
+  if (config.submitSelector) {
+    lines.push(`await page.click("${_escStr(config.submitSelector)}")`);
+    lines.push(`await page.wait_for_load_state("networkidle")`);
+  }
+  lines.push("");
+  return lines;
 }
 
 function _emitExtract(config) {

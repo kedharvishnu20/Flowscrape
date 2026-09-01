@@ -47,7 +47,10 @@ import {
 } from "../checkpoint/row-buffer.js";
 import { saveCursor } from "../checkpoint/cursor-store.js";
 import { getResumePayload } from "../checkpoint/resume-manager.js";
-import { compilePipeline } from "../script-gen/pipeline-compiler.js";
+import {
+  compilePipeline,
+  findUnexportableSteps,
+} from "../script-gen/pipeline-compiler.js";
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { runLlmLayer } from "./llm-extractor.js";
@@ -1671,11 +1674,14 @@ _registerHandler("script:export", async (payload) => {
   try {
     const { ast } = compilePipeline(payload.pipeline);
     if (!ast) throw new Error("Pipeline compilation returned empty AST");
-    if (payload.format === "python") {
-      return { code: emitPython(ast) };
-    } else {
-      return { code: emitNode(ast) };
-    }
+
+    // Steps the emitters cannot express are reported alongside the code. They
+    // used to become a `# TODO` comment, so the exported script looked
+    // complete, ran, and silently did less than the pipeline.
+    const unexportable = findUnexportableSteps(ast);
+    const code = payload.format === "python" ? emitPython(ast) : emitNode(ast);
+
+    return { code, unexportable };
   } catch (err) {
     throw new Error(`Script export failed: ${err.message}`);
   }

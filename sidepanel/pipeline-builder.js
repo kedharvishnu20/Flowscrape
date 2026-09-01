@@ -571,6 +571,14 @@ function bindGlobalControls() {
         payload: { pipeline: _pipeline, format },
       });
       if (res?.ok && res.result?.code) {
+        // Say what the script will not do before handing it over.
+        for (const step of res.result.unexportable ?? []) {
+          logToMonitor(
+            "warn-log",
+            `Not exported: ${step.type} — ${step.reason}. The script will throw if it reaches that step.`,
+          );
+        }
+
         const blob = new Blob([res.result.code], { type: "text/plain" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");

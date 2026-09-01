@@ -14,6 +14,7 @@ import { z } from "zod";
 import {
   compilePipeline,
   serializePipeline,
+  findUnexportableSteps,
 } from "../script-gen/pipeline-compiler.js";
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
@@ -418,7 +419,11 @@ server.tool(
     const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
     const { ast, errors } = compilePipeline(input);
     if (!ast) return textResult({ errors });
-    return textResult({ errors, code: emitPython(ast) });
+    return textResult({
+      errors,
+      unexportable: findUnexportableSteps(ast),
+      code: emitPython(ast),
+    });
   },
 );
 
@@ -433,7 +438,11 @@ server.tool(
     const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
     const { ast, errors } = compilePipeline(input);
     if (!ast) return textResult({ errors });
-    return textResult({ errors, code: emitNode(ast) });
+    return textResult({
+      errors,
+      unexportable: findUnexportableSteps(ast),
+      code: emitNode(ast),
+    });
   },
 );
 

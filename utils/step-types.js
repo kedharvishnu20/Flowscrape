@@ -29,6 +29,8 @@
  * @property {'children'|'branches'} [container]  Whether it nests other steps
  * @property {boolean} [internal] Not a user-selectable step
  * @property {string}  [aliasOf]  Legacy name kept for older saved pipelines
+ * @property {boolean} [exportable] false when script-gen cannot emit it;
+ *                     defaults to true
  */
 
 /** @type {Record<string, StepType>} */
@@ -111,6 +113,8 @@ export const STEP_TYPES = Object.freeze({
     desc: "Upload from Storage",
     runsIn: "page",
     def: { selector: "input[type=file]", fileIds: [], optional: false },
+    // Not expressible in an exported script: needs the file bytes from the extension's storage library.
+    exportable: false,
   },
 
   // ── Flow ──────────────────────────────────────────────────────────────────
@@ -190,6 +194,8 @@ export const STEP_TYPES = Object.freeze({
     desc: "API Sniffer",
     runsIn: "background",
     def: { enabled: true },
+    // Not expressible in an exported script: needs the in-page fetch/XHR hook.
+    exportable: false,
   },
   PDF_EXTRACTION: {
     icon: "📕",
@@ -203,6 +209,8 @@ export const STEP_TYPES = Object.freeze({
       maxPages: 50,
       storeAs: "pdf_text",
     },
+    // Not expressible in an exported script: needs the MCP server's PDF tooling.
+    exportable: false,
   },
   AUTO_EXTRACT: {
     icon: "🤖",
@@ -210,6 +218,8 @@ export const STEP_TYPES = Object.freeze({
     desc: "Smart product auto-extract",
     runsIn: "background",
     def: { confidenceThreshold: 70, useLlm: true },
+    // Not expressible in an exported script: needs the three-layer extractor and a Gemini key.
+    exportable: false,
   },
 
   // ── Internal ──────────────────────────────────────────────────────────────
@@ -253,6 +263,24 @@ export const ALL_STEP_TYPES = Object.freeze(Object.keys(STEP_TYPES));
 export const PAGE_STEP_TYPES = Object.freeze(
   ALL_STEP_TYPES.filter((t) => STEP_TYPES[t].runsIn === "page"),
 );
+
+/**
+ * Step types the script emitters can express. Everything else emits an explicit
+ * failure rather than a comment, and is reported to the user before download —
+ * an exported script that silently does less than the pipeline is worse than
+ * one that refuses to run.
+ */
+export const EXPORTABLE_STEP_TYPES = Object.freeze(
+  ALL_STEP_TYPES.filter((t) => STEP_TYPES[t].exportable !== false),
+);
+
+/**
+ * @param {string} type
+ * @returns {boolean}
+ */
+export function isExportableStepType(type) {
+  return STEP_TYPES[type]?.exportable !== false;
+}
 
 /**
  * @param {string} type

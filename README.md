@@ -27,7 +27,7 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 137 tests, ~2s, no browser needed
+npm test        # 184 tests, ~9s, no browser needed
 npm run check   # parses every source file as an ES module
 ```
 
@@ -133,7 +133,7 @@ data-sources/
   json-parser.js               (unreachable)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         137 tests; node:test, jsdom, fake-indexeddb
+tests/                         184 tests; node:test, jsdom, fake-indexeddb
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, manual, template guide, limitations
 ```
@@ -240,12 +240,28 @@ dynamically imports — not the whole tree.
 ## Script export
 
 A pipeline can be emitted as a runnable Python or Node script (Playwright).
-**The emitters cover 11 of the 21 step types**; anything else becomes a
-`# TODO: implement step type "X"` comment, so an exported script can silently do
-less than the pipeline it came from. See audit B-13.
 
-Only proxy credentials are replaced with environment lookups. Other config
-values, including anything typed into a `FILL` step, are emitted as written.
+The emitters cover **17 of the 21 step types**. The other four need the
+extension itself and cannot be expressed standalone:
+
+| Step | Why |
+|---|---|
+| `UPLOAD_ACTIVITY` | Needs file bytes from the storage library |
+| `API_SNIFFER` | Needs the in-page fetch/XHR hook |
+| `PDF_EXTRACTION` | Needs the MCP server's PDF tooling |
+| `AUTO_EXTRACT` | Needs the three-layer extractor and a Gemini key |
+
+Those emit an explicit `raise NotImplementedError` / `throw`, and are listed in
+the run log before the download. They used to become a `# TODO` comment, so the
+script ran and quietly did less than the pipeline.
+
+Two caveats that still apply:
+
+- **Templates are not resolved.** `{{loop.index}}` is a runtime feature of the
+  executor; the emitters copy config strings verbatim, so a template appears
+  literally in the generated script (audit B-16).
+- **Only proxy credentials are replaced with environment lookups.** Anything
+  typed into a `FILL` step is emitted as written (audit B-14).
 
 ---
 

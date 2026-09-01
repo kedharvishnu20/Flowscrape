@@ -47,6 +47,11 @@ import { compilePipeline } from "../script-gen/pipeline-compiler.js";
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { runLlmLayer } from "./llm-extractor.js";
+import {
+  formatRows,
+  formatMeta,
+  ROW_FORMATS,
+} from "../exporters/row-formatters.js";
 
 const MODULE = "service-worker";
 const STORAGE_FILES_KEY = "fs_storage_files_v1";
@@ -761,45 +766,15 @@ async function _doExport(runId, config) {
 
   const screenshots = runState.screenshots || [];
   const enc = new TextEncoder();
-  const fmt = config.format || "csv";
   const ts = Date.now();
 
-  // Build data file content
-  let dataContent, dataMime, dataExt;
-  const headers = Array.from(new Set(allRows.flatMap(Object.keys)));
-  if (fmt === "json") {
-    dataContent = JSON.stringify(allRows, null, 2);
-    dataMime = "application/json";
-    dataExt = "json";
-  } else if (fmt === "jsonl") {
-    dataContent = allRows.map((r) => JSON.stringify(r)).join("\n");
-    dataMime = "application/jsonl";
-    dataExt = "jsonl";
-  } else if (fmt === "tsv") {
-    dataContent =
-      headers.join("\t") +
-      "\n" +
-      allRows
-        .map((r) =>
-          headers.map((h) => String(r[h] || "").replace(/\t/g, " ")).join("\t"),
-        )
-        .join("\n");
-    dataMime = "text/tab-separated-values";
-    dataExt = "tsv";
-  } else {
-    dataContent =
-      headers.join(",") +
-      "\n" +
-      allRows
-        .map((r) =>
-          headers
-            .map((h) => `"${String(r[h] || "").replace(/"/g, '""')}"`)
-            .join(","),
-        )
-        .join("\n");
-    dataMime = "text/csv";
-    dataExt = "csv";
-  }
+  // Formatting lives in exporters/row-formatters.js so the service worker, the
+  // side panel's partial download and the MCP server all produce identical
+  // output. The three inline implementations disagreed: this one turned a
+  // legitimate 0 or false into an empty cell, and quoted every CSV field.
+  const fmt = ROW_FORMATS.includes(config.format) ? config.format : "csv";
+  const { mime: dataMime, ext: dataExt } = formatMeta(fmt);
+  const dataContent = formatRows(allRows, fmt);
 
   const networks = runState.networks || [];
   if (screenshots.length > 0 || networks.length > 0) {
@@ -819,60 +794,53 @@ async function _doExport(runId, config) {
     });
 
     if (networks.length > 0) {
-      const netHeaders = [
-        "timestamp",
-        "method",
-        "url",
-        "status",
-        "type",
-        "requestBody",
-        "responseBody",
-      ];
-      let netContent = "";
-      if (fmt === "json" || fmt === "jsonl") {
-        netContent = JSON.stringify(networks, null, 2);
-        zipFiles.push({
-          name: `api-sniffer.json`,
-          bytes: enc.encode(netContent),
-        });
-      } else {
-        netContent =
-          netHeaders.join(",") +
-          "\n" +
-          networks
-            .map((n) =>
-              netHeaders
-                .map((h) => `"${String(n[h] || "").replace(/"/g, '""')}"`)
-                .join(","),
-            )
-            .join("\n");
-        zipFiles.push({
-          name: `api-sniffer.csv`,
-          bytes: enc.encode("\uFEFF" + netContent),
-        });
-      }
+      // Same formatter as the data file, so the sniffer log is not a fourth
+      // hand-rolled CSV with its own quoting rules.
+      const netFormat = fmt === "json" || fmt === "jsonl" ? fmt : "csv";
+      zipFiles.push({
+        name: `api-sniffer.${formatMeta(netFormat).ext}`,
+        bytes: enc.encode(
+          netFormat === "csv"
+            ? "\uFEFF" + formatRows(networks, netFormat)
+            : formatRows(networks, netFormat),
+        ),
+      });
     }
 
     const zipBytes = _buildZip(zipFiles);
     const blob = new Blob([zipBytes], { type: "application/zip" });
     const zipUrl = URL.createObjectURL(blob);
-    await chrome.downloads.download({
-      url: zipUrl,
-      filename: `flowscrape_export_${ts}.zip`,
-      saveAs: false,
-    });
+    try {
+      await chrome.downloads.download({
+        url: zipUrl,
+        filename: `flowscrape_export_${ts}.zip`,
+        saveAs: false,
+      });
+    } finally {
+      // Never revoked before, so every export leaked its whole payload for the
+      // lifetime of the worker.
+      URL.revokeObjectURL(zipUrl);
+    }
     _broadcastLog(
       "info-log",
       `Exported ZIP: ${allRows.length} rows, ${screenshots.length} screens, ${networks.length} APIs.`,
       runId,
     );
   } else if (allRows.length > 0) {
-    const dataUrl = `data:${dataMime};charset=utf-8,\uFEFF${encodeURIComponent(dataContent)}`;
-    await chrome.downloads.download({
-      url: dataUrl,
-      filename: `flowscrape_export_${ts}.${dataExt}`,
-      saveAs: false,
-    });
+    // A Blob URL, not a data: URL. The BOM used to sit outside
+    // encodeURIComponent, so it went into the URL raw and was mangled; and a
+    // large export could exceed what a data: URL can carry.
+    const blob = new Blob(["\uFEFF" + dataContent], { type: dataMime });
+    const url = URL.createObjectURL(blob);
+    try {
+      await chrome.downloads.download({
+        url,
+        filename: `flowscrape_export_${ts}.${dataExt}`,
+        saveAs: false,
+      });
+    } finally {
+      URL.revokeObjectURL(url);
+    }
     _broadcastLog(
       "info-log",
       `Exported ${allRows.length} rows as ${fmt.toUpperCase()}.`,

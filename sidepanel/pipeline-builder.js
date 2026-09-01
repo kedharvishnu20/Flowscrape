@@ -2,6 +2,7 @@
 "use strict";
 
 import { STEP_TYPES, USER_STEP_TYPES, defaultConfig } from "../utils/step-types.js";
+import { formatRows, formatMeta, ROW_FORMATS } from "../exporters/row-formatters.js";
 
 const MSG = {
   PIPELINE_START: "pipeline:start",
@@ -665,18 +666,11 @@ function bindGlobalControls() {
           const { runId, ...c } = r;
           return c;
         });
-        const headers = Array.from(new Set(rows.flatMap(Object.keys)));
-        const csv =
-          headers.join(",") +
-          "\n" +
-          rows
-            .map((r) =>
-              headers
-                .map((h) => `"${String(r[h] || "").replace(/"/g, '""')}"`)
-                .join(","),
-            )
-            .join("\n");
-        const blob = new Blob([csv], { type: "text/csv" });
+        // Same formatter as the pipeline's own EXPORT step; this used to be a
+        // separate CSV implementation that quoted every field and turned 0
+        // into an empty cell.
+        const csv = formatRows(rows, "csv");
+        const blob = new Blob(["\uFEFF" + csv], { type: formatMeta("csv").mime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -1519,10 +1513,10 @@ function generateConfigHtml(step) {
   // ── EXPORT ──
   if (step.type === "EXPORT") {
     html += `<label>Format</label><select id="cfg-${step.id}-format" data-id="${step.id}" data-key="format" class="cfg-bind" style="margin-bottom:8px;">
-      <option value="csv"  ${(c.format || "csv") === "csv" ? "selected" : ""}>CSV</option>
-      <option value="json" ${c.format === "json" ? "selected" : ""}>JSON</option>
-      <option value="jsonl"${c.format === "jsonl" ? "selected" : ""}>JSONL</option>
-      <option value="tsv"  ${c.format === "tsv" ? "selected" : ""}>TSV</option>
+      ${ROW_FORMATS.map(
+        (f) =>
+          `<option value="${f}" ${(c.format || "csv") === f ? "selected" : ""}>${esc(formatMeta(f).label)}</option>`,
+      ).join("")}
     </select>`;
     html += toggle(step, "optional", "optional");
     return html;

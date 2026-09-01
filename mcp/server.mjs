@@ -20,6 +20,10 @@ import { emitNode } from "../script-gen/node-emitter.js";
 import { checkRobots } from "../ethics/robots-parser.js";
 import { ALL_STEP_TYPES } from "../utils/step-types.js";
 import {
+  formatRows,
+  defaultFilename as rowFilename,
+} from "../exporters/row-formatters.js";
+import {
   scanRows,
   scanText,
   summarizeFindings,
@@ -917,116 +921,12 @@ function flattenSteps(steps, output = []) {
   return output;
 }
 
-function renderRows(rows, format) {
-  const safeRows = Array.isArray(rows) ? rows : [];
-  switch (format) {
-    case "csv":
-      return toCSV(safeRows);
-    case "json":
-      return JSON.stringify(safeRows, null, 2);
-    case "jsonl":
-      return (
-        safeRows.map((row) => JSON.stringify(row)).join("\n") +
-        (safeRows.length ? "\n" : "")
-      );
-    case "tsv":
-      return toTSV(safeRows);
-    case "xml":
-      return toXML(safeRows);
-    case "markdown":
-      return toMarkdown(safeRows);
-    default:
-      throw new Error(`Unsupported format: ${format}`);
-  }
-}
-
-function toCSV(rows) {
-  if (rows.length === 0) return "";
-  const headers = Object.keys(rows[0]);
-  const lines = [headers.map(csvEscape).join(",")];
-  for (const row of rows) {
-    lines.push(
-      headers.map((header) => csvEscape(row?.[header] ?? "")).join(","),
-    );
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function toTSV(rows) {
-  if (rows.length === 0) return "";
-  const headers = Object.keys(rows[0]);
-  const lines = [headers.join("\t")];
-  for (const row of rows) {
-    lines.push(
-      headers
-        .map((header) => String(row?.[header] ?? "").replace(/\t/g, " "))
-        .join("\t"),
-    );
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function toXML(rows) {
-  const escape = (value) =>
-    String(value ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  const lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<rows>"];
-  for (const row of rows) {
-    lines.push("  <row>");
-    for (const [key, value] of Object.entries(row ?? {})) {
-      lines.push(`    <${key}>${escape(value)}</${key}>`);
-    }
-    lines.push("  </row>");
-  }
-  lines.push("</rows>");
-  return `${lines.join("\n")}\n`;
-}
-
-function toMarkdown(rows) {
-  if (rows.length === 0) return "";
-  const headers = Object.keys(rows[0]);
-  const escape = (value) => String(value ?? "").replace(/\|/g, "\\|");
-  const lines = [
-    `| ${headers.map(escape).join(" | ")} |`,
-    `| ${headers.map(() => "---").join(" | ")} |`,
-  ];
-  for (const row of rows) {
-    lines.push(
-      `| ${headers.map((header) => escape(row?.[header] ?? "")).join(" | ")} |`,
-    );
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function csvEscape(value) {
-  const text = String(value ?? "");
-  if (/[",\n\r]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-  return text;
-}
-
-function defaultFilename(format) {
-  switch (format) {
-    case "csv":
-      return "export.csv";
-    case "json":
-      return "export.json";
-    case "jsonl":
-      return "export.jsonl";
-    case "tsv":
-      return "export.tsv";
-    case "xml":
-      return "export.xml";
-    case "markdown":
-      return "export.md";
-    default:
-      return "export.txt";
-  }
-}
+// Formatting is shared with the extension (exporters/row-formatters.js) so the
+// MCP output matches what a pipeline exports. The local copies derived headers
+// from Object.keys(rows[0]), so any column missing from the first row was
+// dropped from CSV, TSV and Markdown entirely.
+const renderRows = formatRows;
+const defaultFilename = rowFilename;
 
 function textResult(data) {
   return {

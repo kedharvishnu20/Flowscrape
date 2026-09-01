@@ -72,6 +72,18 @@ async function init() {
 
   // Also listen for tab changes within the sidepanel to swap state
   chrome.tabs.onActivated.addListener(async (activeInfo) => {
+    // A run belongs to the tab it started on. Swapping the board out from under
+    // a live run left Stop pointing at the right runId while the canvas showed
+    // an unrelated pipeline, and the monitor kept filling with log lines the
+    // visible steps had nothing to do with (E-13).
+    if (_runState.active && activeInfo.tabId !== _tabId) {
+      notify(
+        "warn-log",
+        "A run is in flight on another tab. The board stays on it until the run ends.",
+      );
+      return;
+    }
+
     _tabId = activeInfo.tabId;
     SK.PIPELINE = `fs_active_pipeline_${_tabId}`;
     const saved = (await chrome.storage.local.get(SK.PIPELINE))[SK.PIPELINE];
@@ -79,6 +91,9 @@ async function init() {
     _expandedNodeId = null;
     _boardState.fittedOnce = false;
     renderPipeline();
+    // The storage library and the upload activity list are not tab-scoped —
+    // only SK.PIPELINE is — so there is nothing there to re-render. The audit
+    // (E-13) said otherwise; entry corrected.
   });
 
   bindNavTabs();
@@ -216,13 +231,23 @@ async function saveState() {
 }
 
 async function _saveStorageFiles() {
+  const snapshot = _storageFiles;
   try {
     await chrome.storage.local.set({ [SK.STORAGE_FILES]: _storageFiles });
   } catch (error) {
-    logToMonitor(
+    // The pre-check should make this unreachable, but a quota is a quota: if
+    // the write is refused, drop back to what is actually on disk rather than
+    // leaving the panel showing files that were never saved.
+    const onDisk = (await chrome.storage.local.get(SK.STORAGE_FILES))[
+      SK.STORAGE_FILES
+    ];
+    _storageFiles = Array.isArray(onDisk) ? onDisk : [];
+    notify(
       "error-log",
-      `Storage save failed (quota). Remove large files and retry. ${error?.message || ""}`,
+      `Storage save refused (${snapshot.length} files, ${_mb(_storageBytesUsed())} on disk). ` +
+        `Remove large files and retry. ${error?.message || ""}`,
     );
+    renderStoragePanel();
     throw error;
   }
 }
@@ -277,6 +302,33 @@ function bindStorageControls() {
     });
 }
 
+/**
+ * chrome.storage.local is capped at about 10 MB without the `unlimitedStorage`
+ * permission, which this extension deliberately does not request. Files are
+ * held as base64 data URLs, which inflates them by roughly a third, so two 4 MB
+ * PDFs are already over the line. There was a try/catch that logged a quota
+ * message after the fact, but nothing checked before writing, and the failed
+ * write left the in-memory list holding files that were not persisted (C-12).
+ */
+const STORAGE_QUOTA_BYTES = 10 * 1024 * 1024;
+/** Leave room for pipelines, overlay prefs and the proxy pool. */
+const STORAGE_BUDGET_BYTES = Math.floor(STORAGE_QUOTA_BYTES * 0.8);
+/** base64 costs 4 bytes per 3, plus the data: prefix. */
+const BASE64_OVERHEAD = 4 / 3;
+
+/** Bytes the library currently occupies once encoded. */
+function _storageBytesUsed() {
+  return _storageFiles.reduce(
+    (n, f) => n + (f.dataUrl?.length ?? Math.ceil(f.size * BASE64_OVERHEAD)),
+    0,
+  );
+}
+
+/** @param {number} n @returns {string} */
+function _mb(n) {
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
 async function _stageFilesInStorage(files) {
   const activityId = _createActivity({
     kind: "storage-stage",
@@ -291,10 +343,24 @@ async function _stageFilesInStorage(files) {
   );
 
   let processed = 0;
+  let used = _storageBytesUsed();
+  const rejected = [];
+
   for (const file of files) {
     const sig = `${file.name}::${file.size}::${file.lastModified}`;
     if (!existing.has(sig)) {
+      // Checked before reading the file, not after the write fails: a rejected
+      // write used to leave the in-memory list holding a file that was never
+      // persisted, so the panel showed it and the next reload did not.
+      const projected = Math.ceil(file.size * BASE64_OVERHEAD);
+      if (used + projected > STORAGE_BUDGET_BYTES) {
+        rejected.push(file.name);
+        processed += 1;
+        continue;
+      }
+
       const dataUrl = await _readFileAsDataUrl(file);
+      used += dataUrl.length;
       const item = {
         id: `sf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         name: file.name,
@@ -317,12 +383,24 @@ async function _stageFilesInStorage(files) {
   }
 
   await _saveStorageFiles();
+
+  if (rejected.length) {
+    notify(
+      "error-log",
+      `${rejected.length} file(s) not added — the library would exceed its ` +
+        `${_mb(STORAGE_BUDGET_BYTES)} budget (${_mb(used)} in use): ${rejected.join(", ")}. ` +
+        `Remove something first.`,
+    );
+  }
+
   _updateActivity(activityId, {
     processedFiles: files.length,
     progress: 100,
-    status: "completed",
+    status: rejected.length ? "partial" : "completed",
     completedAt: Date.now(),
-    message: "Files staged in storage",
+    message: rejected.length
+      ? `${files.length - rejected.length} of ${files.length} staged; ${rejected.length} over quota`
+      : "Files staged in storage",
   });
 
   renderStoragePanel();
@@ -1972,9 +2050,15 @@ function _normalizeStepConfig(step, changedKey) {
 // ── Config input binding ──────────────────────────────────────────────────────
 function bindConfigInputs(container = document) {
   container.querySelectorAll(".cfg-bind").forEach((el) => {
-    // Basic trick to clear old listeners if we ever accidentally rebind
-    const newEl = el.cloneNode(true);
-    if (el.parentNode) el.parentNode.replaceChild(newEl, el);
+    // This used to clone every input and swap the clone in, to shed listeners
+    // it might have bound twice. Replacing a node destroys focus, caret
+    // position and selection, and renderPipeline() redraws the whole canvas on
+    // every expand, collapse, add and remove — so editing a selector was
+    // jumpy for a reason (E-10). A marker does the same job without touching
+    // the node; a re-rendered element is a new node and carries no marker.
+    if (el.dataset.fsBound === "1") return;
+    el.dataset.fsBound = "1";
+    const newEl = el;
 
     newEl.addEventListener("change", (e) => {
       const step = _findStepDeep(_pipeline.steps, e.target.dataset.id);
@@ -2024,8 +2108,35 @@ function _rerenderCardConfig(step) {
     `.node-wrapper[data-id="${step.id}"] .node-config`,
   );
   if (configEl) {
+    // This fires while the user is in the middle of the form — a mode select
+    // changes and the whole block is rebuilt — so put the caret back where it
+    // was rather than dropping it (E-10).
+    const active = document.activeElement;
+    const restore =
+      active && configEl.contains(active) && active.dataset?.key
+        ? {
+            key: active.dataset.key,
+            start: active.selectionStart,
+            end: active.selectionEnd,
+          }
+        : null;
+
     configEl.innerHTML = generateConfigHtml(step);
     bindConfigInputs(configEl);
+
+    if (restore) {
+      const again = configEl.querySelector(`[data-key="${restore.key}"]`);
+      if (again) {
+        again.focus();
+        if (restore.start !== null && restore.start !== undefined) {
+          try {
+            again.setSelectionRange(restore.start, restore.end);
+          } catch {
+            // Not every input type supports a selection range.
+          }
+        }
+      }
+    }
   }
   // Also re-render loop body insert if LOOP mode changed
   const sub = document.querySelector(

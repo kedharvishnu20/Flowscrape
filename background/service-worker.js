@@ -624,24 +624,35 @@ async function _captureScreenshot(tabId, config = {}, runId) {
   const runState = _runStates.get(runId);
   if (!runState) return;
   try {
+    // captureVisibleTab photographs whichever tab is active in the window, so
+    // the target has to be the active one. It used to be activated
+    // unconditionally, yanking focus away from whatever the user was doing on
+    // every screenshot in a loop (B-29). Check first: when the tab is already
+    // active — the common case, since the run is driving it — do nothing.
+    const before = await chrome.tabs.get(tabId);
+    if (!before.active) {
+      await chrome.tabs.update(tabId, { active: true });
+      await _sleep(400);
+    }
+
+    const tab = await chrome.tabs.get(tabId);
+    // format decides whether quality means anything: Chrome ignores it for PNG,
+    // so the UI's quality control did nothing at all (B-30). Anything below 100
+    // now selects JPEG, where the number is real; 100 keeps lossless PNG.
     const rawQuality = Number(config.quality);
     const quality = Number.isFinite(rawQuality)
-      ? Math.max(0, Math.min(100, Math.round(rawQuality)))
+      ? Math.max(1, Math.min(100, Math.round(rawQuality)))
       : 100;
-
-    // Focus the tab so captureVisibleTab can see it
-    await chrome.tabs.update(tabId, { active: true });
-    await _sleep(400);
-    const tab = await chrome.tabs.get(tabId);
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-      format: "png",
-      quality,
-    });
+    const format = quality >= 100 ? "png" : "jpeg";
+    const dataUrl = await chrome.tabs.captureVisibleTab(
+      tab.windowId,
+      format === "png" ? { format } : { format, quality },
+    );
     // Held in memory until export, so it is bounded (D-10).
     const kept = _pushCapture(
       runState,
       "screenshots",
-      { dataUrl, ts: Date.now() },
+      { dataUrl, ts: Date.now(), ext: format === "png" ? "png" : "jpg" },
       dataUrl.length,
       CAPTURE_LIMITS.screenshotBytes,
       CAPTURE_LIMITS.screenshotCount,
@@ -1010,7 +1021,7 @@ async function _doExport(runId, config) {
     }
     screenshots.forEach((s, i) => {
       zipFiles.push({
-        name: `screenshot_${i + 1}_${s.ts}.png`,
+        name: `screenshot_${i + 1}_${s.ts}.${s.ext || "png"}`,
         bytes: _dataUrlToBytes(s.dataUrl),
       });
     });

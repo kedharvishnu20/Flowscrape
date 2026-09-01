@@ -93,11 +93,12 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 
 | D-02, D-07, D-10, D-11 | `e216049` | A real keep-alive replaces the clamped alarm; capture buffers are bounded and say when they fill; export dedup no longer depends on key order |
 
-| B-12, B-14, B-16, D-09 | *this batch* | Node emitter reachable; credentials become env markers both scripts resolve; templates named before download; imports validated against the registry and filled from its defaults |
+| B-12, B-14, B-16, D-09 | `cc38011` | Node emitter reachable; credentials become env markers both scripts resolve; templates named before download; imports validated against the registry and filled from its defaults |
 
-**Still open:** C-09, C-10, C-12;
-B-15, B-22 through B-25, B-28 onward; D-12, D-13; E-05, E-08
-onward except E-14; G-05 through G-09; I-02, I-04.
+| E-10, E-13, B-29, B-30, C-12 | *this batch* | The board stays with a running tab; editing no longer loses the caret; screenshots stop stealing focus and honour quality; the file library checks its budget before writing |
+
+**Still open:** C-09, C-10;
+B-15, B-22 through B-25, B-28 onward; D-12, D-13; E-05, E-08, E-09, E-11, E-12, E-15 onward; G-05 through G-09; I-02, I-04.
 
 **E-01 was worse than recorded, and partly my doing.** The finding says the
 backend was fully wired and only the button was missing. By the time it was
@@ -447,6 +448,8 @@ The overlay is appended to `_shadow`, whose host has `pointer-events:none` (`inj
 
 ### E-13 · MEDIUM · Tab switching mid-run silently swaps the pipeline
 `chrome.tabs.onActivated` reassigns `_tabId`, reloads a different per-tab pipeline and re-renders — even while a run is in flight against the previous tab. The Stop button then targets the right `runId` but the board shows an unrelated pipeline, and Storage/activity panels are not re-rendered at all.
+
+**Correction.** The last clause is wrong: the storage library and the upload activity list are not tab-scoped — only `SK.PIPELINE` is — so there is nothing there to re-render. The board/run mismatch is real and is fixed by holding the board on the running tab until the run ends.
 
 ### E-14 · MEDIUM · No confirmation on destructive actions
 "🗑 Clear" wipes the whole pipeline and "🧹 Clear Library" deletes every stored file, both with no confirm and no undo.

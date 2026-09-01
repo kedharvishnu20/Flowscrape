@@ -27,7 +27,7 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 326 tests, ~9s, no browser needed
+npm test        # 341 tests, ~9s, no browser needed
 npm run check   # parses every source file as an ES module
 ```
 
@@ -133,7 +133,7 @@ data-sources/
   json-parser.js               (unreachable)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         326 tests; node:test, jsdom, fake-indexeddb
+tests/                         341 tests; node:test, jsdom, fake-indexeddb
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, manual, template guide, limitations
 ```
@@ -208,7 +208,7 @@ or exempt API steps is an open question.
 | Where | What |
 |---|---|
 | `chrome.storage.session` | API keys (AES-GCM ciphertext) and the key that encrypts them |
-| `chrome.storage.local` | Pipelines per tab, overlay prefs, proxy pool metadata, the file library |
+| `chrome.storage.local` | Pipelines per tab, overlay prefs, proxy pool metadata, the file library (base64, budgeted to 8 MB) |
 | IndexedDB (`flowscrape_v3`) | Result rows, run cursors |
 | Module scope | Nothing that has to survive a worker restart |
 

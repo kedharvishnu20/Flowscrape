@@ -37,6 +37,16 @@ code the way the rest of the docs did.
 | A-01, A-02 | `94507cf` | Dead code removed rather than the missing markup added |
 | B-01, B-02 | `d4a5d74` | New `pipeline:preflight`; gate 6 left as-is pending the B-03 decision |
 
+**Batch 2 — fixed** (Phase 2, the silent-failure sweep):
+
+| Finding | Commit | Notes |
+|---|---|---|
+| I-01, I-03, I-06 | `91cd668` | `npm test` (Node's runner) and `npm run check`; root `package.json` |
+| B-04, B-05, B-06 | `49c0ddb` | Also distinguishes LLM failure causes, and fixes two unstyled log levels |
+| B-07 | `4ae289a` | Also fixes the field-type select, which was wired to `click` and never worked |
+| B-08 | `02a4f60` | Adds a jsdom harness; audit entry corrected in the same commit |
+| B-09 | `293b215` | Fallback is now a per-step toggle, off by default |
+
 **Still open:** everything else, including all of section C (security) and the
 dead-code decision in section F.
 

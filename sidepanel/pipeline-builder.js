@@ -161,8 +161,9 @@ const STEP_REGISTRY = {
     cat: "Data",
     desc: "Smart product auto-extract",
     def: {
+      // smart-extractor.js implements product extraction only; there is no
+      // article or listing extractor behind the old extractType dropdown.
       confidenceThreshold: 70,
-      extractType: "product",
       useLlm: true,
     },
   },
@@ -1792,7 +1793,7 @@ function generateConfigHtml(step) {
         <span style="font-size:20px;">🤖</span>
         <div>
           <div style="font-weight:600;font-size:13px;">Smart Product Auto-Extractor</div>
-          <div style="font-size:11px;color:var(--text-dim);">Layers 1 &amp; 2 run instantly in-page (no API). Layer 3 uses Gemini AI if confidence is low.</div>
+          <div style="font-size:11px;color:var(--text-dim);">Product pages. Layers 1 and 2 run in-page with no API call; layer 3 asks Gemini only if confidence is low.</div>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;color:var(--text-dim);">
@@ -1803,20 +1804,16 @@ function generateConfigHtml(step) {
       </div>
     </div>`;
 
-    html += `<label>Extract Type</label>
-    <select id="cfg-${step.id}-extractType" data-id="${step.id}" data-key="extractType" class="cfg-bind" style="margin-bottom:8px;">
-      <option value="product" ${(c.extractType || "product") === "product" ? "selected" : ""}>🛍️ Product Page</option>
-      <option value="article" ${c.extractType === "article" ? "selected" : ""}>📰 Article / Blog Post</option>
-      <option value="listing" ${c.extractType === "listing" ? "selected" : ""}>📋 Product Listing / Grid</option>
-    </select>`;
-
     html += field(
       step,
       "confidenceThreshold",
-      "Min. confidence to accept (0–100)",
+      "Escalate to AI below this confidence (0-100)",
       "number",
       c.confidenceThreshold ?? 70,
     );
+    html += `<p style="font-size:11px;color:var(--text-dim);margin:-4px 0 10px;">
+      Rows are always kept. Below this score the page is sent to Gemini for a
+      second opinion; above it, only the on-page layers run.</p>`;
 
     html += toggle(step, "useLlm", "Enable AI fallback (Gemini) when confidence is low");
 

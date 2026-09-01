@@ -389,7 +389,7 @@ async function _executePdfExtraction(config = {}, runId) {
 
   // For now, return a placeholder that says to use the MCP tool
   _broadcastLog(
-    "warning-log",
+    "warn-log",
     `PDF_EXTRACTION: Use MCP tool "pdf_extract_text" with source="${source}" to extract from PDF.`,
     runId,
   );
@@ -411,7 +411,7 @@ async function _executePdfExtraction(config = {}, runId) {
  *   2. If confidence is too low and a Gemini key is present, runs Layer 3 LLM.
  *   3. Merges results, returns a single product row.
  *
- * @param {object} config   - Step config ({ confidenceThreshold, extractType })
+ * @param {object} config   - Step config ({ confidenceThreshold, useLlm })
  * @param {number} tabId    - Target Chrome tab ID
  * @param {string} runId    - Pipeline run identifier
  * @param {object} ctx      - Runtime context for template resolution
@@ -419,6 +419,8 @@ async function _executePdfExtraction(config = {}, runId) {
  */
 async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   const threshold = Number(config.confidenceThreshold ?? 70);
+  // Default on for pipelines saved before the toggle was honoured.
+  const useLlm = config.useLlm !== false;
 
   // ── Layer 1 & 2: run in-page smart-extractor ──────────────────────────────
   const l12Resp = await chrome.tabs.sendMessage(tabId, {
@@ -433,13 +435,32 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   let extraction = l12Resp.result;
 
   // ── Layer 3: LLM fallback if confidence is still low ──────────────────────
-  if (extraction.needsLlm && extraction.simplifiedDom) {
+  if (extraction.needsLlm && !useLlm) {
+    // The step's "Enable AI fallback" toggle used to be ignored entirely, so
+    // turning it off did not stop the page being sent to Gemini.
+    _broadcastLog(
+      "warn-log",
+      `AUTO_EXTRACT: confidence ${extraction.overallConfidence}% is below ${threshold}%, but AI fallback is off — keeping the L1/L2 result.`,
+      runId,
+    );
+  } else if (extraction.needsLlm && extraction.simplifiedDom) {
     _broadcastLog(
       "info-log",
       `AUTO_EXTRACT: L1/L2 confidence ${extraction.overallConfidence}% — escalating to LLM...`,
       runId,
     );
-    const llmResult = await runLlmLayer(extraction.simplifiedDom).catch(() => null);
+
+    // Report *why* the layer produced nothing. This used to be
+    // .catch(() => null) with a "skipped or failed" message that covered a
+    // missing key, a network error and a malformed response alike.
+    let llmResult = null;
+    let llmError = null;
+    try {
+      llmResult = await runLlmLayer(extraction.simplifiedDom);
+    } catch (err) {
+      llmError = err.message;
+    }
+
     if (llmResult) {
       // LLM wins field-by-field where it has higher confidence
       extraction = _mergeLlmOverL12(extraction, llmResult);
@@ -448,10 +469,16 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
         `AUTO_EXTRACT: LLM merged — overall confidence now ${extraction.overallConfidence}%.`,
         runId,
       );
+    } else if (llmError) {
+      _broadcastLog(
+        "warn-log",
+        `AUTO_EXTRACT: LLM layer failed (${llmError}) — using L1/L2 result (confidence: ${extraction.overallConfidence}%).`,
+        runId,
+      );
     } else {
       _broadcastLog(
         "warn-log",
-        `AUTO_EXTRACT: LLM layer skipped or failed — using L1/L2 result (confidence: ${extraction.overallConfidence}%).`,
+        `AUTO_EXTRACT: no Gemini API key stored, so the AI fallback was skipped — using L1/L2 result (confidence: ${extraction.overallConfidence}%). Add a key in Settings.`,
         runId,
       );
     }
@@ -956,7 +983,7 @@ async function _executeUploadActivityStep(config = {}, tabId, runId = null) {
   // Warn if restricted site - use MCP tool instead
   if (RESTRICTED_UPLOAD_SITES[domain]) {
     _broadcastLog(
-      "warning-log",
+      "warn-log",
       `⚠️ ${domain} blocks script-driven uploads. Use MCP tool "upload_file_to_site" for automation support.`,
       runId,
     );

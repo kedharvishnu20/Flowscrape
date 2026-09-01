@@ -49,7 +49,11 @@ test("a skipped LLM layer is reported, not silently absorbed", () => {
     "the old .catch(() => null) hid a missing key, a network error and a bad response alike",
   );
   assert.match(autoExtract, /no Gemini API key stored/, "missing key says so");
-  assert.match(autoExtract, /LLM layer failed \(\$\{llmError\}\)/, "a real failure reports its reason");
+  assert.match(
+    autoExtract,
+    /LLM layer failed \(\$\{llmError\}\)/,
+    "a real failure reports its reason",
+  );
 });
 
 test("the extractor implements only product extraction", () => {
@@ -90,10 +94,12 @@ test("log levels used by the service worker have matching CSS classes", async ()
   const defined = new Set(
     [...html.matchAll(/\.([a-z]+-log)\b/g)].map((m) => m[1]),
   );
-  const used = new Set(
-    [...swSrc.matchAll(/"([a-z]+-log)"/g)].map((m) => m[1]),
-  );
+  const used = new Set([...swSrc.matchAll(/"([a-z]+-log)"/g)].map((m) => m[1]));
 
   const undefinedLevels = [...used].filter((l) => !defined.has(l));
-  assert.deepEqual(undefinedLevels, [], "every log level must have a style rule");
+  assert.deepEqual(
+    undefinedLevels,
+    [],
+    "every log level must have a style rule",
+  );
 });

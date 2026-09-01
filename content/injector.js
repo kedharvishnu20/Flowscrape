@@ -341,7 +341,7 @@ async function _stepAutoExtract(config = {}) {
   if (typeof window.__fsSmartExtract !== "function") {
     throw new Error(
       "AUTO_EXTRACT: smart-extractor.js not loaded — ensure it is registered " +
-      "in manifest.json before injector.js."
+        "in manifest.json before injector.js.",
     );
   }
 
@@ -1065,7 +1065,11 @@ function _setNativeValue(el, value) {
 /** An `input` event frameworks recognise. A plain Event is not an InputEvent. */
 function _fireInput(el) {
   el.dispatchEvent(
-    new InputEvent("input", { bubbles: true, cancelable: true, composed: true }),
+    new InputEvent("input", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    }),
   );
 }
 
@@ -1095,7 +1099,10 @@ function _fillKind(el) {
   // isContentEditable is false for a detached element and undefined outside a
   // rendering engine, so fall back to the attribute that drives it.
   const ce = el.getAttribute?.("contenteditable");
-  if (el.isContentEditable || (ce !== null && ce !== undefined && ce !== "false")) {
+  if (
+    el.isContentEditable ||
+    (ce !== null && ce !== undefined && ce !== "false")
+  ) {
     return "contenteditable";
   }
   return null;
@@ -1202,7 +1209,9 @@ async function _stepFill(
         missing.push(f.selector);
         continue;
       }
-      results.push(await _typeInto(el, f.value ?? "", delayMs, f.append || false));
+      results.push(
+        await _typeInto(el, f.value ?? "", delayMs, f.append || false),
+      );
       await _sleep(120);
     }
     if (missing.length) {
@@ -1264,7 +1273,10 @@ async function _stepHover({ selector }, context = {}) {
  */
 function _setSelectValue(el, value) {
   const want = String(value ?? "");
-  const norm = (s) => String(s ?? "").trim().toLowerCase();
+  const norm = (s) =>
+    String(s ?? "")
+      .trim()
+      .toLowerCase();
   const options = Array.from(el.options || []);
 
   const match =
@@ -1453,7 +1465,9 @@ async function _stepLoop({ type, selector, max }) {
 
 /** Collapse every run of whitespace to one space, and trim. */
 function _normText(v) {
-  return String(v ?? "").replace(/\s+/g, " ").trim();
+  return String(v ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function _stepIfElse(
@@ -1483,7 +1497,8 @@ async function _stepIfElse(
         exists && _normText(el.textContent).includes(_normText(value));
       break;
     case "attr-equals":
-      conditionMet = exists && (el.getAttribute(attr) ?? "").trim() === String(value).trim();
+      conditionMet =
+        exists && (el.getAttribute(attr) ?? "").trim() === String(value).trim();
       break;
     case "attr-contains":
       conditionMet = exists && (el.getAttribute(attr) || "").includes(value);
@@ -1524,7 +1539,7 @@ function _buildBulkSelector(el) {
       if (sigClass) {
         part += `.${CSS.escape(sigClass)}`;
         foundBulkSequence = true;
-      } else if (['li', 'tr', 'td', 'article', 'section'].includes(part)) {
+      } else if (["li", "tr", "td", "article", "section"].includes(part)) {
         foundBulkSequence = true;
       }
     } else {

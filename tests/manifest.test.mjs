@@ -17,7 +17,9 @@ import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
-const manifest = JSON.parse(await readFile(join(ROOT, "manifest.json"), "utf8"));
+const manifest = JSON.parse(
+  await readFile(join(ROOT, "manifest.json"), "utf8"),
+);
 
 /** Every source file that could call a chrome.* API. */
 const SOURCES = [
@@ -71,7 +73,12 @@ test("every requested permission has a caller", () => {
 });
 
 test("the permissions dropped in the C-08 trim stay dropped", () => {
-  for (const p of ["activeTab", "declarativeNetRequest", "webRequest", "notifications"]) {
+  for (const p of [
+    "activeTab",
+    "declarativeNetRequest",
+    "webRequest",
+    "notifications",
+  ]) {
     assert.ok(
       !manifest.permissions.includes(p),
       `${p} was requested and never called`,
@@ -84,7 +91,9 @@ test("the declarative_net_request block went with its permission", () => {
 });
 
 test("web_accessible_resources exposes no wildcards", () => {
-  const resources = manifest.web_accessible_resources.flatMap((e) => e.resources);
+  const resources = manifest.web_accessible_resources.flatMap(
+    (e) => e.resources,
+  );
   const wildcards = resources.filter((r) => r.includes("*"));
   assert.deepEqual(
     wildcards,
@@ -94,8 +103,18 @@ test("web_accessible_resources exposes no wildcards", () => {
 });
 
 test("web_accessible_resources exposes no background or extension-only code", () => {
-  const resources = manifest.web_accessible_resources.flatMap((e) => e.resources);
-  for (const prefix of ["background/", "sidepanel/", "script-gen/", "ethics/", "checkpoint/", "data-sources/", "exporters/"]) {
+  const resources = manifest.web_accessible_resources.flatMap(
+    (e) => e.resources,
+  );
+  for (const prefix of [
+    "background/",
+    "sidepanel/",
+    "script-gen/",
+    "ethics/",
+    "checkpoint/",
+    "data-sources/",
+    "exporters/",
+  ]) {
     assert.deepEqual(
       resources.filter((r) => r.startsWith(prefix)),
       [],
@@ -120,9 +139,15 @@ test("every dynamically imported content module is web-accessible", async () => 
     if (closure.has(file)) return;
     closure.add(file);
     const src = await readFile(join(ROOT, file), "utf8");
-    for (const m of src.matchAll(/(?:^|\n)\s*import\s+[^'"]*from\s+["']([^"']+)["']/g)) {
+    for (const m of src.matchAll(
+      /(?:^|\n)\s*import\s+[^'"]*from\s+["']([^"']+)["']/g,
+    )) {
       if (m[1].startsWith(".")) {
-        await walk(normalize(join(dirname(file), m[1])).split("\\").join("/"));
+        await walk(
+          normalize(join(dirname(file), m[1]))
+            .split("\\")
+            .join("/"),
+        );
       }
     }
   }
@@ -136,7 +161,9 @@ test("every dynamically imported content module is web-accessible", async () => 
 });
 
 test("every web-accessible resource actually exists", async () => {
-  for (const r of manifest.web_accessible_resources.flatMap((e) => e.resources)) {
+  for (const r of manifest.web_accessible_resources.flatMap(
+    (e) => e.resources,
+  )) {
     await access(join(ROOT, r)); // throws if missing
   }
 });
@@ -145,12 +172,17 @@ test("declared content scripts and icons exist on disk", async () => {
   for (const entry of manifest.content_scripts) {
     for (const f of entry.js) await access(join(ROOT, f));
   }
-  for (const path of Object.values(manifest.icons)) await access(join(ROOT, path));
+  for (const path of Object.values(manifest.icons))
+    await access(join(ROOT, path));
   await access(join(ROOT, manifest.background.service_worker));
   await access(join(ROOT, manifest.side_panel.default_path));
 });
 
 test("the manifest version matches package.json", async () => {
   const pkg = JSON.parse(await readFile(join(ROOT, "package.json"), "utf8"));
-  assert.equal(manifest.version, pkg.version, "these drifted apart before (I-04)");
+  assert.equal(
+    manifest.version,
+    pkg.version,
+    "these drifted apart before (I-04)",
+  );
 });

@@ -49,14 +49,25 @@ test("the sniffer is registered only for a run that asked for it", () => {
     /if \(enableSniffer\) \{\s*\n\s*await _enableSniffer\(/,
     "registration must be conditional on an API_SNIFFER step being present",
   );
-  assert.match(swSrc, /const enableSniffer = \(pipeline\.steps \|\| \[\]\)\.some\(/);
+  assert.match(
+    swSrc,
+    /const enableSniffer = \(pipeline\.steps \|\| \[\]\)\.some\(/,
+  );
 });
 
 test("registration is scoped to the run's origin where there is one", () => {
   const matches = swSrc.match(/function _snifferMatches\([\s\S]*?\n\}/)?.[0];
   assert.ok(matches, "found _snifferMatches");
-  assert.match(matches, /\$\{targetOrigin\}\/\*/, "scoped to the target origin");
-  assert.match(matches, /<all_urls>/, "with a documented fallback when there is none");
+  assert.match(
+    matches,
+    /\$\{targetOrigin\}\/\*/,
+    "scoped to the target origin",
+  );
+  assert.match(
+    matches,
+    /<all_urls>/,
+    "with a documented fallback when there is none",
+  );
 });
 
 test("the sniffer is unregistered when the run ends", () => {
@@ -73,7 +84,9 @@ test("the sniffer is unregistered when the run ends", () => {
 });
 
 test("concurrent runs do not unregister each other's sniffer", () => {
-  const disable = swSrc.match(/async function _disableSniffer\([\s\S]*?\n\}/)?.[0];
+  const disable = swSrc.match(
+    /async function _disableSniffer\([\s\S]*?\n\}/,
+  )?.[0];
   assert.ok(disable, "found _disableSniffer");
   assert.match(disable, /if \(_snifferRuns\.size > 0\) return;/);
 });

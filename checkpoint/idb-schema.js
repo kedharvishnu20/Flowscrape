@@ -19,11 +19,11 @@
  * @dependencies logger
  */
 
-import { logger } from '../utils/logger.js';
+import { logger } from "../utils/logger.js";
 
-const MODULE = 'idb-schema';
+const MODULE = "idb-schema";
 
-export const DB_NAME = 'flowscrape_v3';
+export const DB_NAME = "flowscrape_v3";
 
 /**
  * v1 — original schema (inconsistently created; see module docblock).
@@ -32,9 +32,9 @@ export const DB_NAME = 'flowscrape_v3';
  */
 export const DB_VERSION = 2;
 
-export const STORE_CURSORS    = 'cursors';
-export const STORE_ROW_BUFFER = 'row_buffer';
-export const STORE_DATA_ROWS  = 'data_rows';
+export const STORE_CURSORS = "cursors";
+export const STORE_ROW_BUFFER = "row_buffer";
+export const STORE_DATA_ROWS = "data_rows";
 
 /**
  * Declarative schema. `upgrade` runs only when the store is created.
@@ -43,7 +43,7 @@ export const STORE_DATA_ROWS  = 'data_rows';
 const STORES = [
   {
     name: STORE_CURSORS,
-    options: { keyPath: 'runId' },
+    options: { keyPath: "runId" },
   },
   {
     name: STORE_ROW_BUFFER,
@@ -52,7 +52,7 @@ const STORES = [
   {
     name: STORE_DATA_ROWS,
     options: { autoIncrement: true },
-    indexes: [{ name: 'runId', keyPath: 'runId', options: { unique: false } }],
+    indexes: [{ name: "runId", keyPath: "runId", options: { unique: false } }],
   },
 ];
 
@@ -76,7 +76,7 @@ export function openDB() {
 
     req.onupgradeneeded = (event) => {
       const db = req.result;
-      logger.info(MODULE, 'schema-upgrade', {
+      logger.info(MODULE, "schema-upgrade", {
         from: event.oldVersion,
         to: event.newVersion,
       });
@@ -87,7 +87,7 @@ export function openDB() {
         for (const index of store.indexes ?? []) {
           created.createIndex(index.name, index.keyPath, index.options);
         }
-        logger.info(MODULE, 'store-created', { store: store.name });
+        logger.info(MODULE, "store-created", { store: store.name });
       }
     };
 
@@ -97,7 +97,7 @@ export function openDB() {
       // Another context asked for a newer version — release our handle so the
       // upgrade is not blocked, and force the next caller to reopen.
       db.onversionchange = () => {
-        logger.warn(MODULE, 'versionchange-closing', {});
+        logger.warn(MODULE, "versionchange-closing", {});
         db.close();
         _dbPromise = null;
       };
@@ -110,14 +110,14 @@ export function openDB() {
     };
 
     req.onblocked = () => {
-      logger.warn(MODULE, 'open-blocked', {
-        note: 'Another connection is holding an older version open.',
+      logger.warn(MODULE, "open-blocked", {
+        note: "Another connection is holding an older version open.",
       });
     };
 
     req.onerror = () => {
       _dbPromise = null;
-      logger.error(MODULE, 'open-fail', { error: req.error?.message });
+      logger.error(MODULE, "open-fail", { error: req.error?.message });
       reject(req.error);
     };
   });
@@ -161,7 +161,7 @@ export async function withStores(storeNames, mode, fn) {
     };
     tx.onabort = () => {
       failed = true;
-      reject(tx.error ?? new Error('Transaction aborted'));
+      reject(tx.error ?? new Error("Transaction aborted"));
     };
 
     const stores = Object.fromEntries(

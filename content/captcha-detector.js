@@ -18,13 +18,13 @@
  * nothing sends. See docs/ISSUE_AUDIT.md A-06.
  */
 
-'use strict';
+"use strict";
 
-import { overlayEngine } from './overlay-engine.js';
-import { COLOR_CAPTCHA } from '../utils/color-utils.js';
-import { logger }        from '../utils/logger.js';
+import { overlayEngine } from "./overlay-engine.js";
+import { COLOR_CAPTCHA } from "../utils/color-utils.js";
+import { logger } from "../utils/logger.js";
 
-const MODULE = 'captcha-detector';
+const MODULE = "captcha-detector";
 
 /**
  * @typedef {Object} CaptchaDetection
@@ -39,28 +39,53 @@ const MODULE = 'captcha-detector';
 // ── Detection helpers ─────────────────────────────────────────────────────────
 
 function _scriptLoaded(pattern) {
-  return Array.from(document.querySelectorAll('script[src]'))
-    .some(s => pattern.test(s.src));
+  return Array.from(document.querySelectorAll("script[src]")).some((s) =>
+    pattern.test(s.src),
+  );
 }
 
 function _windowGlobal(name) {
-  try { return !!window[name]; } catch { return false; }
+  try {
+    return !!window[name];
+  } catch {
+    return false;
+  }
 }
 
 // ── reCAPTCHA v2 ─────────────────────────────────────────────────────────────
 
 function _detectRecaptchaV2() {
-  const widget = document.querySelector('.g-recaptcha[data-sitekey]');
+  const widget = document.querySelector(".g-recaptcha[data-sitekey]");
   if (widget) {
-    return { found: true, type: 'recaptcha-v2', sitekey: widget.getAttribute('data-sitekey'), container: widget, confidence: 1.0 };
+    return {
+      found: true,
+      type: "recaptcha-v2",
+      sitekey: widget.getAttribute("data-sitekey"),
+      container: widget,
+      confidence: 1.0,
+    };
   }
-  const iframe = document.querySelector('iframe[src*="recaptcha"][src*="anchor"]');
+  const iframe = document.querySelector(
+    'iframe[src*="recaptcha"][src*="anchor"]',
+  );
   if (iframe) {
     const m = iframe.src.match(/[?&]k=([^&]+)/);
-    return { found: true, type: 'recaptcha-v2', sitekey: m?.[1] ?? null, container: iframe, confidence: 0.9 };
+    return {
+      found: true,
+      type: "recaptcha-v2",
+      sitekey: m?.[1] ?? null,
+      container: iframe,
+      confidence: 0.9,
+    };
   }
   if (_scriptLoaded(/recaptcha\/api\.js/)) {
-    return { found: true, type: 'recaptcha-v2', sitekey: null, container: null, confidence: 0.5 };
+    return {
+      found: true,
+      type: "recaptcha-v2",
+      sitekey: null,
+      container: null,
+      confidence: 0.5,
+    };
   }
   return null;
 }
@@ -68,16 +93,38 @@ function _detectRecaptchaV2() {
 // ── reCAPTCHA v3 ─────────────────────────────────────────────────────────────
 
 function _detectRecaptchaV3() {
-  if (_windowGlobal('grecaptcha') && typeof window.grecaptcha?.execute === 'function') {
-    const el = document.querySelector('[data-action],.g-recaptcha[data-size="invisible"]');
-    const sitekey = el?.getAttribute('data-sitekey')
-      ?? (document.head.innerHTML.match(/sitekey['":\s]+([A-Za-z0-9_-]{20,})/)?.[1]) ?? null;
-    return { found: true, type: 'recaptcha-v3', sitekey, container: el ?? null, confidence: 0.85 };
+  if (
+    _windowGlobal("grecaptcha") &&
+    typeof window.grecaptcha?.execute === "function"
+  ) {
+    const el = document.querySelector(
+      '[data-action],.g-recaptcha[data-size="invisible"]',
+    );
+    const sitekey =
+      el?.getAttribute("data-sitekey") ??
+      document.head.innerHTML.match(
+        /sitekey['":\s]+([A-Za-z0-9_-]{20,})/,
+      )?.[1] ??
+      null;
+    return {
+      found: true,
+      type: "recaptcha-v3",
+      sitekey,
+      container: el ?? null,
+      confidence: 0.85,
+    };
   }
   if (_scriptLoaded(/recaptcha\/api\.js.*render=/)) {
     const m = Array.from(document.querySelectorAll('script[src*="recaptcha"]'))
-      .map(s => s.src.match(/render=([^&]+)/)).find(Boolean);
-    return { found: true, type: 'recaptcha-v3', sitekey: m?.[1] ?? null, container: null, confidence: 0.7 };
+      .map((s) => s.src.match(/render=([^&]+)/))
+      .find(Boolean);
+    return {
+      found: true,
+      type: "recaptcha-v3",
+      sitekey: m?.[1] ?? null,
+      container: null,
+      confidence: 0.7,
+    };
   }
   return null;
 }
@@ -85,16 +132,36 @@ function _detectRecaptchaV3() {
 // ── hCaptcha ──────────────────────────────────────────────────────────────────
 
 function _detectHCaptcha() {
-  const widget = document.querySelector('.h-captcha[data-sitekey],.hcaptcha[data-sitekey]');
+  const widget = document.querySelector(
+    ".h-captcha[data-sitekey],.hcaptcha[data-sitekey]",
+  );
   if (widget) {
-    return { found: true, type: 'hcaptcha', sitekey: widget.getAttribute('data-sitekey'), container: widget, confidence: 1.0 };
+    return {
+      found: true,
+      type: "hcaptcha",
+      sitekey: widget.getAttribute("data-sitekey"),
+      container: widget,
+      confidence: 1.0,
+    };
   }
   const iframe = document.querySelector('iframe[src*="hcaptcha.com"]');
   if (iframe) {
-    return { found: true, type: 'hcaptcha', sitekey: null, container: iframe, confidence: 0.85 };
+    return {
+      found: true,
+      type: "hcaptcha",
+      sitekey: null,
+      container: iframe,
+      confidence: 0.85,
+    };
   }
   if (_scriptLoaded(/hcaptcha\.com\/1\/api\.js/)) {
-    return { found: true, type: 'hcaptcha', sitekey: null, container: null, confidence: 0.6 };
+    return {
+      found: true,
+      type: "hcaptcha",
+      sitekey: null,
+      container: null,
+      confidence: 0.6,
+    };
   }
   return null;
 }
@@ -102,12 +169,24 @@ function _detectHCaptcha() {
 // ── Cloudflare Turnstile ──────────────────────────────────────────────────────
 
 function _detectTurnstile() {
-  const widget = document.querySelector('.cf-turnstile[data-sitekey]');
+  const widget = document.querySelector(".cf-turnstile[data-sitekey]");
   if (widget) {
-    return { found: true, type: 'turnstile', sitekey: widget.getAttribute('data-sitekey'), container: widget, confidence: 1.0 };
+    return {
+      found: true,
+      type: "turnstile",
+      sitekey: widget.getAttribute("data-sitekey"),
+      container: widget,
+      confidence: 1.0,
+    };
   }
   if (_scriptLoaded(/challenges\.cloudflare\.com\/turnstile/)) {
-    return { found: true, type: 'turnstile', sitekey: null, container: null, confidence: 0.7 };
+    return {
+      found: true,
+      type: "turnstile",
+      sitekey: null,
+      container: null,
+      confidence: 0.7,
+    };
   }
   return null;
 }
@@ -115,13 +194,29 @@ function _detectTurnstile() {
 // ── Image captcha ─────────────────────────────────────────────────────────────
 
 function _detectImageCaptcha() {
-  const imgEl = document.querySelector('img[src*="captcha"],img[alt*="captcha" i],img[id*="captcha" i]');
+  const imgEl = document.querySelector(
+    'img[src*="captcha"],img[alt*="captcha" i],img[id*="captcha" i]',
+  );
   if (imgEl) {
-    return { found: true, type: 'image', sitekey: null, container: imgEl, confidence: 0.75 };
+    return {
+      found: true,
+      type: "image",
+      sitekey: null,
+      container: imgEl,
+      confidence: 0.75,
+    };
   }
-  const inputEl = document.querySelector('input[name*="captcha" i],input[id*="captcha" i]');
+  const inputEl = document.querySelector(
+    'input[name*="captcha" i],input[id*="captcha" i]',
+  );
   if (inputEl) {
-    return { found: true, type: 'image', sitekey: null, container: inputEl, confidence: 0.65 };
+    return {
+      found: true,
+      type: "image",
+      sitekey: null,
+      container: inputEl,
+      confidence: 0.65,
+    };
   }
   return null;
 }
@@ -139,25 +234,29 @@ function _registerCaptchaOverlay(detection, stepIndex = 0) {
   if (!detection.container) return null;
   try {
     const zoneId = overlayEngine.register({
-      selector:   _selectorFor(detection.container),
-      label:      `🔒 ${detection.type}`,
+      selector: _selectorFor(detection.container),
+      label: `🔒 ${detection.type}`,
       stepIndex,
       fieldIndex: 0,
-      mode:       'preview',
-      color:      COLOR_CAPTCHA,
+      mode: "preview",
+      color: COLOR_CAPTCHA,
     });
-    logger.info(MODULE, 'captcha-overlay-registered', { type: detection.type, zoneId });
+    logger.info(MODULE, "captcha-overlay-registered", {
+      type: detection.type,
+      zoneId,
+    });
     return zoneId;
   } catch (err) {
-    logger.warn(MODULE, 'captcha-overlay-fail', { error: err.message });
+    logger.warn(MODULE, "captcha-overlay-fail", { error: err.message });
     return null;
   }
 }
 
 function _selectorFor(el) {
-  if (!el) return '';
+  if (!el) return "";
   if (el.id) return `#${CSS.escape(el.id)}`;
-  if (el.className) return `${el.tagName.toLowerCase()}.${String(el.className).split(' ')[0]}`;
+  if (el.className)
+    return `${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]}`;
   return el.tagName.toLowerCase();
 }
 
@@ -179,7 +278,13 @@ export function detectCaptcha(stepIndex = 0) {
   ];
 
   const found = detectors
-    .map(fn => { try { return fn(); } catch { return null; } })
+    .map((fn) => {
+      try {
+        return fn();
+      } catch {
+        return null;
+      }
+    })
     .filter(Boolean)
     .sort((a, b) => b.confidence - a.confidence);
 
@@ -189,7 +294,10 @@ export function detectCaptcha(stepIndex = 0) {
   }
 
   if (found.length > 0) {
-    logger.info(MODULE, 'captcha-detected', { count: found.length, types: found.map(d => d.type) });
+    logger.info(MODULE, "captcha-detected", {
+      count: found.length,
+      types: found.map((d) => d.type),
+    });
   }
 
   return found;

@@ -88,7 +88,9 @@ async function _gate1_robots(targetOrigin, targetPath, bypass) {
 
 async function _gate2_pii(pipelineSteps) {
   // Only scan FORM_FILL data sources
-  const formSteps = _flattenSteps(pipelineSteps).filter((s) => s.type === "FORM_FILL");
+  const formSteps = _flattenSteps(pipelineSteps).filter(
+    (s) => s.type === "FORM_FILL",
+  );
   if (!formSteps.length) return null;
 
   // We can't read the actual file here in SW; PII check deferred to content script
@@ -101,7 +103,12 @@ async function _gate2_pii(pipelineSteps) {
  * Steps that actually put a request on the network. A CLICK or an EXTRACT does
  * not; counting them made the estimate meaningless.
  */
-const NETWORK_STEP_TYPES = new Set(["WEBSITE", "NAVIGATE", "API", "PDF_EXTRACTION"]);
+const NETWORK_STEP_TYPES = new Set([
+  "WEBSITE",
+  "NAVIGATE",
+  "API",
+  "PDF_EXTRACTION",
+]);
 
 /**
  * Count network requests a pipeline will make, multiplying nested steps by
@@ -173,7 +180,9 @@ function _gate3_rateLimit(pipelineSteps, timingConfig) {
 
 function _gate4_captcha(pipelineSteps, captchaConfig) {
   if (!captchaConfig?.enabled) return null;
-  const formSteps = _flattenSteps(pipelineSteps).filter((s) => s.type === "FORM_FILL");
+  const formSteps = _flattenSteps(pipelineSteps).filter(
+    (s) => s.type === "FORM_FILL",
+  );
   const minDelay = formSteps[0]?.config?.interRowDelay?.min ?? 1200;
   const solveRatePerHr = Math.round(3600000 / minDelay);
   if (solveRatePerHr > 50) {
@@ -279,7 +288,13 @@ export function collectDeclaredOrigins(steps, targetOrigin) {
  * @returns {EthicsWarn|null}
  */
 function _gate6_crossOrigin(steps, targetOrigin) {
-  const internalPrefixes = ["chrome", "about", "edge", "chrome-extension", "moz-extension"];
+  const internalPrefixes = [
+    "chrome",
+    "about",
+    "edge",
+    "chrome-extension",
+    "moz-extension",
+  ];
   const isInternalOrigin =
     !targetOrigin ||
     targetOrigin === "null" ||

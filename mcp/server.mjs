@@ -15,11 +15,14 @@ import {
   compilePipeline,
   serializePipeline,
   findUnexportableSteps,
+  findUnresolvedTemplates,
+  redactSecrets,
 } from "../script-gen/pipeline-compiler.js";
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { checkRobots } from "../ethics/robots-parser.js";
 import { ALL_STEP_TYPES } from "../utils/step-types.js";
+import { VERSION } from "../utils/version.js";
 import {
   formatRows,
   defaultFilename as rowFilename,
@@ -45,7 +48,9 @@ const HTTP_PORT = Number(
 // interface, so the server was reachable from the local network with no
 // authentication at all — while repo_write_file was a registered tool.
 const HTTP_HOST =
-  resolveArgValue(process.argv.slice(2), "--host") ?? process.env.HOST ?? "127.0.0.1";
+  resolveArgValue(process.argv.slice(2), "--host") ??
+  process.env.HOST ??
+  "127.0.0.1";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
@@ -64,7 +69,7 @@ const httpSessionServers = new Map();
 
 const server = new McpServer({
   name: "flowscrape-v3",
-  version: "3.0.0",
+  version: VERSION,
 });
 const toolDefinitions = [];
 const registerTool = server.tool.bind(server);
@@ -77,7 +82,7 @@ server.tool = (...args) => {
 function createServerInstance() {
   const instance = new McpServer({
     name: "flowscrape-v3",
-    version: "3.0.0",
+    version: VERSION,
   });
 
   for (const [name, description, inputSchema, handler] of toolDefinitions) {
@@ -157,7 +162,18 @@ server.tool(
     query: z.string(),
     regex: z.boolean().optional(),
     caseSensitive: z.boolean().optional(),
-    include: z.string().optional(),
+    include: z
+      .string()
+      .optional()
+      .describe(
+        'Directory to search under, relative to the workspace root (e.g. "content"). Not a glob — use filePattern to filter file names.',
+      ),
+    filePattern: z
+      .string()
+      .optional()
+      .describe(
+        'Regular expression matched against each file\'s workspace-relative path, e.g. "\\.mjs$".',
+      ),
     maxResults: z.number().int().min(1).max(200).optional(),
   },
   async ({
@@ -165,17 +181,44 @@ server.tool(
     regex = false,
     caseSensitive = false,
     include = ".",
+    filePattern,
     maxResults = 50,
   }) => {
-    const needle = regex ? new RegExp(query, caseSensitive ? "g" : "gi") : null;
+    // `include` was described only as an optional string and passed straight to
+    // resolveWorkspacePath, so anyone who reasonably tried "**/*.js" got an
+    // unhelpful path error (G-07). Say so, and offer the thing they wanted.
+    if (/[*?[\]]/.test(include)) {
+      throw new Error(
+        `include is a directory, not a glob (got "${include}"). Use include for the directory and filePattern for a file-name regular expression.`,
+      );
+    }
+
+    let nameFilter = null;
+    if (filePattern) {
+      try {
+        nameFilter = new RegExp(filePattern);
+      } catch (err) {
+        throw new Error(
+          `filePattern is not a valid regular expression: ${err.message}`,
+        );
+      }
+    }
+
     const literal = caseSensitive ? query : query.toLowerCase();
     const matches = [];
     const files = await collectFiles(resolveWorkspacePath(include));
 
     for (const file of files) {
       if (matches.length >= maxResults) break;
+      if (nameFilter && !nameFilter.test(toWorkspaceRelative(file))) continue;
       const content = await safeReadText(file);
       if (content == null) continue;
+      // Built per file. One /g regex shared across the loop happened to work
+      // with String.match, which resets lastIndex — but it is one edit away
+      // from being a bug that skips matches (G-08).
+      const needle = regex
+        ? new RegExp(query, caseSensitive ? "g" : "gi")
+        : null;
       const lines = content.split(/\r?\n/);
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -419,9 +462,17 @@ server.tool(
     const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
     const { ast, errors } = compilePipeline(input);
     if (!ast) return textResult({ errors });
+    // Same order and same treatment as the extension's script:export handler,
+    // so both surfaces produce the same file: scan for templates first, then
+    // rewrite credentials into environment markers the script resolves at run
+    // time (B-14, B-16).
+    const templates = findUnresolvedTemplates(ast);
+    const secrets = redactSecrets(ast);
     return textResult({
       errors,
       unexportable: findUnexportableSteps(ast),
+      unresolvedTemplates: templates,
+      secrets,
       code: emitPython(ast),
     });
   },
@@ -438,9 +489,17 @@ server.tool(
     const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
     const { ast, errors } = compilePipeline(input);
     if (!ast) return textResult({ errors });
+    // Same order and same treatment as the extension's script:export handler,
+    // so both surfaces produce the same file: scan for templates first, then
+    // rewrite credentials into environment markers the script resolves at run
+    // time (B-14, B-16).
+    const templates = findUnresolvedTemplates(ast);
+    const secrets = redactSecrets(ast);
     return textResult({
       errors,
       unexportable: findUnexportableSteps(ast),
+      unresolvedTemplates: templates,
+      secrets,
       code: emitNode(ast),
     });
   },
@@ -524,8 +583,14 @@ server.tool(
       targetOrigin: compiled.ast?.targetOrigin ?? input?.targetOrigin ?? "",
       stepCount: flattened.length,
       errors: compiled.errors,
-      pythonBytes: compiled.ast ? emitPython(compiled.ast).length : 0,
-      nodeBytes: compiled.ast ? emitNode(compiled.ast).length : 0,
+      // This used to emit both scripts in full purely to measure .length and
+      // throw them away (G-06) — two complete code generations per call, for a
+      // byte count nobody can act on. What a caller actually needs to know is
+      // what the export will not carry.
+      unexportable: compiled.ast ? findUnexportableSteps(compiled.ast) : [],
+      unresolvedTemplates: compiled.ast
+        ? findUnresolvedTemplates(compiled.ast)
+        : [],
     };
     return textResult(report);
   },

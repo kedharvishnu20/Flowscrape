@@ -162,40 +162,45 @@ function _emitStep(step) {
     }
     case "LOOP": {
       const lines = [
-        `# LOOP: ${config.type || 'count'} (max: ${config.max ?? 10})`,
+        `# LOOP: ${config.type || "count"} (max: ${config.max ?? 10})`,
       ];
-      if (config.type === 'elements' && config.selector) {
-        lines.push(`elements = await page.locator("${_escStr(config.selector)}").all()`);
+      if (config.type === "elements" && config.selector) {
+        lines.push(
+          `elements = await page.locator("${_escStr(config.selector)}").all()`,
+        );
         lines.push(`for i, el in enumerate(elements[:${config.max ?? 10}]):`);
       } else {
         lines.push(`for i in range(${config.max ?? 10}):`);
       }
       for (const child of step.children ?? []) {
-        lines.push(..._emitStep(child).map(l => "    " + l));
+        lines.push(..._emitStep(child).map((l) => "    " + l));
       }
       if (!step.children || step.children.length === 0) lines.push("    pass");
       lines.push("");
       return lines;
     }
     case "IF_ELSE": {
-      const condition = config.condition || 'exists';
+      const condition = config.condition || "exists";
       const lines = [
-        `# IF_ELSE: ${condition} - ${_escStr(config.selector ?? '')}`,
+        `# IF_ELSE: ${condition} - ${_escStr(config.selector ?? "")}`,
       ];
-      if (condition === 'exists') {
-        lines.push(`if await page.locator("${_escStr(config.selector ?? '')}").count() > 0:`);
+      if (condition === "exists") {
+        lines.push(
+          `if await page.locator("${_escStr(config.selector ?? "")}").count() > 0:`,
+        );
       } else {
         lines.push(`if True:  # TODO: impl extended condition ${condition}`);
       }
       for (const child of step.ifBranch ?? []) {
-        lines.push(..._emitStep(child).map(l => "    " + l));
+        lines.push(..._emitStep(child).map((l) => "    " + l));
       }
       if (!step.ifBranch || step.ifBranch.length === 0) lines.push("    pass");
       lines.push(`else:`);
       for (const child of step.elseBranch ?? []) {
-        lines.push(..._emitStep(child).map(l => "    " + l));
+        lines.push(..._emitStep(child).map((l) => "    " + l));
       }
-      if (!step.elseBranch || step.elseBranch.length === 0) lines.push("    pass");
+      if (!step.elseBranch || step.elseBranch.length === 0)
+        lines.push("    pass");
       lines.push("");
       return lines;
     }
@@ -269,7 +274,9 @@ function _playwrightKey(key) {
 function _emitFill(config) {
   const lines = ["# FILL"];
   const fields =
-    config.mode === "multi" && Array.isArray(config.fields) && config.fields.length
+    config.mode === "multi" &&
+    Array.isArray(config.fields) &&
+    config.fields.length
       ? config.fields
       : [{ selector: config.selector, value: config.text }];
 

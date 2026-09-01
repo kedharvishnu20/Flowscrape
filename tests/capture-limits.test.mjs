@@ -36,7 +36,10 @@ function fnFromSource(name, deps = "") {
 
 // ── D-10 / D-11: bounded buffers ─────────────────────────────────────────────
 
-const LIMITS = { screenshotBytes: 48 * 1024 * 1024, networkBytes: 32 * 1024 * 1024 };
+const LIMITS = {
+  screenshotBytes: 48 * 1024 * 1024,
+  networkBytes: 32 * 1024 * 1024,
+};
 
 function makePush() {
   const logs = [];
@@ -93,21 +96,28 @@ test("the limits are real numbers, not disabled", () => {
 });
 
 test("both capture paths go through the limiter", () => {
-  const shot = swSrc.match(/async function _captureScreenshot\([\s\S]*?\n\}\n/)[0];
+  const shot = swSrc.match(
+    /async function _captureScreenshot\([\s\S]*?\n\}\n/,
+  )[0];
   assert.match(shot, /_pushCapture\(/);
   assert.ok(
     !/runState\.screenshots\.push\(/.test(shot),
     "the unbounded push is gone",
   );
 
-  const sniff = swSrc.match(/_registerHandler\("network:sniff"[\s\S]*?\n\}\);/)[0];
+  const sniff = swSrc.match(
+    /_registerHandler\("network:sniff"[\s\S]*?\n\}\);/,
+  )[0];
   assert.match(sniff, /_pushCapture\(/);
   assert.ok(!/rs\.networks\.push\(/.test(sniff));
 });
 
 test("a short export says it is short", () => {
   const fn = swSrc.match(/async function _doExport\([\s\S]*?\n\}\n/)[0];
-  assert.match(fn, /screenshotsDropped \|\| 0\) \+ \(runState\.networksDropped/);
+  assert.match(
+    fn,
+    /screenshotsDropped \|\| 0\) \+ \(runState\.networksDropped/,
+  );
   assert.match(fn, /capture\(s\) dropped when the buffer filled/);
   assert.match(fn, /dropped \? "warn-log" : "info-log"/);
 });
@@ -148,7 +158,9 @@ test("the alarm uses a period Chrome will honour", () => {
   assert.match(swSrc, /periodInMinutes: 1 \}/);
   // Checked against the code with comments stripped: the docblock explaining
   // the old value names it, and would otherwise match forever.
-  const code = swSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const code = swSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
   assert.ok(
     !/periodInMinutes: 0\.33/.test(code),
     "0.33 was clamped to a minute, so it fired after the worker was gone",
@@ -158,8 +170,16 @@ test("the alarm uses a period Chrome will honour", () => {
 test("something actually resets the idle timer during a run", () => {
   const fn = swSrc.match(/function _startHeartbeat\(\) \{[\s\S]*?\n\}/)[0];
   assert.match(fn, /const KEEPALIVE_MS = 20000;|setInterval\(/);
-  assert.match(fn, /chrome\.runtime\.getPlatformInfo/, "an API call, not a timer");
-  assert.match(fn, /_runStates\.size === 0/, "and it stops when nothing is running");
+  assert.match(
+    fn,
+    /chrome\.runtime\.getPlatformInfo/,
+    "an API call, not a timer",
+  );
+  assert.match(
+    fn,
+    /_runStates\.size === 0/,
+    "and it stops when nothing is running",
+  );
 });
 
 test("the keep-alive is not started twice", () => {

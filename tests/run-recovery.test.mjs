@@ -22,8 +22,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { startRun, endRun, _runStates } from "./helpers/worker-harness.mjs";
-import { saveCursor, listCursors, deleteCursor } from "../checkpoint/cursor-store.js";
-import { getResumePayload, markRunCompleted } from "../checkpoint/resume-manager.js";
+import {
+  saveCursor,
+  listCursors,
+  deleteCursor,
+} from "../checkpoint/cursor-store.js";
+import {
+  getResumePayload,
+  markRunCompleted,
+} from "../checkpoint/resume-manager.js";
 
 const swSrc = await readFile(
   new URL("../background/service-worker.js", import.meta.url),
@@ -59,7 +66,10 @@ test("the executor marks a completed run, but keeps a stopped one", () => {
     /if \(stateStr === "completed"\) \{\s*\n\s*await markRunCompleted\(runId\)/,
     "completion clears the cursor",
   );
-  assert.match(swSrc, /import \{\s*\n\s*getResumePayload,\s*\n\s*markRunCompleted,/);
+  assert.match(
+    swSrc,
+    /import \{\s*\n\s*getResumePayload,\s*\n\s*markRunCompleted,/,
+  );
 });
 
 test("an interrupted run stays resumable and keeps its rows", async () => {
@@ -129,10 +139,20 @@ test("a lost run resets the UI and says what happened", () => {
 // ── the download path ────────────────────────────────────────────────────────
 
 test("data:download refuses a missing runId instead of returning nothing", () => {
-  const handler = swSrc.match(/_registerHandler\("data:download"[\s\S]*?\n\}\);/)[0];
-  assert.match(handler, /if \(!runId\) \{/, "a missing id is an error, not a lookup");
+  const handler = swSrc.match(
+    /_registerHandler\("data:download"[\s\S]*?\n\}\);/,
+  )[0];
+  assert.match(
+    handler,
+    /if \(!runId\) \{/,
+    "a missing id is an error, not a lookup",
+  );
   assert.match(handler, /requires a runId/);
-  assert.match(handler, /readAllRows\(runId\)/, "the caller's id is used verbatim");
+  assert.match(
+    handler,
+    /readAllRows\(runId\)/,
+    "the caller's id is used verbatim",
+  );
 });
 
 test("the resume banner downloads each run by its own id", () => {
@@ -150,12 +170,16 @@ test("the resume banner downloads each run by its own id", () => {
 
   // Asserting the *absence* of a string in source keeps matching the comment
   // that explains its removal, so check the code with comments stripped.
-  const code = panelSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const code = panelSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
   assert.ok(!/"latest"/.test(code), "no sentinel remains in executable code");
 });
 
 test("the banner is built as nodes, not markup", () => {
-  const fn = panelSrc.match(/async function _showResumeBanner\(\)[\s\S]*?\n\}/)[0];
+  const fn = panelSrc.match(
+    /async function _showResumeBanner\(\)[\s\S]*?\n\}/,
+  )[0];
   assert.ok(!/innerHTML/.test(fn), "run ids and counts go in as text");
   assert.match(fn, /document\.createElement\("button"\)/);
 });

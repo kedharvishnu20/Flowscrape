@@ -17,7 +17,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-globalThis.fetch = async () => ({ ok: false, status: 404, text: async () => "" });
+globalThis.fetch = async () => ({
+  ok: false,
+  status: 404,
+  text: async () => "",
+});
 globalThis.chrome = { tabs: { sendMessage: async () => ({}) } };
 
 const { runEthicsGates, collectDeclaredOrigins } = await import(
@@ -25,19 +29,30 @@ const { runEthicsGates, collectDeclaredOrigins } = await import(
 );
 
 const TARGET = "https://shop.test";
-const base = { targetOrigin: TARGET, targetPath: "/", timing: {}, bypassRobots: true };
+const base = {
+  targetOrigin: TARGET,
+  targetPath: "/",
+  timing: {},
+  bypassRobots: true,
+};
 const gates = (steps) => runEthicsGates({ ...base, steps });
 const codes = (r) => r.warnings.map((w) => w.code);
 
 // ── the pre-run gate now reports rather than blocks ──────────────────────────
 
 test("an authored cross-origin step is reported, not blocked", async () => {
-  const r = await gates([{ type: "NAVIGATE", config: { url: "https://other.test/page" } }]);
+  const r = await gates([
+    { type: "NAVIGATE", config: { url: "https://other.test/page" } },
+  ]);
 
   assert.equal(r.blocked, false, "the author typed this URL and can see it");
   const warning = r.warnings.find((w) => w.code === "CrossOrigin");
   assert.ok(warning, "reported as a warning");
-  assert.match(warning.message, /other\.test/, "the user is told where it goes");
+  assert.match(
+    warning.message,
+    /other\.test/,
+    "the user is told where it goes",
+  );
 });
 
 test("a third-party API step no longer blocks the run", async () => {
@@ -63,7 +78,9 @@ test("steps nested in loops and branches are seen", async () => {
     {
       type: "LOOP",
       config: {},
-      children: [{ type: "NAVIGATE", config: { url: "https://nested.test/x" } }],
+      children: [
+        { type: "NAVIGATE", config: { url: "https://nested.test/x" } },
+      ],
     },
     {
       type: "IF_ELSE",
@@ -116,7 +133,10 @@ test("every authored origin is collected once", () => {
     ],
     TARGET,
   );
-  assert.deepEqual([...declared].sort(), [TARGET, "https://a.test", "https://b.test"].sort());
+  assert.deepEqual(
+    [...declared].sort(),
+    [TARGET, "https://a.test", "https://b.test"].sort(),
+  );
 });
 
 // ── runtime enforcement ──────────────────────────────────────────────────────
@@ -147,14 +167,23 @@ const runState = (origins) => ({
 test("a same-origin templated link is allowed", () => {
   // The ordinary case: loop the product cards, open each one.
   assert.doesNotThrow(() =>
-    assertOriginAllowed("https://shop.test/product/1", runState([TARGET]), "NAVIGATE"),
+    assertOriginAllowed(
+      "https://shop.test/product/1",
+      runState([TARGET]),
+      "NAVIGATE",
+    ),
   );
 });
 
 test("a page-controlled link to an undeclared origin is blocked", () => {
   // This is what the old gate waved through.
   assert.throws(
-    () => assertOriginAllowed("https://evil.test/steal", runState([TARGET]), "NAVIGATE"),
+    () =>
+      assertOriginAllowed(
+        "https://evil.test/steal",
+        runState([TARGET]),
+        "NAVIGATE",
+      ),
     (err) => {
       assert.equal(err.code, "UndeclaredOrigin");
       assert.match(err.message, /evil\.test/);
@@ -176,7 +205,8 @@ test("an origin the author declared stays allowed at runtime", () => {
 
 test("API calls are enforced too", () => {
   assert.throws(
-    () => assertOriginAllowed("https://evil.test/exfil", runState([TARGET]), "API"),
+    () =>
+      assertOriginAllowed("https://evil.test/exfil", runState([TARGET]), "API"),
     /UndeclaredOrigin|evil\.test/,
   );
 });
@@ -207,7 +237,9 @@ test("there is one dispatch chain, so one place to enforce", () => {
   );
   assert.match(swSrc, /async function _dispatchStep\(/);
 
-  const dispatch = swSrc.match(/async function _dispatchStep\([\s\S]*?\n\}\n/)[0];
+  const dispatch = swSrc.match(
+    /async function _dispatchStep\([\s\S]*?\n\}\n/,
+  )[0];
   const calls = dispatch.match(/_assertOriginAllowed\(/g) ?? [];
   assert.equal(calls.length, 2, "navigation and API, checked once each");
 });

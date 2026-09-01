@@ -108,37 +108,43 @@ function _emitNodeStep(step) {
     }
     case "LOOP": {
       const lines = [
-        `// LOOP: ${config.type || 'count'} (max: ${config.max ?? 10})`,
+        `// LOOP: ${config.type || "count"} (max: ${config.max ?? 10})`,
       ];
-      if (config.type === 'elements' && config.selector) {
-        lines.push(`const elements = await page.locator('${esc(config.selector)}').all();`);
-        lines.push(`for (let i = 0; i < Math.min(elements.length, ${config.max ?? 10}); i++) {`);
+      if (config.type === "elements" && config.selector) {
+        lines.push(
+          `const elements = await page.locator('${esc(config.selector)}').all();`,
+        );
+        lines.push(
+          `for (let i = 0; i < Math.min(elements.length, ${config.max ?? 10}); i++) {`,
+        );
         lines.push(`  const el = elements[i];`);
       } else {
         lines.push(`for (let i = 0; i < ${config.max ?? 10}; i++) {`);
       }
       for (const child of step.children ?? []) {
-        lines.push(..._emitNodeStep(child).map(l => "  " + l));
+        lines.push(..._emitNodeStep(child).map((l) => "  " + l));
       }
       lines.push(`}`, "");
       return lines;
     }
     case "IF_ELSE": {
-      const condition = config.condition || 'exists';
+      const condition = config.condition || "exists";
       const lines = [
-        `// IF_ELSE: ${condition} - ${esc(config.selector ?? '')}`,
+        `// IF_ELSE: ${condition} - ${esc(config.selector ?? "")}`,
       ];
-      if (condition === 'exists') {
-        lines.push(`if (await page.locator('${esc(config.selector ?? '')}').count() > 0) {`);
+      if (condition === "exists") {
+        lines.push(
+          `if (await page.locator('${esc(config.selector ?? "")}').count() > 0) {`,
+        );
       } else {
         lines.push(`if (true) { // TODO: impl extended condition ${condition}`);
       }
       for (const child of step.ifBranch ?? []) {
-        lines.push(..._emitNodeStep(child).map(l => "  " + l));
+        lines.push(..._emitNodeStep(child).map((l) => "  " + l));
       }
       lines.push(`} else {`);
       for (const child of step.elseBranch ?? []) {
-        lines.push(..._emitNodeStep(child).map(l => "  " + l));
+        lines.push(..._emitNodeStep(child).map((l) => "  " + l));
       }
       lines.push(`}`, "");
       return lines;
@@ -157,10 +163,16 @@ function _emitNodeStep(step) {
       ];
 
     case "KEYBOARD":
-      return [`await page.keyboard.press('${esc(_playwrightKey(config.key))}');`, ""];
+      return [
+        `await page.keyboard.press('${esc(_playwrightKey(config.key))}');`,
+        "",
+      ];
 
     case "SCREENSHOT":
-      return [`await page.screenshot({ path: \`screenshot_\${Date.now()}.png\` });`, ""];
+      return [
+        `await page.screenshot({ path: \`screenshot_\${Date.now()}.png\` });`,
+        "",
+      ];
 
     case "PAGINATE":
       return [
@@ -198,7 +210,9 @@ function _playwrightKey(key) {
 function _emitNodeFill(config, esc) {
   const lines = [];
   const fields =
-    config.mode === "multi" && Array.isArray(config.fields) && config.fields.length
+    config.mode === "multi" &&
+    Array.isArray(config.fields) &&
+    config.fields.length
       ? config.fields
       : [{ selector: config.selector, value: config.text }];
 

@@ -39,12 +39,24 @@ test("gate 1 warns on a disallowed path without blocking", async () => {
   assert.equal(r.blocked, false, "robots is a soft gate");
   assert.equal(r.warnings.length, 1);
   assert.equal(r.warnings[0].code, "RobotsTxt");
-  assert.match(r.warnings[0].message, /\/private\/x/, "the message names the path");
+  assert.match(
+    r.warnings[0].message,
+    /\/private\/x/,
+    "the message names the path",
+  );
 });
 
 test("bypassRobots suppresses the warning", async () => {
-  const r = await runEthicsGates({ ...base, targetPath: "/private/x", bypassRobots: true });
-  assert.deepEqual(r.warnings, [], "this is the flag the service worker used to drop");
+  const r = await runEthicsGates({
+    ...base,
+    targetPath: "/private/x",
+    bypassRobots: true,
+  });
+  assert.deepEqual(
+    r.warnings,
+    [],
+    "this is the flag the service worker used to drop",
+  );
 });
 
 test("an allowed path is quiet", async () => {
@@ -54,7 +66,10 @@ test("an allowed path is quiet", async () => {
 
 test("warnings survive the trip to the side panel", async () => {
   const r = await runEthicsGates({ ...base, targetPath: "/private/x" });
-  const serialized = r.warnings.map((w) => ({ code: w.code, message: w.message }));
+  const serialized = r.warnings.map((w) => ({
+    code: w.code,
+    message: w.message,
+  }));
 
   assert.equal(typeof serialized[0].code, "string");
   assert.equal(typeof serialized[0].message, "string");
@@ -72,7 +87,9 @@ test("a cross-origin step is reported, not blocked", async () => {
   const r = await runEthicsGates({
     ...base,
     targetPath: "/public",
-    steps: [{ type: "NAVIGATE", config: { url: "https://elsewhere.test/page" } }],
+    steps: [
+      { type: "NAVIGATE", config: { url: "https://elsewhere.test/page" } },
+    ],
   });
 
   assert.equal(r.blocked, false);
@@ -135,7 +152,11 @@ test("a large loop of navigations does warn", async () => {
 
   const warning = r.warnings.find((w) => w.code === "HighRate");
   assert.ok(warning, "200 page loads is worth flagging");
-  assert.match(warning.message, /about 200 requests/, "the count is the loop bound, not the step count");
+  assert.match(
+    warning.message,
+    /about 200 requests/,
+    "the count is the loop bound, not the step count",
+  );
 });
 
 test("only the more expensive branch of an IF/ELSE is charged", async () => {
@@ -146,7 +167,9 @@ test("only the more expensive branch of an IF/ELSE is charged", async () => {
       {
         type: "IF_ELSE",
         config: {},
-        ifBranch: [{ type: "NAVIGATE", config: { url: "https://example.com/a" } }],
+        ifBranch: [
+          { type: "NAVIGATE", config: { url: "https://example.com/a" } },
+        ],
         elseBranch: [
           { type: "NAVIGATE", config: { url: "https://example.com/b" } },
           { type: "NAVIGATE", config: { url: "https://example.com/c" } },
@@ -183,7 +206,13 @@ test("preflight and start build their gate arguments from the same place", () =>
 });
 
 test("pipeline:start re-runs the gates rather than trusting the preflight", () => {
-  const start = swSrc.match(/_registerHandler\(MSG\.PIPELINE_START[\s\S]*?ethicsResult\.blocked/)?.[0];
+  const start = swSrc.match(
+    /_registerHandler\(MSG\.PIPELINE_START[\s\S]*?ethicsResult\.blocked/,
+  )?.[0];
   assert.ok(start, "found the start handler");
-  assert.match(start, /await runEthicsGates\(_gateArgs\(/, "enforcement cannot depend on the caller");
+  assert.match(
+    start,
+    /await runEthicsGates\(_gateArgs\(/,
+    "enforcement cannot depend on the caller",
+  );
 });

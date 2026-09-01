@@ -14,8 +14,20 @@ let currentValue = { mode: "system" };
 globalThis.chrome = {
   runtime: { lastError: null },
   storage: {
-    local: { async get() { return {}; }, async set() {}, async remove() {} },
-    session: { async get() { return {}; }, async set() {}, async remove() {} },
+    local: {
+      async get() {
+        return {};
+      },
+      async set() {},
+      async remove() {},
+    },
+    session: {
+      async get() {
+        return {};
+      },
+      async set() {},
+      async remove() {},
+    },
   },
   proxy: {
     settings: {
@@ -24,7 +36,11 @@ globalThis.chrome = {
         cb({ value: currentValue });
       },
       set({ value }, cb) {
-        proxyCalls.push({ op: "set", mode: value.mode, pac: value.pacScript?.data });
+        proxyCalls.push({
+          op: "set",
+          mode: value.mode,
+          pac: value.pacScript?.data,
+        });
         currentValue = value;
         cb();
       },
@@ -39,7 +55,9 @@ globalThis.chrome = {
 
 globalThis.fetch = async () => ({ ok: true, status: 200 });
 
-const pm = await import(new URL("../background/proxy-manager.js", import.meta.url).href);
+const pm = await import(
+  new URL("../background/proxy-manager.js", import.meta.url).href
+);
 
 test("a valid credentialed line parses", () => {
   const entries = pm.parseProxyText("203.0.113.5:8080:user:pass");
@@ -117,7 +135,8 @@ test("a health check restores the browser's proxy settings", async () => {
 
   const last = proxyCalls[proxyCalls.length - 1];
   assert.ok(
-    last.op === "clear" || (last.op === "set" && !last.pac?.includes("203.0.113.5")),
+    last.op === "clear" ||
+      (last.op === "set" && !last.pac?.includes("203.0.113.5")),
     `the tested proxy must not be left applied (last op: ${JSON.stringify(last)})`,
   );
 });
@@ -136,7 +155,11 @@ test("health checks run one at a time", async () => {
     new URL("../background/proxy-manager.js", import.meta.url),
     "utf8",
   );
-  const fn = src.match(/export async function testAllProxies\([\s\S]*?\n\}/)[0];
+  // The body ends at the first line-start brace; an inner `}\n` at deeper
+  // indentation must not terminate the match.
+  const fn = src.match(
+    /export async function testAllProxies\([\s\S]*?\n\}\n/,
+  )[0];
   assert.ok(
     !/await Promise\.allSettled\(/.test(fn),
     "allSettled over a global setting produces meaningless results",

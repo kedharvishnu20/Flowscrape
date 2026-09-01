@@ -1,55 +1,55 @@
 {
-    "steps": [
+  "steps": [
+    {
+      "id": "step_loop_products",
+      "type": "LOOP",
+      "config": {
+        "type": "elements",
+        "selector": ".product-card",
+        "max": 10,
+        "onFail": "skip"
+      },
+      "children": [
         {
-            "id": "step_loop_products",
-            "type": "LOOP",
-            "config": {
-                "type": "elements",
-                "selector": ".product-card",
-                "max": 10,
-                "onFail": "skip"
-            },
-            "children": [
-                {
-                    "id": "step_click_product",
-                    "type": "CLICK",
-                    "config": {
-                        "selector": "{{item.tag}}.product-link",
-                        "all": false
-                    }
-                },
-                {
-                    "id": "step_extract_price",
-                    "type": "EXTRACT",
-                    "config": {
-                        "fields": [
-                            {
-                                "name": "productName",
-                                "selector": ".product-title"
-                            },
-                            {
-                                "name": "price",
-                                "selector": ".price"
-                            }
-                        ]
-                    }
-                },
-                {
-                    "id": "step_navigate_specific",
-                    "type": "NAVIGATE",
-                    "config": {
-                        "url": "{{loop.items[2].href}}",
-                        "wait": true
-                    }
-                }
-            ]
+          "id": "step_click_product",
+          "type": "CLICK",
+          "config": {
+            "selector": "{{item.tag}}.product-link",
+            "all": false
+          }
         },
         {
-            "id": "step_export",
-            "type": "EXPORT",
-            "config": {
-                "format": "json"
-            }
+          "id": "step_extract_price",
+          "type": "EXTRACT",
+          "config": {
+            "fields": [
+              {
+                "name": "productName",
+                "selector": ".product-title"
+              },
+              {
+                "name": "price",
+                "selector": ".price"
+              }
+            ]
+          }
+        },
+        {
+          "id": "step_navigate_specific",
+          "type": "NAVIGATE",
+          "config": {
+            "url": "{{loop.items[2].href}}",
+            "wait": true
+          }
         }
-    ]
+      ]
+    },
+    {
+      "id": "step_export",
+      "type": "EXPORT",
+      "config": {
+        "format": "json"
+      }
+    }
+  ]
 }

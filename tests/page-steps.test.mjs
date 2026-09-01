@@ -129,7 +129,11 @@ test("FILL respects maxlength rather than treating truncation as failure", async
     },
   });
 
-  const r = await h.api._stepFill({ selector: "#q", text: "abcdef", delayMs: 0 });
+  const r = await h.api._stepFill({
+    selector: "#q",
+    text: "abcdef",
+    delayMs: 0,
+  });
   assert.equal(r.typed, "abc");
   assert.equal(h.document.getElementById("q").value, "abc");
   h.close();
@@ -137,7 +141,12 @@ test("FILL respects maxlength rather than treating truncation as failure", async
 
 test("FILL appends when asked, and replaces when not", async () => {
   const h = await loadInjector(`<input id="q" value="ab">`);
-  await h.api._stepFill({ selector: "#q", text: "cd", delayMs: 0, append: true });
+  await h.api._stepFill({
+    selector: "#q",
+    text: "cd",
+    delayMs: 0,
+    append: true,
+  });
   assert.equal(h.document.getElementById("q").value, "abcd");
 
   await h.api._stepFill({ selector: "#q", text: "zz", delayMs: 0 });
@@ -152,7 +161,11 @@ test("FILL ticks a checkbox and clears it", async () => {
   el.addEventListener("change", () => changes++);
 
   await h.api._stepFill({ selector: "#c", text: "true", delayMs: 0 });
-  assert.equal(el.checked, true, "a checkbox used to be typed into and ignored");
+  assert.equal(
+    el.checked,
+    true,
+    "a checkbox used to be typed into and ignored",
+  );
   assert.equal(changes, 1);
 
   await h.api._stepFill({ selector: "#c", text: "false", delayMs: 0 });
@@ -236,7 +249,10 @@ test("multi-mode fills every field and reports the ones it could not find", asyn
       h.api._stepFill({
         mode: "multi",
         delayMs: 0,
-        fields: [{ selector: "#a", value: "x" }, { selector: "#gone", value: "y" }],
+        fields: [
+          { selector: "#a", value: "x" },
+          { selector: "#gone", value: "y" },
+        ],
       }),
     /#gone/,
     "a half-filled form used to be reported as a complete success",
@@ -307,8 +323,14 @@ test("SELECT refuses a disabled option and a non-select target", async () => {
   const h = await loadInjector(
     `<select id="s"><option value="a">A</option><option value="b" disabled>B</option></select><input id="i">`,
   );
-  await assert.rejects(() => h.api._stepSelect({ selector: "#s", value: "b" }), /disabled/);
-  await assert.rejects(() => h.api._stepSelect({ selector: "#i", value: "a" }), /not a <select>/);
+  await assert.rejects(
+    () => h.api._stepSelect({ selector: "#s", value: "b" }),
+    /disabled/,
+  );
+  await assert.rejects(
+    () => h.api._stepSelect({ selector: "#i", value: "a" }),
+    /not a <select>/,
+  );
   h.close();
 });
 
@@ -317,7 +339,12 @@ test("SELECT refuses a disabled option and a non-select target", async () => {
 async function pressAndRead(h, key) {
   const seen = [];
   h.document.body.addEventListener("keydown", (e) =>
-    seen.push({ key: e.key, code: e.code, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey }),
+    seen.push({
+      key: e.key,
+      code: e.code,
+      ctrlKey: e.ctrlKey,
+      shiftKey: e.shiftKey,
+    }),
   );
   await h.api._stepKeyboard({ key });
   return seen[0];
@@ -364,7 +391,9 @@ test("an unknown symbol reports an empty code rather than an invented one", asyn
 // ── B-25: IF_ELSE text conditions ────────────────────────────────────────────
 
 test("text-equals matches text as it is rendered, not as it is indented", async () => {
-  const h = await loadInjector(`<button id="b">\n      Add to cart\n    </button>`);
+  const h = await loadInjector(
+    `<button id="b">\n      Add to cart\n    </button>`,
+  );
   const r = await h.api._stepIfElse({
     condition: "text-equals",
     selector: "#b",
@@ -377,8 +406,13 @@ test("text-equals matches text as it is rendered, not as it is indented", async 
 test("text-contains normalises both sides", async () => {
   const h = await loadInjector(`<div id="d">Price:\n  $12.00</div>`);
   assert.equal(
-    (await h.api._stepIfElse({ condition: "text-contains", selector: "#d", value: "Price: $12" }))
-      .conditionMet,
+    (
+      await h.api._stepIfElse({
+        condition: "text-contains",
+        selector: "#d",
+        value: "Price: $12",
+      })
+    ).conditionMet,
     true,
   );
   h.close();
@@ -387,8 +421,13 @@ test("text-contains normalises both sides", async () => {
 test("a genuinely different string still does not match", async () => {
   const h = await loadInjector(`<div id="d">In stock</div>`);
   assert.equal(
-    (await h.api._stepIfElse({ condition: "text-equals", selector: "#d", value: "Out of stock" }))
-      .conditionMet,
+    (
+      await h.api._stepIfElse({
+        condition: "text-equals",
+        selector: "#d",
+        value: "Out of stock",
+      })
+    ).conditionMet,
     false,
   );
   h.close();
@@ -397,12 +436,20 @@ test("a genuinely different string still does not match", async () => {
 test("exists and attribute conditions still work", async () => {
   const h = await loadInjector(`<div id="d" data-state=" ready "></div>`);
   const c = (condition, extra) =>
-    h.api._stepIfElse({ condition, selector: "#d", ...extra }).then((r) => r.conditionMet);
+    h.api
+      ._stepIfElse({ condition, selector: "#d", ...extra })
+      .then((r) => r.conditionMet);
 
   assert.equal(await c("exists"), true);
   assert.equal(await c("not-exists"), false);
-  assert.equal(await c("attr-equals", { attr: "data-state", value: "ready" }), true);
-  assert.equal(await c("attr-contains", { attr: "data-state", value: "read" }), true);
+  assert.equal(
+    await c("attr-equals", { attr: "data-state", value: "ready" }),
+    true,
+  );
+  assert.equal(
+    await c("attr-contains", { attr: "data-state", value: "read" }),
+    true,
+  );
   h.close();
 });
 

@@ -102,9 +102,15 @@ globalThis.chrome = {
   },
   proxy: {
     settings: {
-      get(_d, cb) { cb({ value: { mode: "system" } }); },
-      set(_d, cb) { cb(); },
-      clear(_d, cb) { cb(); },
+      get(_d, cb) {
+        cb({ value: { mode: "system" } });
+      },
+      set(_d, cb) {
+        cb();
+      },
+      clear(_d, cb) {
+        cb();
+      },
     },
   },
 };
@@ -115,8 +121,12 @@ globalThis.fetch = async () => ({
   statusText: "OK",
   url: "https://api.shop.test/x",
   headers: new Map([["content-type", "application/json"]]),
-  async json() { return { ok: true }; },
-  async text() { return "{}"; },
+  async json() {
+    return { ok: true };
+  },
+  async text() {
+    return "{}";
+  },
 });
 
 // The worker builds Blob URLs for downloads.

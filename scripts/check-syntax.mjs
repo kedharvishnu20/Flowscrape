@@ -31,7 +31,10 @@ for (const file of files) {
     encoding: "utf8",
   });
   if (res.status !== 0) {
-    failures.push({ file: relative(ROOT, file), error: res.stderr.trim().split("\n")[0] });
+    failures.push({
+      file: relative(ROOT, file),
+      error: res.stderr.trim().split("\n")[0],
+    });
   }
 }
 

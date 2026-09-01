@@ -12,14 +12,10 @@
  * @dependencies logger
  */
 
-import { logger } from '../utils/logger.js';
-import {
-  STORE_CURSORS,
-  withStores,
-  requestAsPromise,
-} from './idb-schema.js';
+import { logger } from "../utils/logger.js";
+import { STORE_CURSORS, withStores, requestAsPromise } from "./idb-schema.js";
 
-const MODULE = 'cursor-store';
+const MODULE = "cursor-store";
 
 // The database schema lives in idb-schema.js — see that module for why.
 // `_tx` resolves only once the transaction commits, so a saved cursor is
@@ -41,12 +37,17 @@ const _tx = withStores;
  */
 export async function saveCursor(cursor) {
   try {
-    await _tx([STORE_CURSORS], 'readwrite', ({ [STORE_CURSORS]: store }) =>
-      requestAsPromise(store.put({ ...cursor, savedAt: new Date().toISOString() })),
+    await _tx([STORE_CURSORS], "readwrite", ({ [STORE_CURSORS]: store }) =>
+      requestAsPromise(
+        store.put({ ...cursor, savedAt: new Date().toISOString() }),
+      ),
     );
-    logger.debug(MODULE, 'cursor-saved', { runId: cursor.runId, rowIndex: cursor.rowIndex });
+    logger.debug(MODULE, "cursor-saved", {
+      runId: cursor.runId,
+      rowIndex: cursor.rowIndex,
+    });
   } catch (err) {
-    logger.error(MODULE, 'cursor-save-fail', { error: err.message });
+    logger.error(MODULE, "cursor-save-fail", { error: err.message });
     throw err;
   }
 }
@@ -58,12 +59,14 @@ export async function saveCursor(cursor) {
  */
 export async function loadCursor(runId) {
   try {
-    const cursor = await _tx([STORE_CURSORS], 'readonly', ({ [STORE_CURSORS]: store }) =>
-      requestAsPromise(store.get(runId)),
+    const cursor = await _tx(
+      [STORE_CURSORS],
+      "readonly",
+      ({ [STORE_CURSORS]: store }) => requestAsPromise(store.get(runId)),
     );
     return cursor ?? null;
   } catch (err) {
-    logger.error(MODULE, 'cursor-load-fail', { error: err.message });
+    logger.error(MODULE, "cursor-load-fail", { error: err.message });
     return null;
   }
 }
@@ -74,12 +77,14 @@ export async function loadCursor(runId) {
  */
 export async function listCursors() {
   try {
-    const cursors = await _tx([STORE_CURSORS], 'readonly', ({ [STORE_CURSORS]: store }) =>
-      requestAsPromise(store.getAll()),
+    const cursors = await _tx(
+      [STORE_CURSORS],
+      "readonly",
+      ({ [STORE_CURSORS]: store }) => requestAsPromise(store.getAll()),
     );
     return cursors ?? [];
   } catch (err) {
-    logger.error(MODULE, 'cursor-list-fail', { error: err.message });
+    logger.error(MODULE, "cursor-list-fail", { error: err.message });
     return [];
   }
 }
@@ -90,12 +95,12 @@ export async function listCursors() {
  */
 export async function deleteCursor(runId) {
   try {
-    await _tx([STORE_CURSORS], 'readwrite', ({ [STORE_CURSORS]: store }) =>
+    await _tx([STORE_CURSORS], "readwrite", ({ [STORE_CURSORS]: store }) =>
       requestAsPromise(store.delete(runId)),
     );
-    logger.info(MODULE, 'cursor-deleted', { runId });
+    logger.info(MODULE, "cursor-deleted", { runId });
   } catch (err) {
-    logger.error(MODULE, 'cursor-delete-fail', { error: err.message });
+    logger.error(MODULE, "cursor-delete-fail", { error: err.message });
   }
 }
 

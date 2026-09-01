@@ -76,7 +76,10 @@ test("switching with no run still swaps the pipeline", () => {
 // ── E-10: editing without losing the caret ───────────────────────────────────
 
 test("config inputs are not replaced to rebind them", () => {
-  const fn = extract(panelSrc, /function bindConfigInputs\(container = document\) \{[\s\S]*?\n\}/);
+  const fn = extract(
+    panelSrc,
+    /function bindConfigInputs\(container = document\) \{[\s\S]*?\n\}/,
+  );
   assert.ok(
     !/cloneNode\(true\)/.test(fn),
     "cloning and swapping destroyed focus, caret and selection",
@@ -87,7 +90,10 @@ test("config inputs are not replaced to rebind them", () => {
 });
 
 test("a targeted re-render puts the caret back", () => {
-  const fn = extract(panelSrc, /function _rerenderCardConfig\(step\) \{[\s\S]*?\n\}/);
+  const fn = extract(
+    panelSrc,
+    /function _rerenderCardConfig\(step\) \{[\s\S]*?\n\}/,
+  );
   assert.match(fn, /const active = document\.activeElement/);
   assert.match(fn, /selectionStart/);
   assert.match(fn, /again\.focus\(\)/);
@@ -99,14 +105,20 @@ test("a targeted re-render puts the caret back", () => {
 });
 
 test("an input type with no selection range does not throw", () => {
-  const fn = extract(panelSrc, /function _rerenderCardConfig\(step\) \{[\s\S]*?\n\}/);
+  const fn = extract(
+    panelSrc,
+    /function _rerenderCardConfig\(step\) \{[\s\S]*?\n\}/,
+  );
   assert.match(fn, /try \{\s*\n\s*again\.setSelectionRange/);
 });
 
 // ── B-29 / B-30: screenshots ─────────────────────────────────────────────────
 
 test("a tab that is already active is not re-activated", () => {
-  const fn = extract(swSrc, /async function _captureScreenshot\([\s\S]*?\n\}\n/);
+  const fn = extract(
+    swSrc,
+    /async function _captureScreenshot\([\s\S]*?\n\}\n/,
+  );
   assert.match(fn, /const before = await chrome\.tabs\.get\(tabId\);/);
   assert.match(fn, /if \(!before\.active\) \{/);
   assert.ok(
@@ -118,13 +130,19 @@ test("a tab that is already active is not re-activated", () => {
 });
 
 test("the 400ms settle only happens when the tab actually changed", () => {
-  const fn = extract(swSrc, /async function _captureScreenshot\([\s\S]*?\n\}\n/);
+  const fn = extract(
+    swSrc,
+    /async function _captureScreenshot\([\s\S]*?\n\}\n/,
+  );
   const guarded = fn.match(/if \(!before\.active\) \{[\s\S]*?\n {4}\}/)[0];
   assert.match(guarded, /_sleep\(400\)/);
 });
 
 test("quality selects a format where quality means something", () => {
-  const fn = extract(swSrc, /async function _captureScreenshot\([\s\S]*?\n\}\n/);
+  const fn = extract(
+    swSrc,
+    /async function _captureScreenshot\([\s\S]*?\n\}\n/,
+  );
   assert.match(fn, /const format = quality >= 100 \? "png" : "jpeg";/);
   assert.match(
     fn,
@@ -135,39 +153,61 @@ test("quality selects a format where quality means something", () => {
 
 test("the archive names each file by what it actually is", () => {
   assert.match(swSrc, /ext: format === "png" \? "png" : "jpg"/);
-  assert.match(swSrc, /screenshot_\$\{i \+ 1\}_\$\{s\.ts\}\.\$\{s\.ext \|\| "png"\}/);
+  assert.match(
+    swSrc,
+    /screenshot_\$\{i \+ 1\}_\$\{s\.ts\}\.\$\{s\.ext \|\| "png"\}/,
+  );
 });
 
 // ── C-12: the storage quota ──────────────────────────────────────────────────
 
 test("the budget is under the quota and accounts for base64 inflation", () => {
   assert.match(panelSrc, /const STORAGE_QUOTA_BYTES = 10 \* 1024 \* 1024;/);
-  assert.match(panelSrc, /const STORAGE_BUDGET_BYTES = Math\.floor\(STORAGE_QUOTA_BYTES \* 0\.8\)/);
+  assert.match(
+    panelSrc,
+    /const STORAGE_BUDGET_BYTES = Math\.floor\(STORAGE_QUOTA_BYTES \* 0\.8\)/,
+  );
   assert.match(panelSrc, /const BASE64_OVERHEAD = 4 \/ 3;/);
 });
 
 test("a file is rejected before it is read, not after the write fails", () => {
-  const fn = extract(panelSrc, /async function _stageFilesInStorage\(files\) \{[\s\S]*?\n\}/);
-  assert.match(fn, /const projected = Math\.ceil\(file\.size \* BASE64_OVERHEAD\);/);
+  const fn = extract(
+    panelSrc,
+    /async function _stageFilesInStorage\(files\) \{[\s\S]*?\n\}/,
+  );
+  assert.match(
+    fn,
+    /const projected = Math\.ceil\(file\.size \* BASE64_OVERHEAD\);/,
+  );
   assert.match(fn, /if \(used \+ projected > STORAGE_BUDGET_BYTES\)/);
   assert.ok(
-    fn.indexOf("used + projected") < fn.indexOf("await _readFileAsDataUrl(file)"),
+    fn.indexOf("used + projected") <
+      fn.indexOf("await _readFileAsDataUrl(file)"),
     "the check must come before the read",
   );
   assert.match(fn, /rejected\.push\(file\.name\)/);
 });
 
 test("what was rejected is named, and the activity says it was partial", () => {
-  const fn = extract(panelSrc, /async function _stageFilesInStorage\(files\) \{[\s\S]*?\n\}/);
+  const fn = extract(
+    panelSrc,
+    /async function _stageFilesInStorage\(files\) \{[\s\S]*?\n\}/,
+  );
   assert.match(fn, /file\(s\) not added/);
   assert.match(fn, /rejected\.join\(", "\)/);
   assert.match(fn, /status: rejected\.length \? "partial" : "completed"/);
 });
 
 test("a refused write resyncs the panel with what is on disk", () => {
-  const fn = extract(panelSrc, /async function _saveStorageFiles\(\) \{[\s\S]*?\n\}/);
+  const fn = extract(
+    panelSrc,
+    /async function _saveStorageFiles\(\) \{[\s\S]*?\n\}/,
+  );
   assert.match(fn, /chrome\.storage\.local\.get\(SK\.STORAGE_FILES\)/);
-  assert.match(fn, /_storageFiles = Array\.isArray\(onDisk\) \? onDisk : \[\];/);
+  assert.match(
+    fn,
+    /_storageFiles = Array\.isArray\(onDisk\) \? onDisk : \[\];/,
+  );
   assert.match(fn, /renderStoragePanel\(\)/);
   assert.match(fn, /throw error;/, "the caller still learns it failed");
 });
@@ -180,7 +220,15 @@ test("usage is measured from the encoded size, falling back to the raw size", ()
      return _storageBytesUsed();`,
   );
 
-  assert.equal(used([{ dataUrl: "x".repeat(1000) }]), 1000, "the encoded length");
-  assert.equal(used([{ size: 300 }]), 400, "or 4/3 of the raw size when absent");
+  assert.equal(
+    used([{ dataUrl: "x".repeat(1000) }]),
+    1000,
+    "the encoded length",
+  );
+  assert.equal(
+    used([{ size: 300 }]),
+    400,
+    "or 4/3 of the raw size when absent",
+  );
   assert.equal(used([]), 0);
 });

@@ -111,7 +111,13 @@ function toTSV(rows, headers) {
   return lines.join("\n") + "\n";
 }
 
-const XML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
+const XML_ESCAPES = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&apos;",
+};
 const xmlEscape = (v) => cell(v).replace(/[&<>"']/g, (c) => XML_ESCAPES[c]);
 
 /** XML element names cannot start with a digit or contain arbitrary characters. */
@@ -159,7 +165,10 @@ export function formatRows(rows, format) {
 
   if (format === "json") return JSON.stringify(safeRows, null, 2);
   if (format === "jsonl") {
-    return safeRows.map((row) => JSON.stringify(row)).join("\n") + (safeRows.length ? "\n" : "");
+    return (
+      safeRows.map((row) => JSON.stringify(row)).join("\n") +
+      (safeRows.length ? "\n" : "")
+    );
   }
 
   formatMeta(format); // rejects an unknown format before doing any work

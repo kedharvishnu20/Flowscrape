@@ -25,7 +25,9 @@ console.error = capture;
 const { parseProxyText, parseProxyJSON } = await import(
   new URL("../background/proxy-manager.js", import.meta.url).href
 );
-const { logger } = await import(new URL("../utils/logger.js", import.meta.url).href);
+const { logger } = await import(
+  new URL("../utils/logger.js", import.meta.url).href
+);
 
 console.warn = originalWarn;
 console.log = originalLog;
@@ -53,7 +55,10 @@ test("a malformed proxy line does not log its credentials", () => {
     parseProxyText("this is not a proxy:::hunter2\n"),
   );
 
-  assert.ok(output.includes("parse-line-fail"), "the failure is still reported");
+  assert.ok(
+    output.includes("parse-line-fail"),
+    "the failure is still reported",
+  );
   assert.ok(!output.includes("hunter2"), "the password must not appear");
 });
 
@@ -71,22 +76,35 @@ test("credentials in a scheme URL are stripped from the log", () => {
 // this into a live leak.
 test("a bad JSON proxy entry does not log its password", () => {
   const output = withCapture(() =>
-    parseProxyJSON([{ host: null, port: "nope", username: "bob", password: "hunter2" }]),
+    parseProxyJSON([
+      { host: null, port: "nope", username: "bob", password: "hunter2" },
+    ]),
   );
   assert.ok(!output.includes("hunter2"), "password must not appear");
   assert.ok(!output.includes("bob"), "username must not appear");
 });
 
 test("a valid credentialed line never reaches the log at all", () => {
-  const output = withCapture(() => parseProxyText("203.0.113.5:8080:user:pass\n"));
-  assert.ok(!output.includes("pass"), "the success path must stay quiet about credentials");
+  const output = withCapture(() =>
+    parseProxyText("203.0.113.5:8080:user:pass\n"),
+  );
+  assert.ok(
+    !output.includes("pass"),
+    "the success path must stay quiet about credentials",
+  );
 });
 
 test("parsing still works after redaction", () => {
-  const entries = parseProxyText("203.0.113.5:8080:user:pass\n198.51.100.7:3128\n");
+  const entries = parseProxyText(
+    "203.0.113.5:8080:user:pass\n198.51.100.7:3128\n",
+  );
   assert.equal(entries.length, 2);
   assert.equal(entries[0].host, "203.0.113.5");
-  assert.equal(entries[0].user, "user", "credentials are still parsed, just not logged");
+  assert.equal(
+    entries[0].user,
+    "user",
+    "credentials are still parsed, just not logged",
+  );
   assert.equal(entries[1].port, 3128);
 });
 
@@ -98,7 +116,13 @@ test("the logger redacts secrets nested inside arrays", () => {
     }),
   );
 
-  assert.ok(!output.includes("hunter2"), "arrays were skipped by _sanitize entirely");
-  assert.ok(!output.includes("sk-secret"), "including arrays reached through an object");
+  assert.ok(
+    !output.includes("hunter2"),
+    "arrays were skipped by _sanitize entirely",
+  );
+  assert.ok(
+    !output.includes("sk-secret"),
+    "including arrays reached through an object",
+  );
   assert.ok(output.includes("203.0.113.5"), "non-secret fields still logged");
 });

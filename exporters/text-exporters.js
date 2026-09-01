@@ -17,8 +17,8 @@
  * @dependencies row-formatters, stream-writer
  */
 
-import { formatRows, formatMeta, defaultFilename } from './row-formatters.js';
-import { createWriter } from './stream-writer.js';
+import { formatRows, formatMeta, defaultFilename } from "./row-formatters.js";
+import { createWriter } from "./stream-writer.js";
 
 /**
  * Write rows to a file in the given format.
@@ -39,16 +39,22 @@ export async function exportRows(rows, format, filename) {
 }
 
 /** @param {object[]} rows @param {string} [filename] */
-export const exportCSV = (rows, filename = 'export.csv') => exportRows(rows, 'csv', filename);
+export const exportCSV = (rows, filename = "export.csv") =>
+  exportRows(rows, "csv", filename);
 /** @param {object[]} rows @param {string} [filename] */
-export const exportJSON = (rows, filename = 'export.json') => exportRows(rows, 'json', filename);
+export const exportJSON = (rows, filename = "export.json") =>
+  exportRows(rows, "json", filename);
 /** @param {object[]} rows @param {string} [filename] */
-export const exportJSONL = (rows, filename = 'export.jsonl') => exportRows(rows, 'jsonl', filename);
+export const exportJSONL = (rows, filename = "export.jsonl") =>
+  exportRows(rows, "jsonl", filename);
 /** @param {object[]} rows @param {string} [filename] */
-export const exportTSV = (rows, filename = 'export.tsv') => exportRows(rows, 'tsv', filename);
+export const exportTSV = (rows, filename = "export.tsv") =>
+  exportRows(rows, "tsv", filename);
 /** @param {object[]} rows @param {string} [filename] */
-export const exportXML = (rows, filename = 'export.xml') => exportRows(rows, 'xml', filename);
+export const exportXML = (rows, filename = "export.xml") =>
+  exportRows(rows, "xml", filename);
 /** @param {object[]} rows @param {string} [filename] */
-export const exportMarkdown = (rows, filename = 'export.md') => exportRows(rows, 'markdown', filename);
+export const exportMarkdown = (rows, filename = "export.md") =>
+  exportRows(rows, "markdown", filename);
 
 // === END text-exporters.js ===

@@ -167,7 +167,9 @@ async function _enableSniffer(runId, tabId, targetOrigin) {
       .getRegisteredContentScripts({ ids: [SNIFFER_SCRIPT_ID] })
       .catch(() => []);
     if (existing.length) {
-      await chrome.scripting.unregisterContentScripts({ ids: [SNIFFER_SCRIPT_ID] });
+      await chrome.scripting.unregisterContentScripts({
+        ids: [SNIFFER_SCRIPT_ID],
+      });
     }
 
     await chrome.scripting.registerContentScripts([
@@ -184,7 +186,11 @@ async function _enableSniffer(runId, tabId, targetOrigin) {
     logger.info(MODULE, "sniffer-registered", { runId });
   } catch (err) {
     logger.error(MODULE, "sniffer-register-fail", { error: err.message });
-    _broadcastLog("error-log", `API Sniffer could not start: ${err.message}`, runId);
+    _broadcastLog(
+      "error-log",
+      `API Sniffer could not start: ${err.message}`,
+      runId,
+    );
     return;
   }
 
@@ -222,7 +228,9 @@ async function _disableSniffer(runId) {
   await chrome.scripting
     .unregisterContentScripts({ ids: [SNIFFER_SCRIPT_ID] })
     .then(() => logger.info(MODULE, "sniffer-unregistered", { runId }))
-    .catch((err) => logger.warn(MODULE, "sniffer-unregister-fail", { error: err.message }));
+    .catch((err) =>
+      logger.warn(MODULE, "sniffer-unregister-fail", { error: err.message }),
+    );
 }
 
 // ── Utility helpers ────────────────────────────────────────────────────────────
@@ -573,7 +581,11 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
   // Echo warnings into the run log. They were previously returned to the caller
   // and nothing rendered them, so every soft gate was silent.
   for (const warning of warnings) {
-    _broadcastLog("warn-log", `Ethics · ${warning.code}: ${warning.message}`, runId);
+    _broadcastLog(
+      "warn-log",
+      `Ethics · ${warning.code}: ${warning.message}`,
+      runId,
+    );
   }
 
   // Start execution loop async (do not await so UI returns early!)
@@ -738,13 +750,20 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   const useLlm = config.useLlm !== false;
 
   // ── Layer 1 & 2: run in-page smart-extractor ──────────────────────────────
-  const l12Resp = await chrome.tabs.sendMessage(tabId, {
-    type: "step:execute",
-    payload: { type: "AUTO_EXTRACT", config: { confidenceThreshold: threshold } },
-  }).catch(err => ({ ok: false, error: err.message }));
+  const l12Resp = await chrome.tabs
+    .sendMessage(tabId, {
+      type: "step:execute",
+      payload: {
+        type: "AUTO_EXTRACT",
+        config: { confidenceThreshold: threshold },
+      },
+    })
+    .catch((err) => ({ ok: false, error: err.message }));
 
   if (!l12Resp?.ok) {
-    throw new Error(`AUTO_EXTRACT (L1/L2) failed: ${l12Resp?.error || "No response"}`);
+    throw new Error(
+      `AUTO_EXTRACT (L1/L2) failed: ${l12Resp?.error || "No response"}`,
+    );
   }
 
   let extraction = l12Resp.result;
@@ -806,14 +825,14 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   }
 
   // Emit per-field warnings to pipeline log
-  for (const warning of (extraction.warnings || [])) {
+  for (const warning of extraction.warnings || []) {
     _broadcastLog("warn-log", warning, runId);
   }
 
   // Build the final row — include confidence metadata as hidden fields
   const row = {
     ...extraction.result,
-    _confidence:       extraction.overallConfidence,
+    _confidence: extraction.overallConfidence,
     _extractionMethod: extraction.method,
   };
 
@@ -825,30 +844,57 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
  * has higher per-field confidence.
  */
 function _mergeLlmOverL12(l12, llm) {
-  const fieldList = ["name", "price", "originalPrice", "currency", "brand",
-    "description", "sku", "availability", "rating", "reviewCount", "images"];
+  const fieldList = [
+    "name",
+    "price",
+    "originalPrice",
+    "currency",
+    "brand",
+    "description",
+    "sku",
+    "availability",
+    "rating",
+    "reviewCount",
+    "images",
+  ];
 
-  const mergedResult   = { ...(l12.result   || {}) };
-  const mergedPerField = { ...(l12.perField  || {}) };
-  const mergedWarnings = [...(l12.warnings   || []), ...(llm.warnings || [])];
+  const mergedResult = { ...(l12.result || {}) };
+  const mergedPerField = { ...(l12.perField || {}) };
+  const mergedWarnings = [...(l12.warnings || []), ...(llm.warnings || [])];
 
   for (const field of fieldList) {
-    const l12Conf = l12.perField?.[field]  ?? 0;
-    const llmConf = llm.perField?.[field]  ?? 0;
-    const llmVal  = llm.result?.[field];
+    const l12Conf = l12.perField?.[field] ?? 0;
+    const llmConf = llm.perField?.[field] ?? 0;
+    const llmVal = llm.result?.[field];
 
-    const isEmpty = v => v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0);
+    const isEmpty = (v) =>
+      v === null ||
+      v === undefined ||
+      v === "" ||
+      (Array.isArray(v) && v.length === 0);
 
     // LLM wins if: it has a value AND either L1/L2 is empty OR LLM has higher confidence
-    if (!isEmpty(llmVal) && (isEmpty(mergedResult[field]) || llmConf > l12Conf)) {
-      mergedResult[field]   = llmVal;
+    if (
+      !isEmpty(llmVal) &&
+      (isEmpty(mergedResult[field]) || llmConf > l12Conf)
+    ) {
+      mergedResult[field] = llmVal;
       mergedPerField[field] = llmConf;
     }
   }
 
   // Recompute overall confidence after merge
-  const weights = { name: 30, price: 25, images: 15, brand: 10, description: 10, sku: 5, availability: 5 };
-  let totalWeight = 0, weightedSum = 0;
+  const weights = {
+    name: 30,
+    price: 25,
+    images: 15,
+    brand: 10,
+    description: 10,
+    sku: 5,
+    availability: 5,
+  };
+  let totalWeight = 0,
+    weightedSum = 0;
   for (const [field, weight] of Object.entries(weights)) {
     totalWeight += weight;
     weightedSum += (mergedPerField[field] || 0) * weight;
@@ -856,13 +902,13 @@ function _mergeLlmOverL12(l12, llm) {
   const overallConfidence = Math.round(weightedSum / totalWeight);
 
   return {
-    result:            mergedResult,
-    perField:          mergedPerField,
+    result: mergedResult,
+    perField: mergedPerField,
     overallConfidence,
-    method:            llm.method || l12.method,
-    warnings:          mergedWarnings,
-    needsLlm:          false,
-    simplifiedDom:     "",
+    method: llm.method || l12.method,
+    warnings: mergedWarnings,
+    needsLlm: false,
+    simplifiedDom: "",
   };
 }
 
@@ -1061,7 +1107,9 @@ async function _doExport(runId, config) {
     _broadcastLog(
       dropped ? "warn-log" : "info-log",
       `Exported ZIP: ${allRows.length} rows, ${screenshots.length} screens, ${networks.length} APIs` +
-        (dropped ? ` — ${dropped} capture(s) dropped when the buffer filled.` : "."),
+        (dropped
+          ? ` — ${dropped} capture(s) dropped when the buffer filled.`
+          : "."),
       runId,
     );
   } else if (allRows.length > 0) {
@@ -1134,7 +1182,11 @@ function _resolveConfig(step, ctx) {
   // literally and got typed into the page as "{{item.href}}" (B-11).
   // EXTRACT selectors survived by accident, because injector.js re-renders them
   // from __fsContext; resolving here first is a no-op for those.
-  return { ...step, config: _resolveAny(step.config || {}, ctx), __fsContext: ctx };
+  return {
+    ...step,
+    config: _resolveAny(step.config || {}, ctx),
+    __fsContext: ctx,
+  };
 }
 
 function _resolveAny(value, ctx) {
@@ -1365,7 +1417,11 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
       // Falling through with elementsData still null used to leave iters at
       // `max`, so a failed query quietly ran the body N times against empty
       // items instead of skipping the loop.
-      _broadcastLog("warn-log", `Loop: element query failed: ${e.message}`, runId);
+      _broadcastLog(
+        "warn-log",
+        `Loop: element query failed: ${e.message}`,
+        runId,
+      );
       return;
     }
 
@@ -1818,7 +1874,11 @@ _registerHandler(MSG.PIPELINE_PAUSE, async (payload) => {
   if (!rs) return { ok: false, paused: false };
   rs.paused = true;
   logger.info(MODULE, "pipeline-paused", { runId: rs.runId });
-  _broadcastLog("warn-log", "Paused. The current step finishes first.", rs.runId);
+  _broadcastLog(
+    "warn-log",
+    "Paused. The current step finishes first.",
+    rs.runId,
+  );
   return { ok: true, paused: true };
 });
 
@@ -1852,7 +1912,12 @@ _registerHandler(MSG.PIPELINE_STATUS, async (payload) => {
   // leaves the side panel showing a Stop button for something that no longer
   // exists. The panel polls this and can tell the difference.
   if (!runState) {
-    return { known: false, active: false, paused: false, runId: payload?.runId };
+    return {
+      known: false,
+      active: false,
+      paused: false,
+      runId: payload?.runId,
+    };
   }
 
   return {

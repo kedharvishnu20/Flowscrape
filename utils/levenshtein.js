@@ -7,7 +7,7 @@
  * @dependencies none
  */
 
-'use strict';
+"use strict";
 
 /**
  * Compute the Levenshtein edit distance between two strings.
@@ -32,9 +32,9 @@ export function levenshteinDistance(a, b) {
     for (let j = 1; j <= b.length; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
       curr[j] = Math.min(
-        prev[j] + 1,        // deletion
-        curr[j - 1] + 1,    // insertion
-        prev[j - 1] + cost  // substitution
+        prev[j] + 1, // deletion
+        curr[j - 1] + 1, // insertion
+        prev[j - 1] + cost, // substitution
       );
     }
     [prev, curr] = [curr, prev];
@@ -69,11 +69,11 @@ export function tokenize(input) {
   if (!input) return new Set();
   const words = String(input)
     // Insert space before uppercase in camelCase
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
     // Split on non-alphanumeric
     .split(/[\s_\-./\\[\]()+,;:]+/)
-    .map(w => w.toLowerCase().trim())
-    .filter(w => w.length > 0);
+    .map((w) => w.toLowerCase().trim())
+    .filter((w) => w.length > 0);
   return new Set(words);
 }
 
@@ -85,7 +85,7 @@ export function tokenize(input) {
  */
 export function jaccardSimilarity(setA, setB) {
   if (setA.size === 0 && setB.size === 0) return 1.0;
-  const intersection = new Set([...setA].filter(t => setB.has(t)));
+  const intersection = new Set([...setA].filter((t) => setB.has(t)));
   const union = new Set([...setA, ...setB]);
   return intersection.size / union.size;
 }
@@ -100,8 +100,8 @@ export function jaccardSimilarity(setA, setB) {
 export function fieldMatchScore(colName, fieldSignal) {
   const tokensA = tokenize(colName);
   const tokensB = tokenize(fieldSignal);
-  const jaccard  = jaccardSimilarity(tokensA, tokensB);
-  const lev      = levenshteinNormalized(colName, fieldSignal);
+  const jaccard = jaccardSimilarity(tokensA, tokensB);
+  const lev = levenshteinNormalized(colName, fieldSignal);
   return Math.max(jaccard, lev);
 }
 

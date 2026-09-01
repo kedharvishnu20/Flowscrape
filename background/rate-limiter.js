@@ -13,9 +13,9 @@
  * @dependencies logger
  */
 
-import { logger } from '../utils/logger.js';
+import { logger } from "../utils/logger.js";
 
-const MODULE = 'rate-limiter';
+const MODULE = "rate-limiter";
 
 /**
  * @typedef {Object} BucketConfig
@@ -31,8 +31,8 @@ const _buckets = new Map();
 // Retry state per domain
 const _retryState = new Map(); // domain → { attempts, nextRetryAt }
 
-const DEFAULT_CAPACITY    = 10;   // burst of 10
-const DEFAULT_REFILL_RATE = 1;    // 1 token/second → 60/min sustainable
+const DEFAULT_CAPACITY = 10; // burst of 10
+const DEFAULT_REFILL_RATE = 1; // 1 token/second → 60/min sustainable
 
 /**
  * Initialize a rate limit bucket for a domain.
@@ -41,14 +41,17 @@ const DEFAULT_REFILL_RATE = 1;    // 1 token/second → 60/min sustainable
  * @param {number} [opts.capacity=10]
  * @param {number} [opts.refillRate=1] - tokens per second
  */
-export function initBucket(domain, { capacity = DEFAULT_CAPACITY, refillRate = DEFAULT_REFILL_RATE } = {}) {
+export function initBucket(
+  domain,
+  { capacity = DEFAULT_CAPACITY, refillRate = DEFAULT_REFILL_RATE } = {},
+) {
   _buckets.set(domain, {
     capacity,
     refillRate,
     tokens: capacity,
     lastRefill: Date.now(),
   });
-  logger.debug(MODULE, 'bucket-init', { domain, capacity, refillRate });
+  logger.debug(MODULE, "bucket-init", { domain, capacity, refillRate });
 }
 
 /**
@@ -56,9 +59,9 @@ export function initBucket(domain, { capacity = DEFAULT_CAPACITY, refillRate = D
  * @param {BucketConfig} bucket
  */
 function _refill(bucket) {
-  const now     = Date.now();
+  const now = Date.now();
   const elapsed = (now - bucket.lastRefill) / 1000; // seconds
-  const added   = elapsed * bucket.refillRate;
+  const added = elapsed * bucket.refillRate;
   bucket.tokens = Math.min(bucket.capacity, bucket.tokens + added);
   bucket.lastRefill = now;
 }
@@ -78,14 +81,17 @@ export async function acquire(domain, count = 1) {
 
   if (bucket.tokens >= count) {
     bucket.tokens -= count;
-    logger.debug(MODULE, 'token-acquired', { domain, remaining: Math.floor(bucket.tokens) });
+    logger.debug(MODULE, "token-acquired", {
+      domain,
+      remaining: Math.floor(bucket.tokens),
+    });
     return;
   }
 
   // Calculate wait time until enough tokens
   const deficit = count - bucket.tokens;
-  const waitMs  = Math.ceil((deficit / bucket.refillRate) * 1000);
-  logger.debug(MODULE, 'token-wait', { domain, waitMs });
+  const waitMs = Math.ceil((deficit / bucket.refillRate) * 1000);
+  logger.debug(MODULE, "token-wait", { domain, waitMs });
   await _sleep(waitMs);
 
   // Recurse (tokens may still be contested)
@@ -100,7 +106,12 @@ export async function acquire(domain, count = 1) {
  * @param {number} [maxAttempts=5]
  * @returns {Promise<void>} resolves when next retry is allowed or throws if maxAttempts exceeded
  */
-export async function backoff(domain, baseMs = 1000, maxMs = 60_000, maxAttempts = 5) {
+export async function backoff(
+  domain,
+  baseMs = 1000,
+  maxMs = 60_000,
+  maxAttempts = 5,
+) {
   if (!_retryState.has(domain)) {
     _retryState.set(domain, { attempts: 0, nextRetryAt: 0 });
   }
@@ -108,19 +119,25 @@ export async function backoff(domain, baseMs = 1000, maxMs = 60_000, maxAttempts
 
   if (state.attempts >= maxAttempts) {
     _retryState.delete(domain);
-    throw new Error(`Max retries (${maxAttempts}) exceeded for domain: ${domain}`);
+    throw new Error(
+      `Max retries (${maxAttempts}) exceeded for domain: ${domain}`,
+    );
   }
 
   // Exponential with ±20% jitter
-  const exp     = Math.pow(2, state.attempts);
-  const delay   = Math.min(baseMs * exp, maxMs);
-  const jitter  = delay * 0.2 * (Math.random() * 2 - 1);
-  const waitMs  = Math.max(0, Math.round(delay + jitter));
+  const exp = Math.pow(2, state.attempts);
+  const delay = Math.min(baseMs * exp, maxMs);
+  const jitter = delay * 0.2 * (Math.random() * 2 - 1);
+  const waitMs = Math.max(0, Math.round(delay + jitter));
 
   state.attempts++;
   state.nextRetryAt = Date.now() + waitMs;
 
-  logger.info(MODULE, 'backoff-wait', { domain, attempt: state.attempts, waitMs });
+  logger.info(MODULE, "backoff-wait", {
+    domain,
+    attempt: state.attempts,
+    waitMs,
+  });
   await _sleep(waitMs);
 }
 
@@ -144,6 +161,8 @@ export function estimateReqPerHr(stepCount, timing) {
 }
 
 /** @param {number} ms */
-function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function _sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 // === END rate-limiter.js ===

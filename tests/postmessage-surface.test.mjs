@@ -58,7 +58,11 @@ test("a page cannot drive step execution over postMessage", async () => {
     payload: { type: "CLICK", config: { selector: ".danger" } },
   });
 
-  assert.equal(clicked, false, "the page must not be able to click through the extension");
+  assert.equal(
+    clicked,
+    false,
+    "the page must not be able to click through the extension",
+  );
   h.close();
 });
 
@@ -75,7 +79,11 @@ test("a page cannot open the selector picker", async () => {
     return realAdd(type, fn, capture);
   };
 
-  await postFromPage(h, { type: "FS_PICK_SELECTOR", id: "2", payload: { bulk: true } });
+  await postFromPage(h, {
+    type: "FS_PICK_SELECTOR",
+    id: "2",
+    payload: { bulk: true },
+  });
 
   assert.ok(
     !installed.includes("mousemove"),
@@ -127,23 +135,42 @@ test("sniffer payloads are clamped, not trusted", async () => {
 
   const p = sent[0].payload;
   assert.ok(p.url.length <= 2048, `url clamped, got ${p.url.length}`);
-  assert.ok(p.resBody.length <= 512 * 1024, `body clamped, got ${p.resBody.length}`);
+  assert.ok(
+    p.resBody.length <= 512 * 1024,
+    `body clamped, got ${p.resBody.length}`,
+  );
   assert.ok(p.apiType.length <= 32);
-  assert.equal(p.status, 0, "a non-numeric status becomes 0 rather than propagating");
+  assert.equal(
+    p.status,
+    0,
+    "a non-numeric status becomes 0 rather than propagating",
+  );
   h.close();
 });
 
 test("a malformed sniffer payload is dropped", async () => {
   const h = await loadInjector(`<p>page</p>`);
-  assert.deepEqual(await postFromPage(h, { type: "FS_NETWORK_SNIFF", payload: null }), []);
-  assert.deepEqual(await postFromPage(h, { type: "FS_NETWORK_SNIFF", payload: { url: 42 } }), []);
+  assert.deepEqual(
+    await postFromPage(h, { type: "FS_NETWORK_SNIFF", payload: null }),
+    [],
+  );
+  assert.deepEqual(
+    await postFromPage(h, { type: "FS_NETWORK_SNIFF", payload: { url: 42 } }),
+    [],
+  );
   assert.deepEqual(await postFromPage(h, { type: "FS_NETWORK_SNIFF" }), []);
   h.close();
 });
 
 test("unknown FS_ message types are ignored entirely", async () => {
   const h = await loadInjector(`<p>page</p>`);
-  assert.deepEqual(await postFromPage(h, { type: "FS_FORM_FILL_ROW", payload: {} }), []);
-  assert.deepEqual(await postFromPage(h, { type: "FS_ANYTHING", payload: {} }), []);
+  assert.deepEqual(
+    await postFromPage(h, { type: "FS_FORM_FILL_ROW", payload: {} }),
+    [],
+  );
+  assert.deepEqual(
+    await postFromPage(h, { type: "FS_ANYTHING", payload: {} }),
+    [],
+  );
   h.close();
 });

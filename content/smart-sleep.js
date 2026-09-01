@@ -15,7 +15,7 @@
  * @dependencies none (content script context)
  */
 
-'use strict';
+"use strict";
 
 // ── Network idle tracker ───────────────────────────────────────────────────────
 let _inFlightCount = 0;
@@ -36,7 +36,13 @@ const _origOpen = XMLHttpRequest.prototype.open;
 const _origSend = XMLHttpRequest.prototype.send;
 XMLHttpRequest.prototype.send = function (...args) {
   _inFlightCount++;
-  this.addEventListener('loadend', () => { _inFlightCount = Math.max(0, _inFlightCount - 1); }, { once: true });
+  this.addEventListener(
+    "loadend",
+    () => {
+      _inFlightCount = Math.max(0, _inFlightCount - 1);
+    },
+    { once: true },
+  );
   return _origSend.apply(this, args);
 };
 
@@ -46,7 +52,7 @@ XMLHttpRequest.prototype.send = function (...args) {
  * @returns {Promise<void>}
  */
 export function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 // ── Tier 2: Selector-visible wait ────────────────────────────────────────────
@@ -59,7 +65,10 @@ export function sleep(ms) {
 export function waitForSelector(selector, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
     const el = document.querySelector(selector);
-    if (el && _isVisible(el)) { resolve(el); return; }
+    if (el && _isVisible(el)) {
+      resolve(el);
+      return;
+    }
 
     const obs = new MutationObserver(() => {
       const found = document.querySelector(selector);
@@ -69,11 +78,19 @@ export function waitForSelector(selector, timeoutMs = 15_000) {
         resolve(found);
       }
     });
-    obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+    obs.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+    });
 
     const timer = setTimeout(() => {
       obs.disconnect();
-      reject(new Error(`waitForSelector timeout: "${selector}" after ${timeoutMs}ms`));
+      reject(
+        new Error(
+          `waitForSelector timeout: "${selector}" after ${timeoutMs}ms`,
+        ),
+      );
     }, timeoutMs);
   });
 }
@@ -108,7 +125,12 @@ export function waitForDOMStable(stableMs = 300, timeoutMs = 10_000) {
     };
 
     const obs = new MutationObserver(resetQuiet);
-    obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+    obs.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+    });
     resetQuiet(); // start the first quiet timer
   });
 }
@@ -126,11 +148,17 @@ export function waitForNetworkIdle(quietMs = 500, timeoutMs = 15_000) {
     let quietStart = null;
 
     const check = () => {
-      if (Date.now() - start > timeoutMs) { resolve(); return; }
+      if (Date.now() - start > timeoutMs) {
+        resolve();
+        return;
+      }
 
       if (_inFlightCount === 0) {
         if (!quietStart) quietStart = Date.now();
-        if (Date.now() - quietStart >= quietMs) { resolve(); return; }
+        if (Date.now() - quietStart >= quietMs) {
+          resolve();
+          return;
+        }
       } else {
         quietStart = null;
       }

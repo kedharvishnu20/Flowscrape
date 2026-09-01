@@ -64,7 +64,9 @@ test("switching away from Attr drops a stale attribute name", () => {
 });
 
 test("attribute extraction refuses to run unconfigured", () => {
-  const fn = injectorSrc.match(/const _extractValue = \(el, field\) => \{[\s\S]*?\n  \};/)?.[0];
+  const fn = injectorSrc.match(
+    /const _extractValue = \(el, field\) => \{[\s\S]*?\n  \};/,
+  )?.[0];
   assert.ok(fn, "found _extractValue");
   assert.match(
     fn,

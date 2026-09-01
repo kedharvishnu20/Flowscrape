@@ -12,9 +12,9 @@
  * @dependencies logger
  */
 
-import { logger } from '../utils/logger.js';
+import { logger } from "../utils/logger.js";
 
-const MODULE = 'csv-parser';
+const MODULE = "csv-parser";
 
 /**
  * Detect the most likely delimiter from the first chunk of CSV text.
@@ -22,9 +22,9 @@ const MODULE = 'csv-parser';
  * @returns {',' | ';' | '\t'}
  */
 export function detectDelimiter(sample) {
-  const counts = { ',': 0, ';': 0, '\t': 0 };
+  const counts = { ",": 0, ";": 0, "\t": 0 };
   // Only look at the first line
-  const firstLine = sample.split('\n')[0] ?? '';
+  const firstLine = sample.split("\n")[0] ?? "";
   for (const ch of firstLine) {
     if (ch in counts) counts[ch]++;
   }
@@ -37,7 +37,7 @@ export function detectDelimiter(sample) {
  * @returns {string}
  */
 export function stripBOM(text) {
-  return text.startsWith('\uFEFF') ? text.slice(1) : text;
+  return text.startsWith("\uFEFF") ? text.slice(1) : text;
 }
 
 /**
@@ -48,9 +48,9 @@ export function stripBOM(text) {
  */
 export function parseLine(line, delimiter) {
   const fields = [];
-  let current  = '';
+  let current = "";
   let inQuotes = false;
-  let i        = 0;
+  let i = 0;
 
   while (i < line.length) {
     const ch = line[i];
@@ -71,7 +71,7 @@ export function parseLine(line, delimiter) {
         inQuotes = true;
       } else if (ch === delimiter) {
         fields.push(current.trim());
-        current = '';
+        current = "";
       } else {
         current += ch;
       }
@@ -91,13 +91,13 @@ export function parseLine(line, delimiter) {
  * @returns {{ rows: object[], headers: string[], errors: Array<{row:number, message:string}> }}
  */
 export function parseCSV(rawText, { delimiter, startRow = 1 } = {}) {
-  const text     = stripBOM(rawText);
-  const sample   = text.slice(0, 2048);
-  const delim    = delimiter ?? detectDelimiter(sample);
-  const lines    = text.split(/\r?\n/);
-  const headers  = parseLine(lines[0] ?? '', delim);
-  const rows     = [];
-  const errors   = [];
+  const text = stripBOM(rawText);
+  const sample = text.slice(0, 2048);
+  const delim = delimiter ?? detectDelimiter(sample);
+  const lines = text.split(/\r?\n/);
+  const headers = parseLine(lines[0] ?? "", delim);
+  const rows = [];
+  const errors = [];
 
   for (let i = startRow; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -106,20 +106,24 @@ export function parseCSV(rawText, { delimiter, startRow = 1 } = {}) {
       const fields = parseLine(line, delim);
       if (fields.length !== headers.length) {
         // Tolerate minor mismatches: truncate or pad
-        while (fields.length < headers.length) fields.push('');
+        while (fields.length < headers.length) fields.push("");
       }
       const row = {};
       for (let j = 0; j < headers.length; j++) {
-        row[headers[j]] = fields[j] ?? '';
+        row[headers[j]] = fields[j] ?? "";
       }
       rows.push(row);
     } catch (err) {
       errors.push({ row: i + 1, message: err.message });
-      logger.warn(MODULE, 'row-parse-fail', { row: i + 1, error: err.message });
+      logger.warn(MODULE, "row-parse-fail", { row: i + 1, error: err.message });
     }
   }
 
-  logger.info(MODULE, 'csv-parsed', { rows: rows.length, errors: errors.length, delim });
+  logger.info(MODULE, "csv-parsed", {
+    rows: rows.length,
+    errors: errors.length,
+    delim,
+  });
   return { rows, headers, errors };
 }
 
@@ -132,15 +136,19 @@ export function parseCSV(rawText, { delimiter, startRow = 1 } = {}) {
  * @param {number} [opts.chunkSize=65536]
  * @returns {Promise<{ totalRows: number, totalErrors: number, headers: string[] }>}
  */
-export async function streamParseCSV(file, onRows, { chunkSize = 65_536 } = {}) {
-  const reader     = file.stream().getReader();
-  const decoder    = new TextDecoder('utf-8');
-  let   buffer     = '';
-  let   headers    = null;
-  let   delimiter  = ',';
-  let   totalRows  = 0;
-  let   totalErrors = 0;
-  let   firstChunk = true;
+export async function streamParseCSV(
+  file,
+  onRows,
+  { chunkSize = 65_536 } = {},
+) {
+  const reader = file.stream().getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let headers = null;
+  let delimiter = ",";
+  let totalRows = 0;
+  let totalErrors = 0;
+  let firstChunk = true;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -148,34 +156,34 @@ export async function streamParseCSV(file, onRows, { chunkSize = 65_536 } = {}) 
 
     let chunk = decoder.decode(value, { stream: !done });
     if (firstChunk) {
-      chunk     = stripBOM(chunk);
+      chunk = stripBOM(chunk);
       delimiter = detectDelimiter(chunk);
       firstChunk = false;
     }
 
     buffer += chunk;
     const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? ''; // keep incomplete last line
+    buffer = lines.pop() ?? ""; // keep incomplete last line
 
     if (headers === null && lines.length > 0) {
       headers = parseLine(lines.shift(), delimiter);
     }
 
-    const rows   = [];
+    const rows = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
       try {
         const fields = parseLine(line, delimiter);
-        const row    = {};
+        const row = {};
         for (let j = 0; j < (headers?.length ?? 0); j++) {
-          row[headers[j]] = fields[j] ?? '';
+          row[headers[j]] = fields[j] ?? "";
         }
         rows.push(row);
         totalRows++;
       } catch (err) {
         totalErrors++;
-        logger.warn(MODULE, 'stream-row-fail', { error: err.message });
+        logger.warn(MODULE, "stream-row-fail", { error: err.message });
       }
     }
 
@@ -187,13 +195,16 @@ export async function streamParseCSV(file, onRows, { chunkSize = 65_536 } = {}) 
     try {
       const fields = parseLine(buffer.trim(), delimiter);
       const row = {};
-      for (let j = 0; j < headers.length; j++) row[headers[j]] = fields[j] ?? '';
+      for (let j = 0; j < headers.length; j++)
+        row[headers[j]] = fields[j] ?? "";
       await onRows([row]);
       totalRows++;
-    } catch { totalErrors++; }
+    } catch {
+      totalErrors++;
+    }
   }
 
-  logger.info(MODULE, 'stream-complete', { totalRows, totalErrors });
+  logger.info(MODULE, "stream-complete", { totalRows, totalErrors });
   return { totalRows, totalErrors, headers: headers ?? [] };
 }
 

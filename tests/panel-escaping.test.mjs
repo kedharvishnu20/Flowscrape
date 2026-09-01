@@ -33,7 +33,9 @@ const escSrc = extract(/function esc\(s\) \{[\s\S]*?\n\}/);
 // The cap is a later addition; extract with it when present so this file still
 // loads — and fails per-test rather than wholesale — against the older shape.
 const logSrc =
-  src.match(/const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/)?.[0] ??
+  src.match(
+    /const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/,
+  )?.[0] ??
   `const MAX_LOG_ENTRIES = Infinity;\n` +
     extract(/function logToMonitor\([\s\S]*?\n\}/);
 
@@ -53,7 +55,11 @@ test("a log message is never interpreted as markup", () => {
   reset();
   logToMonitor("info-log", '<img src=x onerror="alert(1)">');
 
-  assert.equal(logs().querySelectorAll("img").length, 0, "no element was created");
+  assert.equal(
+    logs().querySelectorAll("img").length,
+    0,
+    "no element was created",
+  );
   assert.equal(
     logs().querySelector(".log-msg").textContent,
     '<img src=x onerror="alert(1)">',
@@ -64,7 +70,10 @@ test("a log message is never interpreted as markup", () => {
 test("markup in an error message cannot break the pane", () => {
   reset();
   // The shape of a real message: a thrown selector error echoing page content.
-  logToMonitor("error-log", '[CLICK] Click target not found. Selector: "</div><h1>gotcha"');
+  logToMonitor(
+    "error-log",
+    '[CLICK] Click target not found. Selector: "</div><h1>gotcha"',
+  );
 
   assert.equal(logs().childElementCount, 1, "still one entry");
   assert.equal(logs().querySelectorAll("h1").length, 0);
@@ -76,7 +85,10 @@ test("the entry still renders its timestamp and level", () => {
 
   const entry = logs().firstElementChild;
   assert.ok(entry.className.includes("warn-log"));
-  assert.match(entry.querySelector(".log-ts").textContent, /^\[\d{2}:\d{2}:\d{2}\]$/);
+  assert.match(
+    entry.querySelector(".log-ts").textContent,
+    /^\[\d{2}:\d{2}:\d{2}\]$/,
+  );
   assert.equal(entry.querySelector(".log-msg").textContent, "hello");
 });
 
@@ -99,8 +111,8 @@ test("the log pane is capped", () => {
 });
 
 test("esc escapes the full set, ampersand first", () => {
-  assert.equal(esc('a & b'), "a &amp; b");
-  assert.equal(esc('<script>'), "&lt;script&gt;");
+  assert.equal(esc("a & b"), "a &amp; b");
+  assert.equal(esc("<script>"), "&lt;script&gt;");
   assert.equal(esc('say "hi"'), "say &quot;hi&quot;");
   assert.equal(esc("it's"), "it&#39;s");
 });
@@ -119,7 +131,11 @@ test("esc handles a value that would break out of an attribute", () => {
 
   const probe = new JSDOM(`<!doctype html><input value="${escaped}">`);
   const input = probe.window.document.querySelector("input");
-  assert.equal(input.getAttribute("onfocus"), null, "no attribute was injected");
+  assert.equal(
+    input.getAttribute("onfocus"),
+    null,
+    "no attribute was injected",
+  );
   assert.equal(input.value, attacker, "and the literal value round-trips");
 });
 

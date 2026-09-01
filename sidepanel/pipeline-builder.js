@@ -7,7 +7,11 @@ import {
   defaultConfig,
   isKnownStepType,
 } from "../utils/step-types.js";
-import { formatRows, formatMeta, ROW_FORMATS } from "../exporters/row-formatters.js";
+import {
+  formatRows,
+  formatMeta,
+  ROW_FORMATS,
+} from "../exporters/row-formatters.js";
 
 const MSG = {
   PIPELINE_START: "pipeline:start",
@@ -33,7 +37,13 @@ const STEP_REGISTRY = Object.fromEntries(
 let _pipeline = { steps: [] };
 let _expandedNodeId = null;
 let _insertCtx = { index: -1, parentId: "", branchKey: "" };
-let _runState = { active: false, paused: false, timer: null, startTs: 0, runId: null };
+let _runState = {
+  active: false,
+  paused: false,
+  timer: null,
+  startTs: 0,
+  runId: null,
+};
 let _storageFiles = [];
 let _uploadActivities = [];
 let _dragSourceId = null;
@@ -202,11 +212,16 @@ async function _downloadRunRows(runId) {
     .catch(() => null);
 
   if (!res?.ok) {
-    logToMonitor("error-log", `Download failed: ${res?.error ?? "no response"}`);
+    logToMonitor(
+      "error-log",
+      `Download failed: ${res?.error ?? "no response"}`,
+    );
     return;
   }
 
-  const rows = (res.result?.rows ?? []).map(({ runId: _runId, ...rest }) => rest);
+  const rows = (res.result?.rows ?? []).map(
+    ({ runId: _runId, ...rest }) => rest,
+  );
   if (rows.length === 0) {
     logToMonitor("warn-log", "That run stored no rows.");
     return;
@@ -641,7 +656,10 @@ function bindGlobalControls() {
 
     if (blocked) {
       document.querySelector('[data-tab="monitor"]').click();
-      logToMonitor("error-log", `Blocked · ${blocker?.code}: ${blocker?.message}`);
+      logToMonitor(
+        "error-log",
+        `Blocked · ${blocker?.code}: ${blocker?.message}`,
+      );
       return;
     }
 
@@ -912,7 +930,10 @@ async function _checkRunAlive() {
   if (!_runState.active || !_runState.runId) return;
 
   const res = await chrome.runtime
-    .sendMessage({ type: "pipeline:status", payload: { runId: _runState.runId } })
+    .sendMessage({
+      type: "pipeline:status",
+      payload: { runId: _runState.runId },
+    })
     .catch(() => null);
 
   // No answer at all: the worker is starting up. Try again on the next tick
@@ -1957,7 +1978,11 @@ function generateConfigHtml(step) {
       Rows are always kept. Below this score the page is sent to Gemini for a
       second opinion; above it, only the on-page layers run.</p>`;
 
-    html += toggle(step, "useLlm", "Enable AI fallback (Gemini) when confidence is low");
+    html += toggle(
+      step,
+      "useLlm",
+      "Enable AI fallback (Gemini) when confidence is low",
+    );
 
     html += `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(99,102,241,0.1);font-size:11px;color:var(--text-dim);">
       <b>Extracted fields:</b> name, price, originalPrice, currency, brand, description, sku, availability, rating, reviewCount, images[]<br>
@@ -2276,8 +2301,10 @@ function bindDelegatedEvents() {
     // Extract field type. This was previously handled by the click listener,
     // which fires before the user has picked an option, so the select never
     // actually changed the stored type.
-    if (target instanceof HTMLSelectElement &&
-        target.classList.contains("extract-type-select")) {
+    if (
+      target instanceof HTMLSelectElement &&
+      target.classList.contains("extract-type-select")
+    ) {
       const step = _findStepDeep(_pipeline.steps, target.dataset.id);
       const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
       if (!field) return;
@@ -2500,7 +2527,9 @@ function _confirmEthicsWarnings(warnings) {
       <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:18px;">
         ${warnings
           .map(
-            (w) => `<div style="border-left:3px solid var(--yellow, #FACC15); background:var(--bg-hover); padding:8px 10px; border-radius:4px;">
+            (
+              w,
+            ) => `<div style="border-left:3px solid var(--yellow, #FACC15); background:var(--bg-hover); padding:8px 10px; border-radius:4px;">
               <div class="mono" style="font-size:10px; color:var(--text-dim); letter-spacing:.04em;">${esc(w.code)}</div>
               <div style="font-size:12px; margin-top:3px;">${esc(w.message)}</div>
             </div>`,
@@ -2518,8 +2547,12 @@ function _confirmEthicsWarnings(warnings) {
       resolve(value);
     };
 
-    card.querySelector("#ethics-cancel").addEventListener("click", () => done(false));
-    card.querySelector("#ethics-proceed").addEventListener("click", () => done(true));
+    card
+      .querySelector("#ethics-cancel")
+      .addEventListener("click", () => done(false));
+    card
+      .querySelector("#ethics-proceed")
+      .addEventListener("click", () => done(true));
     modal.addEventListener("click", (e) => {
       if (e.target === modal) done(false);
     });

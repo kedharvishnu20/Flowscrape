@@ -14,9 +14,9 @@
  * @dependencies logger
  */
 
-import { logger } from '../utils/logger.js';
+import { logger } from "../utils/logger.js";
 
-const MODULE = 'json-parser';
+const MODULE = "json-parser";
 
 /**
  * Parse a JSON array or JSONL string into an array of objects.
@@ -28,31 +28,38 @@ export function parseJSON(text) {
   if (!trimmed) return { rows: [], errors: [] };
 
   // JSONL: does not start with '[' or '{'
-  if (trimmed.startsWith('{')) {
+  if (trimmed.startsWith("{")) {
     return parseJSONL(trimmed);
   }
 
-  if (trimmed.startsWith('[')) {
+  if (trimmed.startsWith("[")) {
     // Full JSON array
     try {
       const parsed = JSON.parse(trimmed);
       if (!Array.isArray(parsed)) {
-        logger.error(MODULE, 'not-an-array', {});
-        return { rows: [], errors: [{ index: 0, message: 'Root element is not an array' }] };
+        logger.error(MODULE, "not-an-array", {});
+        return {
+          rows: [],
+          errors: [{ index: 0, message: "Root element is not an array" }],
+        };
       }
-      const rows   = [];
+      const rows = [];
       const errors = [];
       for (let i = 0; i < parsed.length; i++) {
-        if (parsed[i] && typeof parsed[i] === 'object' && !Array.isArray(parsed[i])) {
+        if (
+          parsed[i] &&
+          typeof parsed[i] === "object" &&
+          !Array.isArray(parsed[i])
+        ) {
           rows.push(parsed[i]);
         } else {
-          errors.push({ index: i, message: 'Row is not an object' });
-          logger.warn(MODULE, 'row-skip', { index: i });
+          errors.push({ index: i, message: "Row is not an object" });
+          logger.warn(MODULE, "row-skip", { index: i });
         }
       }
       return { rows, errors };
     } catch (err) {
-      logger.error(MODULE, 'json-parse-fail', { error: err.message });
+      logger.error(MODULE, "json-parse-fail", { error: err.message });
       return { rows: [], errors: [{ index: 0, message: err.message }] };
     }
   }
@@ -67,24 +74,27 @@ export function parseJSON(text) {
  * @returns {{ rows: object[], errors: Array<{index:number, message:string}> }}
  */
 export function parseJSONL(text) {
-  const rows   = [];
+  const rows = [];
   const errors = [];
-  const lines  = text.split(/\r?\n/);
+  const lines = text.split(/\r?\n/);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
-    if (!line || line.startsWith('#')) continue;
+    if (!line || line.startsWith("#")) continue;
     try {
       const obj = JSON.parse(line);
-      if (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) {
+      if (typeof obj === "object" && obj !== null && !Array.isArray(obj)) {
         rows.push(obj);
       } else {
-        errors.push({ index: i, message: 'Line is not a JSON object' });
-        logger.warn(MODULE, 'jsonl-row-skip', { line: i + 1 });
+        errors.push({ index: i, message: "Line is not a JSON object" });
+        logger.warn(MODULE, "jsonl-row-skip", { line: i + 1 });
       }
     } catch (err) {
       errors.push({ index: i, message: err.message });
-      logger.warn(MODULE, 'jsonl-row-fail', { line: i + 1, error: err.message });
+      logger.warn(MODULE, "jsonl-row-fail", {
+        line: i + 1,
+        error: err.message,
+      });
     }
   }
 
@@ -100,32 +110,36 @@ export function parseJSONL(text) {
  * @returns {Promise<{ totalRows: number, totalErrors: number, format: 'json'|'jsonl' }>}
  */
 export async function streamParseJSON(file, onRows) {
-  const decoder = new TextDecoder('utf-8');
-  const reader  = file.stream().getReader();
+  const decoder = new TextDecoder("utf-8");
+  const reader = file.stream().getReader();
 
-  let   buffer      = '';
-  let   totalRows   = 0;
-  let   totalErrors = 0;
-  let   format      = null; // 'json' or 'jsonl'
-  let   arrayDepth  = 0;
-  let   inString    = false;
-  let   escape      = false;
-  let   objStart    = -1;
+  let buffer = "";
+  let totalRows = 0;
+  let totalErrors = 0;
+  let format = null; // 'json' or 'jsonl'
+  let arrayDepth = 0;
+  let inString = false;
+  let escape = false;
+  let objStart = -1;
 
   const processBuffer = async (flush = false) => {
-    if (format === 'jsonl') {
-      const lines = buffer.split('\n');
-      if (!flush) buffer = lines.pop() ?? '';
-      else buffer = '';
+    if (format === "jsonl") {
+      const lines = buffer.split("\n");
+      if (!flush) buffer = lines.pop() ?? "";
+      else buffer = "";
       const rows = [];
       for (const line of lines) {
         const t = line.trim();
         if (!t) continue;
         try {
           const obj = JSON.parse(t);
-          if (typeof obj === 'object' && !Array.isArray(obj)) { rows.push(obj); totalRows++; }
-          else totalErrors++;
-        } catch { totalErrors++; }
+          if (typeof obj === "object" && !Array.isArray(obj)) {
+            rows.push(obj);
+            totalRows++;
+          } else totalErrors++;
+        } catch {
+          totalErrors++;
+        }
       }
       if (rows.length) await onRows(rows);
       return;
@@ -133,20 +147,29 @@ export async function streamParseJSON(file, onRows) {
 
     // JSON array streaming: find complete top-level objects
     const rows = [];
-    let   i    = 0;
+    let i = 0;
     while (i < buffer.length) {
       const ch = buffer[i];
-      if (escape) { escape = false; i++; continue; }
-      if (inString) {
-        if (ch === '\\') escape = true;
-        else if (ch === '"') inString = false;
-        i++; continue;
+      if (escape) {
+        escape = false;
+        i++;
+        continue;
       }
-      if (ch === '"') { inString = true; i++; continue; }
-      if (ch === '{') {
+      if (inString) {
+        if (ch === "\\") escape = true;
+        else if (ch === '"') inString = false;
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        i++;
+        continue;
+      }
+      if (ch === "{") {
         if (arrayDepth === 1 && objStart === -1) objStart = i;
         arrayDepth++;
-      } else if (ch === '}') {
+      } else if (ch === "}") {
         arrayDepth--;
         if (arrayDepth === 1 && objStart !== -1) {
           const objStr = buffer.slice(objStart, i + 1);
@@ -154,15 +177,17 @@ export async function streamParseJSON(file, onRows) {
             const obj = JSON.parse(objStr);
             rows.push(obj);
             totalRows++;
-          } catch { totalErrors++; }
+          } catch {
+            totalErrors++;
+          }
           objStart = -1;
-          buffer   = buffer.slice(i + 1);
-          i        = 0;
+          buffer = buffer.slice(i + 1);
+          i = 0;
           continue;
         }
-      } else if (ch === '[') {
+      } else if (ch === "[") {
         arrayDepth++;
-      } else if (ch === ']') {
+      } else if (ch === "]") {
         arrayDepth--;
       }
       i++;
@@ -178,15 +203,15 @@ export async function streamParseJSON(file, onRows) {
     buffer += decoder.decode(value, { stream: !done });
     if (firstChunk) {
       const trimmed = buffer.trimStart();
-      format = trimmed.startsWith('[') ? 'json' : 'jsonl';
-      if (format === 'json') arrayDepth = 1; // We're already inside the array
+      format = trimmed.startsWith("[") ? "json" : "jsonl";
+      if (format === "json") arrayDepth = 1; // We're already inside the array
       firstChunk = false;
     }
     await processBuffer(false);
   }
   await processBuffer(true);
 
-  logger.info(MODULE, 'stream-complete', { totalRows, totalErrors, format });
+  logger.info(MODULE, "stream-complete", { totalRows, totalErrors, format });
   return { totalRows, totalErrors, format };
 }
 

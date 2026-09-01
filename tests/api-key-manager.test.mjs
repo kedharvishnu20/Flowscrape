@@ -16,7 +16,8 @@ import { webcrypto } from "node:crypto";
 
 if (!globalThis.crypto?.subtle) globalThis.crypto = webcrypto;
 
-const MODULE = new URL("../background/api-key-manager.js", import.meta.url).href;
+const MODULE = new URL("../background/api-key-manager.js", import.meta.url)
+  .href;
 
 const sessionArea = new Map();
 
@@ -58,7 +59,10 @@ test("keys are readable within one worker generation", async () => {
 
 test("stored blobs are not the plaintext", () => {
   const dump = JSON.stringify([...sessionArea.values()]);
-  assert.ok(!dump.includes("AIzaSy-REAL-KEY-123"), "key value must not be stored in the clear");
+  assert.ok(
+    !dump.includes("AIzaSy-REAL-KEY-123"),
+    "key value must not be stored in the clear",
+  );
 });
 
 test("keys survive a service-worker restart", async () => {
@@ -105,11 +109,22 @@ test("closing the browser clears keys rather than corrupting them", async () => 
 test("an undecryptable blob is dropped, not reported as a stored key", async () => {
   sessionArea.set("fs_api_keys_enc", {
     ...sessionArea.get("fs_api_keys_enc"),
-    openai: JSON.stringify({ iv: "AAAAAAAAAAAAAAAA", ct: "AAAAAAAAAAAAAAAAAAAAAAAA" }),
+    openai: JSON.stringify({
+      iv: "AAAAAAAAAAAAAAAA",
+      ct: "AAAAAAAAAAAAAAAAAAAAAAAA",
+    }),
   });
 
   const km = await restartWorker();
   assert.equal(await km.getApiKey("openai"), null);
-  assert.equal(await km.hasApiKey("openai"), false, "stops advertising a key the user does not have");
-  assert.equal(await km.getApiKey("gemini"), "NEW-SESSION-KEY", "good keys are untouched");
+  assert.equal(
+    await km.hasApiKey("openai"),
+    false,
+    "stops advertising a key the user does not have",
+  );
+  assert.equal(
+    await km.getApiKey("gemini"),
+    "NEW-SESSION-KEY",
+    "good keys are untouched",
+  );
 });

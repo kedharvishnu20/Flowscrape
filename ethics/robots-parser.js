@@ -12,11 +12,11 @@
  * @dependencies logger
  */
 
-import { logger } from '../utils/logger.js';
+import { logger } from "../utils/logger.js";
 
-const MODULE = 'robots-parser';
+const MODULE = "robots-parser";
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
-const FS_USER_AGENT = 'FlowScrape';
+const FS_USER_AGENT = "FlowScrape";
 
 /** @type {Map<string, { rules: ParsedRobots, fetchedAt: number }>} */
 const _cache = new Map();
@@ -41,8 +41,8 @@ const _cache = new Map();
  */
 export function parseRobots(text) {
   const agentRules = new Map();
-  const sitemaps   = [];
-  let crawlDelay   = 0;
+  const sitemaps = [];
+  let crawlDelay = 0;
 
   let currentAgents = [];
   // RFC 9309 §2.2.1: a group is one or more user-agent lines followed by rule
@@ -53,21 +53,21 @@ export function parseRobots(text) {
   let seenRuleForGroup = false;
 
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.split('#')[0].trim(); // strip comments
+    const line = rawLine.split("#")[0].trim(); // strip comments
     if (!line) {
       currentAgents = [];
       seenRuleForGroup = false;
       continue;
     }
 
-    const colonIdx = line.indexOf(':');
+    const colonIdx = line.indexOf(":");
     if (colonIdx === -1) continue;
 
     const field = line.slice(0, colonIdx).trim().toLowerCase();
     const value = line.slice(colonIdx + 1).trim();
 
     switch (field) {
-      case 'user-agent':
+      case "user-agent":
         if (seenRuleForGroup) {
           currentAgents = [];
           seenRuleForGroup = false;
@@ -75,14 +75,14 @@ export function parseRobots(text) {
         currentAgents.push(value.toLowerCase());
         break;
 
-      case 'disallow':
-      case 'allow': {
+      case "disallow":
+      case "allow": {
         seenRuleForGroup = true;
         // An empty value is a rule with no path. RFC 9309 §2.2.2 says such a
         // rule is ignored; recording it and matching it against everything is
         // what made `Disallow:` (the canonical "allow all") block the site.
         if (!value) break;
-        const rule = { path: value, allow: field === 'allow' };
+        const rule = { path: value, allow: field === "allow" };
         for (const agent of currentAgents) {
           if (!agentRules.has(agent)) agentRules.set(agent, []);
           agentRules.get(agent).push(rule);
@@ -90,11 +90,11 @@ export function parseRobots(text) {
         break;
       }
 
-      case 'crawl-delay':
+      case "crawl-delay":
         crawlDelay = parseFloat(value) || 0;
         break;
 
-      case 'sitemap':
+      case "sitemap":
         sitemaps.push(value);
         break;
     }
@@ -121,12 +121,12 @@ function _pathMatches(rulePattern, path) {
   // by accident, and a `$` anywhere else silently became an anchor that made
   // the pattern match nothing.
   let regex = rulePattern
-    .replace(/[-[\]{}()+?.,\\^|#$\s]/g, '\\$&')
-    .replace(/\*/g, '.*');
+    .replace(/[-[\]{}()+?.,\\^|#$\s]/g, "\\$&")
+    .replace(/\*/g, ".*");
 
-  if (regex.endsWith('\\$')) {
+  if (regex.endsWith("\\$")) {
     // A trailing `$` anchors the end of the path (RFC 9309 §2.2.3).
-    regex = regex.slice(0, -2) + '$';
+    regex = regex.slice(0, -2) + "$";
   }
 
   try {
@@ -149,7 +149,7 @@ export function isAllowedByRules(parsed, path, userAgent = FS_USER_AGENT) {
 
   // Collect applicable rules: specific UA first, then wildcard '*'
   const specificRules = parsed.agentRules.get(ua) ?? [];
-  const wildcardRules = parsed.agentRules.get('*') ?? [];
+  const wildcardRules = parsed.agentRules.get("*") ?? [];
   const rules = specificRules.length > 0 ? specificRules : wildcardRules;
 
   if (rules.length === 0) return true; // no rules = allowed
@@ -158,7 +158,7 @@ export function isAllowedByRules(parsed, path, userAgent = FS_USER_AGENT) {
   // where an Allow and a Disallow are equally specific, Allow wins. The old
   // `>` comparison gave it to whichever appeared first in the file instead.
   let bestRule = null;
-  let bestLen  = -1;
+  let bestLen = -1;
 
   for (const rule of rules) {
     if (!_pathMatches(rule.path, path)) continue;
@@ -166,7 +166,7 @@ export function isAllowedByRules(parsed, path, userAgent = FS_USER_AGENT) {
       rule.path.length > bestLen ||
       (rule.path.length === bestLen && rule.allow && !bestRule.allow)
     ) {
-      bestLen  = rule.path.length;
+      bestLen = rule.path.length;
       bestRule = rule;
     }
   }
@@ -181,15 +181,15 @@ export function isAllowedByRules(parsed, path, userAgent = FS_USER_AGENT) {
  */
 export async function fetchRobots(origin) {
   const cached = _cache.get(origin);
-  if (cached && (Date.now() - cached.fetchedAt) < CACHE_TTL_MS) {
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
     return cached.rules;
   }
 
   const url = `${origin}/robots.txt`;
   try {
     const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 8000);
-    const res  = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
     clearTimeout(t);
 
     if (res.status >= 400 && res.status < 500) {
@@ -201,18 +201,17 @@ export async function fetchRobots(origin) {
       return empty;
     }
     if (!res.ok) {
-      logger.warn(MODULE, 'robots-fetch-fail', { origin, status: res.status });
+      logger.warn(MODULE, "robots-fetch-fail", { origin, status: res.status });
       return null;
     }
 
-    const text   = await res.text();
+    const text = await res.text();
     const parsed = parseRobots(text);
     _cache.set(origin, { rules: parsed, fetchedAt: Date.now() });
-    logger.info(MODULE, 'robots-fetched', { origin });
+    logger.info(MODULE, "robots-fetched", { origin });
     return parsed;
-
   } catch (err) {
-    logger.warn(MODULE, 'robots-fetch-error', { origin, error: err.message });
+    logger.warn(MODULE, "robots-fetch-error", { origin, error: err.message });
     return null;
   }
 }

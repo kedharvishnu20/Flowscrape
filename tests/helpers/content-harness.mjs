@@ -42,10 +42,17 @@ function stubLayout(window) {
     const index = [...document.querySelectorAll("*")].indexOf(this);
     const top = Math.max(0, index) * 24;
     return {
-      x: 0, y: top, top, left: 0,
-      width: 100, height: 20,
-      right: 100, bottom: top + 20,
-      toJSON() { return this; },
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      width: 100,
+      height: 20,
+      right: 100,
+      bottom: top + 20,
+      toJSON() {
+        return this;
+      },
     };
   };
   if (!HTMLElement.prototype.focus.__stubbed) {

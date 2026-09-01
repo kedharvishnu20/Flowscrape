@@ -23,7 +23,10 @@ import {
 } from "../exporters/row-formatters.js";
 
 test("all six advertised formats are available", () => {
-  assert.deepEqual([...ROW_FORMATS], ["csv", "json", "jsonl", "tsv", "xml", "markdown"]);
+  assert.deepEqual(
+    [...ROW_FORMATS],
+    ["csv", "json", "jsonl", "tsv", "xml", "markdown"],
+  );
 });
 
 test("headers are the union of every row's keys", () => {
@@ -36,7 +39,10 @@ test("headers are the union of every row's keys", () => {
 });
 
 test("a column missing from the first row still appears", () => {
-  const csv = formatRows([{ name: "Widget" }, { name: "Gadget", sku: "G-1" }], "csv");
+  const csv = formatRows(
+    [{ name: "Widget" }, { name: "Gadget", sku: "G-1" }],
+    "csv",
+  );
   assert.match(csv, /^name,sku/);
   assert.match(csv, /Gadget,G-1/);
 });
@@ -45,11 +51,17 @@ test("falsy values survive", () => {
   const rows = [{ stock: 0, active: false, note: "" }];
   const csv = formatRows(rows, "csv");
 
-  assert.equal(csv.trim().split("\r\n")[1], "0,false,", '0 and false are real values');
+  assert.equal(
+    csv.trim().split("\r\n")[1],
+    "0,false,",
+    "0 and false are real values",
+  );
 });
 
 test("CSV quotes only what needs quoting", () => {
-  const rows = [{ plain: "simple", comma: "a,b", quote: 'say "hi"', nl: "one\ntwo" }];
+  const rows = [
+    { plain: "simple", comma: "a,b", quote: 'say "hi"', nl: "one\ntwo" },
+  ];
   const line = formatRows(rows, "csv").trim().split("\r\n")[1];
 
   assert.match(line, /^simple,/, "a plain value is not quoted");
@@ -59,15 +71,25 @@ test("CSV quotes only what needs quoting", () => {
 });
 
 test("TSV neutralises tabs and newlines rather than corrupting the grid", () => {
-  const line = formatRows([{ a: "x\ty", b: "p\nq" }], "tsv").trim().split("\n")[1];
+  const line = formatRows([{ a: "x\ty", b: "p\nq" }], "tsv")
+    .trim()
+    .split("\n")[1];
   assert.equal(line, "x y\tp q");
 });
 
 test("XML escapes content and produces usable element names", () => {
   const xml = formatRows([{ "price (USD)": "<5 & rising", "2nd": "x" }], "xml");
 
-  assert.match(xml, /<price__USD_>&lt;5 &amp; rising<\/price__USD_>/, "a tag cannot contain spaces or parens");
-  assert.match(xml, /<_2nd>x<\/_2nd>/, "an element name cannot start with a digit");
+  assert.match(
+    xml,
+    /<price__USD_>&lt;5 &amp; rising<\/price__USD_>/,
+    "a tag cannot contain spaces or parens",
+  );
+  assert.match(
+    xml,
+    /<_2nd>x<\/_2nd>/,
+    "an element name cannot start with a digit",
+  );
   assert.match(xml, /^<\?xml version="1\.0" encoding="UTF-8"\?>/);
 });
 
@@ -81,7 +103,10 @@ test("JSON and JSONL round-trip", () => {
   const rows = [{ a: 1 }, { a: 2 }];
   assert.deepEqual(JSON.parse(formatRows(rows, "json")), rows);
   assert.deepEqual(
-    formatRows(rows, "jsonl").trim().split("\n").map((l) => JSON.parse(l)),
+    formatRows(rows, "jsonl")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l)),
     rows,
   );
 });
@@ -100,7 +125,10 @@ test("nested values are serialised rather than stringified as [object Object]", 
 });
 
 test("an unknown format is rejected", () => {
-  assert.throws(() => formatRows([{ a: 1 }], "yaml"), /Unsupported export format/);
+  assert.throws(
+    () => formatRows([{ a: 1 }], "yaml"),
+    /Unsupported export format/,
+  );
   assert.throws(() => formatMeta("yaml"), /Unsupported export format/);
 });
 

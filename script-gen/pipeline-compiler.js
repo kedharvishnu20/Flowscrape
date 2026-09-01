@@ -8,10 +8,11 @@
  * @dependencies logger
  */
 
-import { logger } from '../utils/logger.js';
-import { isExportableStepType, STEP_TYPES } from '../utils/step-types.js';
+import { logger } from "../utils/logger.js";
+import { isExportableStepType, STEP_TYPES } from "../utils/step-types.js";
+import { VERSION } from "../utils/version.js";
 
-const MODULE = 'pipeline-compiler';
+const MODULE = "pipeline-compiler";
 
 /**
  * Compile and validate a pipeline recipe into an AST.
@@ -20,11 +21,11 @@ const MODULE = 'pipeline-compiler';
  */
 export function compilePipeline(recipe) {
   const errors = [];
-  if (!recipe || typeof recipe !== 'object') {
-    return { ast: null, errors: ['Pipeline must be an object'] };
+  if (!recipe || typeof recipe !== "object") {
+    return { ast: null, errors: ["Pipeline must be an object"] };
   }
   if (!Array.isArray(recipe.steps)) {
-    return { ast: null, errors: ['Pipeline must have a steps array'] };
+    return { ast: null, errors: ["Pipeline must have a steps array"] };
   }
 
   const mapSteps = (stepList) => {
@@ -32,9 +33,9 @@ export function compilePipeline(recipe) {
     return stepList.map((step, i) => {
       if (!step.type) errors.push(`Step ${i + 1} is missing a type`);
       const mapped = {
-        id:     step.id ?? `step_${i + 1}`,
-        type:   (step.type ?? '').toUpperCase(),
-        label:  step.label ?? step.type ?? `Step ${i + 1}`,
+        id: step.id ?? `step_${i + 1}`,
+        type: (step.type ?? "").toUpperCase(),
+        label: step.label ?? step.type ?? `Step ${i + 1}`,
         config: step.config ?? {},
       };
       if (Array.isArray(step.children)) {
@@ -53,17 +54,21 @@ export function compilePipeline(recipe) {
   const steps = mapSteps(recipe.steps);
 
   const ast = {
-    name:         recipe.name ?? 'Untitled',
-    version:      recipe.version ?? '3.0.0',
-    targetOrigin: recipe.targetOrigin ?? '',
+    name: recipe.name ?? "Untitled",
+    version: recipe.version ?? VERSION,
+    targetOrigin: recipe.targetOrigin ?? "",
     steps,
     meta: {
       compiledAt: new Date().toISOString(),
-      stepCount:  steps.length,
+      stepCount: steps.length,
     },
   };
 
-  logger.info(MODULE, 'compiled', { name: ast.name, steps: steps.length, errors: errors.length });
+  logger.info(MODULE, "compiled", {
+    name: ast.name,
+    steps: steps.length,
+    errors: errors.length,
+  });
   return { ast, errors };
 }
 
@@ -76,11 +81,11 @@ export function compilePipeline(recipe) {
 export function serializePipeline(pipeline) {
   const REDACT = /pass(word)?|secret|token|key|cred|auth/i;
   const sanitize = (obj) => {
-    if (!obj || typeof obj !== 'object') return obj;
+    if (!obj || typeof obj !== "object") return obj;
     const out = {};
     for (const [k, v] of Object.entries(obj)) {
-      if (REDACT.test(k)) out[k] = '[REDACTED]';
-      else if (typeof v === 'object') out[k] = sanitize(v);
+      if (REDACT.test(k)) out[k] = "[REDACTED]";
+      else if (typeof v === "object") out[k] = sanitize(v);
       else out[k] = v;
     }
     return out;
@@ -109,8 +114,8 @@ export function findUnexportableSteps(ast) {
           id: step.id ?? null,
           type: step.type,
           reason: STEP_TYPES[step.type]
-            ? 'runs inside the extension and has no standalone equivalent'
-            : 'unknown step type',
+            ? "runs inside the extension and has no standalone equivalent"
+            : "unknown step type",
         });
       }
       walk(step.children);
@@ -127,13 +132,16 @@ export function findUnexportableSteps(ast) {
  * Config keys whose value is a credential by name.
  * The same list drives serializePipeline's redaction.
  */
-const SECRET_KEY = /pass(word)?|secret|token|api[-_]?key|\bkey\b|cred|auth|bearer/i;
+const SECRET_KEY =
+  /pass(word)?|secret|token|api[-_]?key|\bkey\b|cred|auth|bearer/i;
 
 /** Selectors that say "this is a password field" without needing the value. */
-const PASSWORD_SELECTOR = /type\s*=\s*["']?password|#pass|\bpassword\b|\bpwd\b/i;
+const PASSWORD_SELECTOR =
+  /type\s*=\s*["']?password|#pass|\bpassword\b|\bpwd\b/i;
 
 /** Header names that carry a credential. */
-const SECRET_HEADER = /^(authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie)$/i;
+const SECRET_HEADER =
+  /^(authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie)$/i;
 
 const ENV_MARKER = (name) => `__FS_ENV__${name}__`;
 
@@ -165,17 +173,17 @@ export function redactSecrets(ast) {
   };
 
   const redactHeaders = (raw, step) => {
-    if (typeof raw !== 'string' || !raw.includes(':')) return raw;
+    if (typeof raw !== "string" || !raw.includes(":")) return raw;
     let parsed;
     try {
       parsed = JSON.parse(raw);
     } catch {
       return raw; // not JSON we can reason about; left alone and reported below
     }
-    if (!parsed || typeof parsed !== 'object') return raw;
+    if (!parsed || typeof parsed !== "object") return raw;
     let changed = false;
     for (const k of Object.keys(parsed)) {
-      if (SECRET_HEADER.test(k) && typeof parsed[k] === 'string' && parsed[k]) {
+      if (SECRET_HEADER.test(k) && typeof parsed[k] === "string" && parsed[k]) {
         parsed[k] = claim(step.id, step.type, `headers.${k}`);
         changed = true;
       }
@@ -183,12 +191,12 @@ export function redactSecrets(ast) {
     return changed ? JSON.stringify(parsed) : raw;
   };
 
-  const walkConfig = (cfg, step, path = 'config') => {
-    if (!cfg || typeof cfg !== 'object') return;
+  const walkConfig = (cfg, step, path = "config") => {
+    if (!cfg || typeof cfg !== "object") return;
     for (const [k, v] of Object.entries(cfg)) {
-      if (v && typeof v === 'object') {
+      if (v && typeof v === "object") {
         walkConfig(v, step, `${path}.${k}`);
-      } else if (typeof v === 'string' && v && SECRET_KEY.test(k)) {
+      } else if (typeof v === "string" && v && SECRET_KEY.test(k)) {
         cfg[k] = claim(step.id, step.type, `${path}.${k}`);
       }
     }
@@ -197,16 +205,16 @@ export function redactSecrets(ast) {
   const walk = (steps) => {
     for (const step of Array.isArray(steps) ? steps : []) {
       const cfg = step.config;
-      if (cfg && typeof cfg === 'object') {
-        if (step.type === 'API') {
+      if (cfg && typeof cfg === "object") {
+        if (step.type === "API") {
           cfg.headers = redactHeaders(cfg.headers, step);
         }
-        if (step.type === 'FILL' || step.type === 'TYPE') {
-          if (cfg.text && PASSWORD_SELECTOR.test(String(cfg.selector ?? ''))) {
-            cfg.text = claim(step.id, step.type, 'config.text');
+        if (step.type === "FILL" || step.type === "TYPE") {
+          if (cfg.text && PASSWORD_SELECTOR.test(String(cfg.selector ?? ""))) {
+            cfg.text = claim(step.id, step.type, "config.text");
           }
           for (const f of Array.isArray(cfg.fields) ? cfg.fields : []) {
-            if (f?.value && PASSWORD_SELECTOR.test(String(f.selector ?? ''))) {
+            if (f?.value && PASSWORD_SELECTOR.test(String(f.selector ?? ""))) {
               f.value = claim(step.id, step.type, `fields[${f.selector}]`);
             }
           }
@@ -239,7 +247,7 @@ export function findUnresolvedTemplates(ast) {
   const found = [];
 
   const scan = (value, step, path) => {
-    if (typeof value === 'string') {
+    if (typeof value === "string") {
       for (const m of value.matchAll(/\{\{([^}]+)\}\}/g)) {
         found.push({
           stepId: step.id ?? null,
@@ -248,14 +256,14 @@ export function findUnresolvedTemplates(ast) {
           template: m[0],
         });
       }
-    } else if (value && typeof value === 'object') {
+    } else if (value && typeof value === "object") {
       for (const [k, v] of Object.entries(value)) scan(v, step, `${path}.${k}`);
     }
   };
 
   const walk = (steps) => {
     for (const step of Array.isArray(steps) ? steps : []) {
-      scan(step.config, step, 'config');
+      scan(step.config, step, "config");
       walk(step.children);
       walk(step.ifBranch);
       walk(step.elseBranch);

@@ -43,8 +43,14 @@ test("a field matching exactly once is broadcast to every row", async () => {
     fields: [field("page", ".page"), field("title", ".p h2")],
   });
   assert.equal(rows.length, 3);
-  assert.deepEqual(plain(rows).map((r) => r.page), ["Summer Sale", "Summer Sale", "Summer Sale"]);
-  assert.deepEqual(plain(rows).map((r) => r.title), ["Widget", "Gadget", "Doohickey"]);
+  assert.deepEqual(
+    plain(rows).map((r) => r.page),
+    ["Summer Sale", "Summer Sale", "Summer Sale"],
+  );
+  assert.deepEqual(
+    plain(rows).map((r) => r.title),
+    ["Widget", "Gadget", "Doohickey"],
+  );
   h.close();
 });
 
@@ -60,7 +66,10 @@ test("a partially-matching field yields null, not a repeat of the first value", 
   });
 
   assert.equal(rows.length, 4);
-  assert.deepEqual(plain(rows).map((r) => r.price), ["10", "20", "30", "40"]);
+  assert.deepEqual(
+    plain(rows).map((r) => r.price),
+    ["10", "20", "30", "40"],
+  );
   assert.deepEqual(
     plain(rows).map((r) => r.title),
     ["Widget", "Gadget", null, null],
@@ -85,11 +94,16 @@ test("falsy extracted values survive", async () => {
 });
 
 test("a field matching nothing is null on every row", async () => {
-  const h = await loadInjector(`<h2 class="t">Widget</h2><h2 class="t">Gadget</h2>`);
+  const h = await loadInjector(
+    `<h2 class="t">Widget</h2><h2 class="t">Gadget</h2>`,
+  );
   const rows = await h.api._stepExtract({
     fields: [field("title", ".t"), field("missing", ".nope")],
   });
-  assert.deepEqual(plain(rows).map((r) => r.missing), [null, null]);
+  assert.deepEqual(
+    plain(rows).map((r) => r.missing),
+    [null, null],
+  );
   h.close();
 });
 
@@ -98,7 +112,11 @@ test("no fields and no matches produce no rows", async () => {
   assert.deepEqual(plain(await h.api._stepExtract({ fields: [] })), []);
 
   const rows = await h.api._stepExtract({ fields: [field("x", ".nope")] });
-  assert.deepEqual(plain(rows), [{ x: null }], "one row of nulls, since maxLen floors at 1");
+  assert.deepEqual(
+    plain(rows),
+    [{ x: null }],
+    "one row of nulls, since maxLen floors at 1",
+  );
   h.close();
 });
 
@@ -123,7 +141,10 @@ test("attribute extraction reads the named attribute", async () => {
 test("attribute extraction without a name is an error, not silent text", async () => {
   const h = await loadInjector(`<a class="l" href="/one">One</a>`);
   await assert.rejects(
-    () => h.api._stepExtract({ fields: [field("href", ".l", { type: "attribute" })] }),
+    () =>
+      h.api._stepExtract({
+        fields: [field("href", ".l", { type: "attribute" })],
+      }),
     /set to Attr but has no attribute name/,
   );
   h.close();

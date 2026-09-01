@@ -24,9 +24,11 @@ const loopCtx = (index0) => ({
 test("a matching selector clicks the intended element", async () => {
   const h = await loadInjector(PAGE);
   const clicked = [];
-  h.document.querySelectorAll(".open").forEach((el, i) =>
-    el.addEventListener("click", () => clicked.push(`open-${i}`)),
-  );
+  h.document
+    .querySelectorAll(".open")
+    .forEach((el, i) =>
+      el.addEventListener("click", () => clicked.push(`open-${i}`)),
+    );
 
   const r = await h.api._executeStep({
     type: "CLICK",
@@ -42,9 +44,11 @@ test("a matching selector clicks the intended element", async () => {
 test("a missing selector inside a loop is an error, not a click on the row", async () => {
   const h = await loadInjector(PAGE);
   const clicked = [];
-  h.document.querySelectorAll(".row").forEach((el, i) =>
-    el.addEventListener("click", () => clicked.push(`row-${i}`)),
-  );
+  h.document
+    .querySelectorAll(".row")
+    .forEach((el, i) =>
+      el.addEventListener("click", () => clicked.push(`row-${i}`)),
+    );
 
   await assert.rejects(
     () =>
@@ -78,9 +82,11 @@ test("the error tells you the fallback exists", async () => {
 test("opting in restores the fallback", async () => {
   const h = await loadInjector(PAGE);
   const clicked = [];
-  h.document.querySelectorAll(".row").forEach((el, i) =>
-    el.addEventListener("click", () => clicked.push(`row-${i}`)),
-  );
+  h.document
+    .querySelectorAll(".row")
+    .forEach((el, i) =>
+      el.addEventListener("click", () => clicked.push(`row-${i}`)),
+    );
 
   const r = await h.api._executeStep({
     type: "CLICK",
@@ -98,9 +104,11 @@ test("an empty selector still targets the loop item", async () => {
   // target the current item root. Unaffected by the fallback change.
   const h = await loadInjector(PAGE);
   const clicked = [];
-  h.document.querySelectorAll(".row").forEach((el, i) =>
-    el.addEventListener("click", () => clicked.push(`row-${i}`)),
-  );
+  h.document
+    .querySelectorAll(".row")
+    .forEach((el, i) =>
+      el.addEventListener("click", () => clicked.push(`row-${i}`)),
+    );
 
   const r = await h.api._executeStep({
     type: "CLICK",
@@ -108,7 +116,11 @@ test("an empty selector still targets the loop item", async () => {
     __fsContext: loopCtx(0),
   });
 
-  assert.equal(r.usedRootFallback, false, "this is the intended path, not a fallback");
+  assert.equal(
+    r.usedRootFallback,
+    false,
+    "this is the intended path, not a fallback",
+  );
   assert.deepEqual(clicked, ["row-0"]);
   h.close();
 });

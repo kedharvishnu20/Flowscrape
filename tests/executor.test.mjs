@@ -51,7 +51,13 @@ test("NAVIGATE to an undeclared origin is refused", async () => {
   const { runId } = startRun();
 
   await assert.rejects(
-    () => _dispatchStep(step("NAVIGATE", { url: "https://evil.test/x" }), 1, runId, ctx()),
+    () =>
+      _dispatchStep(
+        step("NAVIGATE", { url: "https://evil.test/x" }),
+        1,
+        runId,
+        ctx(),
+      ),
     /UndeclaredOrigin|evil\.test/,
   );
   assert.equal(calls.tabUpdates.length, 0, "the tab was never sent there");
@@ -87,7 +93,10 @@ test("EXTRACT rows land in the run and in the context", async () => {
   const { runId, runState } = startRun();
   onContentMessage(() => ({
     ok: true,
-    result: [{ name: "Widget", price: "10" }, { name: "Gadget", price: "20" }],
+    result: [
+      { name: "Widget", price: "10" },
+      { name: "Gadget", price: "20" },
+    ],
   }));
 
   const context = ctx();
@@ -117,7 +126,11 @@ test("an API result is stored under its configured name", async () => {
   );
 
   assert.equal(context.lookup.status, 200);
-  assert.equal(context.api.status, 200, "also available under the default name");
+  assert.equal(
+    context.api.status,
+    200,
+    "also available under the default name",
+  );
   await endRun(runId);
 });
 
@@ -168,7 +181,9 @@ test("an optional step that fails is skipped, and the run continues", async () =
 
   assert.equal(runState.active, true, "the run was not stopped");
   const warned = calls.runtimeMessages.some(
-    (m) => m.type === "pipeline:log" && /optional, skipping/.test(m.payload?.message ?? ""),
+    (m) =>
+      m.type === "pipeline:log" &&
+      /optional, skipping/.test(m.payload?.message ?? ""),
   );
   assert.ok(warned, "and the skip was reported rather than hidden");
   await endRun(runId);
@@ -199,7 +214,8 @@ test("a required step that fails inside a loop body propagates", async () => {
   onContentMessage(() => ({ ok: false, error: "boom" }));
 
   await assert.rejects(
-    () => _executeStepList([step("CLICK", { selector: ".x" })], 1, runId, ctx()),
+    () =>
+      _executeStepList([step("CLICK", { selector: ".x" })], 1, runId, ctx()),
     /boom/,
   );
   assert.equal(runState.active, true, "the run itself is still alive");
@@ -219,7 +235,10 @@ test("an optional step inside a loop body is also skipped", async () => {
 
   await assert.doesNotReject(() =>
     _executeStepList(
-      [step("CLICK", { selector: ".missing", optional: true }), step("WAIT", { ms: 1 })],
+      [
+        step("CLICK", { selector: ".missing", optional: true }),
+        step("WAIT", { ms: 1 }),
+      ],
       1,
       runId,
       ctx(),
@@ -262,7 +281,11 @@ test("a nested list does not leak its extractions into the parent", async () => 
   const parent = ctx();
   await _executeStepList([step("EXTRACT", { fields: [] })], 1, runId, parent);
 
-  assert.equal(parent.extracted.inner, undefined, "the parent context is untouched");
+  assert.equal(
+    parent.extracted.inner,
+    undefined,
+    "the parent context is untouched",
+  );
   await endRun(runId);
 });
 
@@ -280,8 +303,14 @@ test("top-level progress is reported; nested progress is not", async () => {
 
   reset();
   await _executeStepList([step("WAIT", { ms: 1 })], 1, runId, ctx());
-  const nested = calls.runtimeMessages.find((m) => m.type === "pipeline:status");
-  assert.deepEqual(nested.payload.progress, {}, "a loop body has no total to report");
+  const nested = calls.runtimeMessages.find(
+    (m) => m.type === "pipeline:status",
+  );
+  assert.deepEqual(
+    nested.payload.progress,
+    {},
+    "a loop body has no total to report",
+  );
   await endRun(runId);
 });
 

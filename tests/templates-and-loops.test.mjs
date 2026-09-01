@@ -80,7 +80,9 @@ test("templates resolve at any depth, not just one level down", async () => {
         id: "e",
         type: "EXTRACT",
         config: {
-          fields: [{ name: "t", selector: ".p-{{loop.index}} .title", attribute: "" }],
+          fields: [
+            { name: "t", selector: ".p-{{loop.index}} .title", attribute: "" },
+          ],
           nested: { deep: { deeper: "{{loop.index}}" } },
         },
       },
@@ -118,12 +120,17 @@ test("top-level strings still resolve, and non-strings are left alone", async ()
 });
 
 test("an unknown path resolves to empty rather than leaving the braces", () => {
-  assert.equal(_resolveStr("a-{{nope.missing}}-b", { loop: { index: 1 } }), "a--b");
+  assert.equal(
+    _resolveStr("a-{{nope.missing}}-b", { loop: { index: 1 } }),
+    "a--b",
+  );
   assert.equal(_resolveStr("no braces here", {}), "no braces here");
 });
 
 test("_resolveConfig recurses instead of mapping one level", () => {
-  const fn = swSrc.match(/function _resolveConfig\(step, ctx\) \{[\s\S]*?\n\}/)[0];
+  const fn = swSrc.match(
+    /function _resolveConfig\(step, ctx\) \{[\s\S]*?\n\}/,
+  )[0];
   assert.match(fn, /_resolveAny\(step\.config/);
   assert.ok(
     !/typeof v === "string" \? _resolveStr/.test(fn),
@@ -171,7 +178,10 @@ test("elements mode with max 0 means every match, as the UI says", async () => {
     body,
     (p) =>
       p.type === "QUERY_ELEMENTS"
-        ? { ok: true, result: [{ index: 1 }, { index: 2 }, { index: 3 }, { index: 4 }] }
+        ? {
+            ok: true,
+            result: [{ index: 1 }, { index: 2 }, { index: 3 }, { index: 4 }],
+          }
         : { ok: true, result: null },
   );
   assert.equal(bodyRuns, 4);
@@ -208,7 +218,10 @@ test("no matches skips the loop", async () => {
   const { bodyRuns } = await runLoop(
     { type: "elements", selector: ".card", max: 0 },
     body,
-    (p) => (p.type === "QUERY_ELEMENTS" ? { ok: true, result: [] } : { ok: true, result: null }),
+    (p) =>
+      p.type === "QUERY_ELEMENTS"
+        ? { ok: true, result: [] }
+        : { ok: true, result: null },
   );
   assert.equal(bodyRuns, 0);
 });
@@ -234,7 +247,11 @@ test("the loop body sees item and loop context", async () => {
         type: "LOOP",
         config: { type: "elements", selector: ".c", max: 0 },
         children: [
-          { id: "b", type: "CLICK", config: { selector: "a[href='{{item.href}}']" } },
+          {
+            id: "b",
+            type: "CLICK",
+            config: { selector: "a[href='{{item.href}}']" },
+          },
         ],
       },
     ],
@@ -258,7 +275,11 @@ test("switching a loop to count mode does not carry 0 across", () => {
   )[0];
   assert.match(fn, /mode !== "elements" && !\(step\.config\.max > 0\)/);
   assert.match(fn, /step\.config\.max = 10/);
-  assert.match(panelSrc, /_normalizeStepConfig\(step, key\);/, "and it is called");
+  assert.match(
+    panelSrc,
+    /_normalizeStepConfig\(step, key\);/,
+    "and it is called",
+  );
 });
 
 test("the two modes are labelled differently", () => {

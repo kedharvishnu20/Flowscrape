@@ -12,9 +12,9 @@
  * @dependencies logger
  */
 
-import { logger } from '../utils/logger.js';
+import { logger } from "../utils/logger.js";
 
-const MODULE     = 'stream-writer';
+const MODULE = "stream-writer";
 const CHUNK_SIZE = 1000; // rows per chunk
 
 /**
@@ -31,22 +31,26 @@ const CHUNK_SIZE = 1000; // rows per chunk
  * @returns {Promise<WriterContext>}
  */
 export async function createWriter(filename, mimeType) {
-  if (typeof showSaveFilePicker === 'function') {
+  if (typeof showSaveFilePicker === "function") {
     try {
       const handle = await showSaveFilePicker({
         suggestedName: filename,
-        types: [{ accept: { [mimeType]: [`.${filename.split('.').pop()}`] } }],
+        types: [{ accept: { [mimeType]: [`.${filename.split(".").pop()}`] } }],
       });
       const writable = await handle.createWritable();
-      const encoder  = new TextEncoder();
+      const encoder = new TextEncoder();
       return {
         filename,
-        write: async (chunk) => { await writable.write(encoder.encode(chunk)); },
-        close: async ()      => { await writable.close(); },
+        write: async (chunk) => {
+          await writable.write(encoder.encode(chunk));
+        },
+        close: async () => {
+          await writable.close();
+        },
       };
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        logger.warn(MODULE, 'fsa-fail-fallback', { error: err.message });
+      if (err.name !== "AbortError") {
+        logger.warn(MODULE, "fsa-fail-fallback", { error: err.message });
       }
     }
   }
@@ -55,15 +59,21 @@ export async function createWriter(filename, mimeType) {
   const parts = [];
   return {
     filename,
-    write: async (chunk) => { parts.push(chunk); },
+    write: async (chunk) => {
+      parts.push(chunk);
+    },
     close: async () => {
       const blob = new Blob(parts, { type: mimeType });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href = url; a.download = filename;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        a.remove();
+      }, 2000);
     },
   };
 }
@@ -81,16 +91,18 @@ export async function writeRowsChunked(rows, filename, mimeType, formatter) {
   const writer = await createWriter(filename, mimeType);
   try {
     for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
-      const chunk   = rows.slice(i, i + CHUNK_SIZE);
+      const chunk = rows.slice(i, i + CHUNK_SIZE);
       const isFirst = i === 0;
-      const isLast  = i + CHUNK_SIZE >= rows.length;
+      const isLast = i + CHUNK_SIZE >= rows.length;
       await writer.write(formatter(chunk, isFirst, isLast));
     }
     await writer.close();
-    logger.info(MODULE, 'write-complete', { filename, rows: rows.length });
+    logger.info(MODULE, "write-complete", { filename, rows: rows.length });
   } catch (err) {
-    logger.error(MODULE, 'write-fail', { filename, error: err.message });
-    try { await writer.close(); } catch {}
+    logger.error(MODULE, "write-fail", { filename, error: err.message });
+    try {
+      await writer.close();
+    } catch {}
     throw err;
   }
 }

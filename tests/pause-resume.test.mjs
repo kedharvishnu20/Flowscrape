@@ -38,7 +38,11 @@ const htmlSrc = await readFile(
 );
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const click = (n) => ({ id: `s${n}`, type: "CLICK", config: { selector: `.c${n}` } });
+const click = (n) => ({
+  id: `s${n}`,
+  type: "CLICK",
+  config: { selector: `.c${n}` },
+});
 const clicked = () =>
   calls.contentMessages.filter((m) => m.payload?.type === "CLICK").length;
 
@@ -179,6 +183,10 @@ test("the label follows the state, and a stop clears it", () => {
   assert.match(fn, /_runState\.paused = paused/);
 
   const stop = panelSrc.match(/function stopRunUI\(\)[\s\S]*?\n\}/)[0];
-  assert.match(stop, /_setPausedUI\(false\)/, "a stopped run must not stay Paused");
+  assert.match(
+    stop,
+    /_setPausedUI\(false\)/,
+    "a stopped run must not stay Paused",
+  );
   assert.match(stop, /run-controls"\)\?\.classList\.add\("hidden"\)/);
 });

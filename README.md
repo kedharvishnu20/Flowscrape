@@ -27,8 +27,9 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 341 tests, ~9s, no browser needed
+npm test        # 353 tests, ~9s, no browser needed
 npm run check   # parses every source file as an ES module
+npm run format  # prettier; `npm run format:check` in CI
 ```
 
 The extension itself has no dependencies and nothing to build — `npm install`
@@ -102,6 +103,7 @@ sidepanel/
 
 utils/
   step-types.js                The step vocabulary — one definition
+  version.js                   The version number — one definition
   logger.js                    Structured logger; redacts by key name
   color-utils.js               Zone colours, WCAG contrast
   strings.js                   UI strings (mostly unused)
@@ -133,7 +135,7 @@ data-sources/
   json-parser.js               (unreachable)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         341 tests; node:test, jsdom, fake-indexeddb
+tests/                         353 tests; node:test, jsdom, fake-indexeddb
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, manual, template guide, limitations
 ```
@@ -148,11 +150,11 @@ header, with the audit finding that explains why.
 
 Twenty-one, defined in [`utils/step-types.js`](utils/step-types.js).
 
-| Category | Steps |
-|---|---|
-| Action | `WEBSITE` `NAVIGATE` `CLICK` `FILL` `HOVER` `SELECT` `SCROLL` `KEYBOARD` `DRAG_DROP` `UPLOAD_ACTIVITY` |
-| Flow | `WAIT` `IF_ELSE` `LOOP` `PAGINATE` |
-| Data | `EXTRACT` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT` |
+| Category | Steps                                                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------ |
+| Action   | `WEBSITE` `NAVIGATE` `CLICK` `FILL` `HOVER` `SELECT` `SCROLL` `KEYBOARD` `DRAG_DROP` `UPLOAD_ACTIVITY` |
+| Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE`                                                                     |
+| Data     | `EXTRACT` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT`                    |
 
 `PDF_EXTRACTION` is a stub inside the extension: it logs a message pointing at
 the MCP server's `pdf_extract_text`, which does the real work.
@@ -187,15 +189,15 @@ Seven gates run before the first step. The side panel runs them as a preflight
 and shows what they found; the service worker runs them again at start, so a
 client that skips the preflight gains nothing.
 
-| Gate | Effect |
-|---|---|
-| 1 robots.txt | Warn if the path is disallowed (override with the bypass checkbox) |
-| 2 PII | Deferred to the content side, which does not implement it — currently a no-op |
-| 3 Rate limit | Warn above ~100 req/hr estimated |
-| 4 Captcha volume | Warn above 50 solves/hr estimated |
-| 5 Proxy geo | Warn if the proxy region differs from the declared one |
-| 6 Domain lock | **Block** if any step's origin differs from the tab's |
-| 7 Overlay readiness | Warn about selectors that match nothing on the page |
+| Gate                | Effect                                                                        |
+| ------------------- | ----------------------------------------------------------------------------- |
+| 1 robots.txt        | Warn if the path is disallowed (override with the bypass checkbox)            |
+| 2 PII               | Deferred to the content side, which does not implement it — currently a no-op |
+| 3 Rate limit        | Warn above ~100 req/hr estimated                                              |
+| 4 Captcha volume    | Warn above 50 solves/hr estimated                                             |
+| 5 Proxy geo         | Warn if the proxy region differs from the declared one                        |
+| 6 Domain lock       | **Block** if any step's origin differs from the tab's                         |
+| 7 Overlay readiness | Warn about selectors that match nothing on the page                           |
 
 Gate 6 is aggressive: it blocks multi-domain pipelines and any `API` step
 pointing at a third-party host. See audit B-03 — whether it should block, warn,
@@ -205,12 +207,12 @@ or exempt API steps is an open question.
 
 ## Storage and secrets
 
-| Where | What |
-|---|---|
-| `chrome.storage.session` | API keys (AES-GCM ciphertext) and the key that encrypts them |
-| `chrome.storage.local` | Pipelines per tab, overlay prefs, proxy pool metadata, the file library (base64, budgeted to 8 MB) |
-| IndexedDB (`flowscrape_v3`) | Result rows, run cursors |
-| Module scope | Nothing that has to survive a worker restart |
+| Where                       | What                                                                                               |
+| --------------------------- | -------------------------------------------------------------------------------------------------- |
+| `chrome.storage.session`    | API keys (AES-GCM ciphertext) and the key that encrypts them                                       |
+| `chrome.storage.local`      | Pipelines per tab, overlay prefs, proxy pool metadata, the file library (base64, budgeted to 8 MB) |
+| IndexedDB (`flowscrape_v3`) | Result rows, run cursors                                                                           |
+| Module scope                | Nothing that has to survive a worker restart                                                       |
 
 API keys live for one browser session and are cleared when Chrome closes.
 
@@ -245,12 +247,12 @@ A pipeline can be emitted as a runnable Python or Node script (Playwright).
 The emitters cover **17 of the 21 step types**. The other four need the
 extension itself and cannot be expressed standalone:
 
-| Step | Why |
-|---|---|
-| `UPLOAD_ACTIVITY` | Needs file bytes from the storage library |
-| `API_SNIFFER` | Needs the in-page fetch/XHR hook |
-| `PDF_EXTRACTION` | Needs the MCP server's PDF tooling |
-| `AUTO_EXTRACT` | Needs the three-layer extractor and a Gemini key |
+| Step              | Why                                              |
+| ----------------- | ------------------------------------------------ |
+| `UPLOAD_ACTIVITY` | Needs file bytes from the storage library        |
+| `API_SNIFFER`     | Needs the in-page fetch/XHR hook                 |
+| `PDF_EXTRACTION`  | Needs the MCP server's PDF tooling               |
+| `AUTO_EXTRACT`    | Needs the three-layer extractor and a Gemini key |
 
 Those emit an explicit `raise NotImplementedError` / `throw`, and are listed in
 the run log before the download. They used to become a `# TODO` comment, so the
@@ -287,13 +289,13 @@ See [`mcp/README.md`](mcp/README.md).
 
 ## Docs
 
-| File | What it is |
-|---|---|
-| [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) | Full issue inventory, with fix status |
+| File                                                                   | What it is                            |
+| ---------------------------------------------------------------------- | ------------------------------------- |
+| [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md)                           | Full issue inventory, with fix status |
 | [`docs/flowscrape-master-manual.md`](docs/flowscrape-master-manual.md) | Per-function reference (partly stale) |
-| [`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md) | Template syntax |
-| [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) | Platform constraints |
-| [`docs/TEST_CHECKLIST.md`](docs/TEST_CHECKLIST.md) | Manual browser checks |
+| [`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md)             | Template syntax                       |
+| [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)               | Platform constraints                  |
+| [`docs/TEST_CHECKLIST.md`](docs/TEST_CHECKLIST.md)                     | Manual browser checks                 |
 
 ---
 

@@ -68,7 +68,11 @@ test("Escape cancels and resolves null", async () => {
     ),
   );
 
-  assert.equal(selector, null, "the promise settles instead of hanging forever");
+  assert.equal(
+    selector,
+    null,
+    "the promise settles instead of hanging forever",
+  );
   h.close();
 });
 
@@ -103,7 +107,11 @@ test("a cancelled picker can be used again", async () => {
     target.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));
   });
 
-  assert.equal(typeof second, "string", "the picker still works after a cancel");
+  assert.equal(
+    typeof second,
+    "string",
+    "the picker still works after a cancel",
+  );
   h.close();
 });
 
@@ -147,11 +155,12 @@ test("cancelling removes every listener it installed", async () => {
 });
 
 test("the blocker overlay actually blocks", async () => {
-  const src = await (await import("node:fs/promises")).readFile(
-    new URL("../content/injector.js", import.meta.url),
-    "utf8",
-  );
-  const fn = src.match(/async function _activateSelectorPicker\([\s\S]*?\n\}/)[0];
+  const src = await (
+    await import("node:fs/promises")
+  ).readFile(new URL("../content/injector.js", import.meta.url), "utf8");
+  const fn = src.match(
+    /async function _activateSelectorPicker\([\s\S]*?\n\}/,
+  )[0];
 
   assert.match(
     fn,
@@ -161,9 +170,8 @@ test("the blocker overlay actually blocks", async () => {
 });
 
 test("the tooltip tells the user how to cancel", async () => {
-  const src = await (await import("node:fs/promises")).readFile(
-    new URL("../content/injector.js", import.meta.url),
-    "utf8",
-  );
+  const src = await (
+    await import("node:fs/promises")
+  ).readFile(new URL("../content/injector.js", import.meta.url), "utf8");
   assert.match(src, /Esc to cancel/);
 });

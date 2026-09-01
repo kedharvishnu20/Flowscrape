@@ -33,14 +33,22 @@ test("`Disallow:` with no path allows everything", () => {
 
 test("an empty Allow: is ignored rather than matching everything", () => {
   const txt = "User-agent: *\nAllow:\nDisallow: /private";
-  assert.equal(allowed(txt, "/private/x"), false, "the real rule still applies");
+  assert.equal(
+    allowed(txt, "/private/x"),
+    false,
+    "the real rule still applies",
+  );
   assert.equal(allowed(txt, "/public"), true);
 });
 
 test("an empty rule cannot outrank a real one", () => {
   // Length 0 used to match every path and could win when nothing else did.
   const parsed = parseRobots("User-agent: *\nDisallow:\nDisallow: /admin");
-  assert.equal(parsed.agentRules.get("*").length, 1, "the empty rule is dropped");
+  assert.equal(
+    parsed.agentRules.get("*").length,
+    1,
+    "the empty rule is dropped",
+  );
   assert.equal(isAllowedByRules(parsed, "/admin/panel"), false);
   assert.equal(isAllowedByRules(parsed, "/home"), true);
 });
@@ -115,7 +123,8 @@ test("Allow wins a tie, whichever order they appear in", () => {
 });
 
 test("a specific user-agent group replaces the wildcard group", () => {
-  const txt = "User-agent: *\nDisallow: /\n\nUser-agent: FlowScrape\nAllow: /\nDisallow: /admin";
+  const txt =
+    "User-agent: *\nDisallow: /\n\nUser-agent: FlowScrape\nAllow: /\nDisallow: /admin";
   assert.equal(allowed(txt, "/products", "FlowScrape"), true);
   assert.equal(allowed(txt, "/admin", "FlowScrape"), false);
   assert.equal(allowed(txt, "/products", "OtherBot"), false);
@@ -155,13 +164,25 @@ test("any 4xx on robots.txt means no restrictions", async () => {
   const real = globalThis.fetch;
 
   for (const status of [401, 403, 404, 410]) {
-    globalThis.fetch = async () => ({ ok: false, status, async text() { return ""; } });
+    globalThis.fetch = async () => ({
+      ok: false,
+      status,
+      async text() {
+        return "";
+      },
+    });
     const r = await fetchRobots(`https://s${status}.test`);
     assert.ok(r, `status ${status} should parse as an empty ruleset`);
     assert.equal(isAllowedByRules(r, "/anything"), true);
   }
 
-  globalThis.fetch = async () => ({ ok: false, status: 503, async text() { return ""; } });
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 503,
+    async text() {
+      return "";
+    },
+  });
   assert.equal(
     await fetchRobots("https://s503.test"),
     null,

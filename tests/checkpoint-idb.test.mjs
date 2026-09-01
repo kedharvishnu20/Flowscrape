@@ -51,7 +51,11 @@ test("cursors round-trip after row-buffer created the database", async () => {
 test("a write is durable by the time saveCursor resolves", async () => {
   // The old _tx resolved when its callback returned, not when the transaction
   // committed, so it could report success for a write still in flight.
-  await cursorStore.saveCursor({ runId: "run_durable", rowIndex: 1, stepIndex: 1 });
+  await cursorStore.saveCursor({
+    runId: "run_durable",
+    rowIndex: 1,
+    stepIndex: 1,
+  });
   const immediately = await cursorStore.loadCursor("run_durable");
   assert.equal(immediately?.rowIndex, 1);
   await cursorStore.deleteCursor("run_durable");
@@ -65,7 +69,11 @@ test("resume-manager detects and clears an incomplete run", async () => {
   await resume.markRunCompleted("run_A");
 
   const after = await resume.getResumePayload();
-  assert.equal(after.hasResumable, false, "cursor is gone once the run completes");
+  assert.equal(
+    after.hasResumable,
+    false,
+    "cursor is gone once the run completes",
+  );
 });
 
 test("rows are stored, tagged and scoped per run", async () => {
@@ -82,7 +90,11 @@ test("rows are stored, tagged and scoped per run", async () => {
   await rowBuffer.pushRow("run_B", { name: "Other" });
   await rowBuffer.finalizeBuffer("run_B");
 
-  assert.equal((await rowBuffer.readAllRows("run_A")).length, 2, "run_A untouched");
+  assert.equal(
+    (await rowBuffer.readAllRows("run_A")).length,
+    2,
+    "run_A untouched",
+  );
   assert.equal((await rowBuffer.readAllRows("run_B")).length, 1);
   assert.equal(
     (await rowBuffer.readAllRows("latest")).length,

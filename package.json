@@ -6,11 +6,14 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "node scripts/check-syntax.mjs"
+    "check": "node scripts/check-syntax.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
     "fake-indexeddb": "^6.0.0",
-    "jsdom": "^30.0.1"
+    "jsdom": "^30.0.1",
+    "prettier": "^3.9.6"
   },
   "engines": {
     "node": ">=18"

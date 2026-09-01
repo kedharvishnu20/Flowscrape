@@ -30,16 +30,24 @@ const mcpSrc = await read("mcp/server.mjs");
 
 /** Step types injector's _executeStep actually dispatches. */
 function injectorCases() {
-  const fn = injectorSrc.match(/async function _executeStep\(step\) \{[\s\S]*?\n\}/)[0];
+  const fn = injectorSrc.match(
+    /async function _executeStep\(step\) \{[\s\S]*?\n\}/,
+  )[0];
   return new Set([...fn.matchAll(/case "([A-Z_]+)":/g)].map((m) => m[1]));
 }
 
 test("the registry is well formed", () => {
   for (const [type, entry] of Object.entries(STEP_TYPES)) {
     assert.ok(entry.icon, `${type} has an icon`);
-    assert.ok(["Action", "Flow", "Data"].includes(entry.cat), `${type} has a category`);
+    assert.ok(
+      ["Action", "Flow", "Data"].includes(entry.cat),
+      `${type} has a category`,
+    );
     assert.ok(entry.desc, `${type} has a description`);
-    assert.ok(["page", "background"].includes(entry.runsIn), `${type} declares where it runs`);
+    assert.ok(
+      ["page", "background"].includes(entry.runsIn),
+      `${type} declares where it runs`,
+    );
     assert.equal(typeof entry.def, "object", `${type} has defaults`);
   }
 });
@@ -47,7 +55,11 @@ test("the registry is well formed", () => {
 test("injector handles every step type that runs in the page", () => {
   const handled = injectorCases();
   const missing = PAGE_STEP_TYPES.filter((t) => !handled.has(t));
-  assert.deepEqual(missing, [], "these would throw 'Unknown step type' at runtime");
+  assert.deepEqual(
+    missing,
+    [],
+    "these would throw 'Unknown step type' at runtime",
+  );
 });
 
 test("injector has no cases for types the registry does not know", () => {
@@ -66,7 +78,10 @@ test("the MCP server derives its supported types from the registry", () => {
     /const supportedStepTypes = new Set\(ALL_STEP_TYPES\)/,
     "hand-maintaining this list is what caused the drift",
   );
-  assert.match(mcpSrc, /import \{ ALL_STEP_TYPES \} from "\.\.\/utils\/step-types\.js"/);
+  assert.match(
+    mcpSrc,
+    /import \{ ALL_STEP_TYPES \} from "\.\.\/utils\/step-types\.js"/,
+  );
 });
 
 test("FORM_FILL is not advertised as a step type", () => {
@@ -90,7 +105,10 @@ test("the side panel builds its palette from the registry", () => {
 test("internal dispatch types stay out of the palette", () => {
   for (const type of ["TYPE", "QUERY_COUNT", "QUERY_ELEMENTS"]) {
     assert.ok(isKnownStepType(type), `${type} is still recognised`);
-    assert.ok(!USER_STEP_TYPES.includes(type), `${type} is not offered in the palette`);
+    assert.ok(
+      !USER_STEP_TYPES.includes(type),
+      `${type} is not offered in the palette`,
+    );
   }
 });
 
@@ -103,14 +121,22 @@ test("every palette type has a colour token in the panel stylesheet", async () =
     [...html.matchAll(/--step-([A-Z_]+)\s*:/g)].map((m) => m[1]),
   );
   const missing = USER_STEP_TYPES.filter((t) => !defined.has(t));
-  assert.deepEqual(missing, [], "these render with no background in the palette");
+  assert.deepEqual(
+    missing,
+    [],
+    "these render with no background in the palette",
+  );
 });
 
 test("defaultConfig hands out a fresh object every time", () => {
   const a = defaultConfig("EXTRACT");
   const b = defaultConfig("EXTRACT");
   a.fields.push({ name: "x" });
-  assert.deepEqual(b.fields, [], "two steps must not share one defaults object");
+  assert.deepEqual(
+    b.fields,
+    [],
+    "two steps must not share one defaults object",
+  );
 });
 
 test("defaultConfig rejects an unknown type", () => {

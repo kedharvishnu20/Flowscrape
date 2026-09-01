@@ -10,10 +10,17 @@
 // exported scroll used the hardcoded default of 300px.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compilePipeline, findUnexportableSteps } from "../script-gen/pipeline-compiler.js";
+import {
+  compilePipeline,
+  findUnexportableSteps,
+} from "../script-gen/pipeline-compiler.js";
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
-import { EXPORTABLE_STEP_TYPES, USER_STEP_TYPES, STEP_TYPES } from "../utils/step-types.js";
+import {
+  EXPORTABLE_STEP_TYPES,
+  USER_STEP_TYPES,
+  STEP_TYPES,
+} from "../utils/step-types.js";
 
 const compile = (steps) =>
   compilePipeline({ name: "t", targetOrigin: "https://shop.test", steps }).ast;
@@ -23,7 +30,12 @@ const emit = (steps) => ({
   js: emitNode(compile(steps)),
 });
 
-const step = (type, config = {}, extra = {}) => ({ id: `s_${type}`, type, config, ...extra });
+const step = (type, config = {}, extra = {}) => ({
+  id: `s_${type}`,
+  type,
+  config,
+  ...extra,
+});
 
 test("FILL is emitted, in both languages", () => {
   const { py, js } = emit([
@@ -61,7 +73,10 @@ test("HOVER, SELECT, KEYBOARD, PAGINATE, DRAG_DROP and SCREENSHOT all emit", () 
     step("SCREENSHOT", {}),
   ]);
 
-  for (const [lang, code] of [["python", py], ["node", js]]) {
+  for (const [lang, code] of [
+    ["python", py],
+    ["node", js],
+  ]) {
     assert.ok(!/TODO/.test(code), `${lang} emitted a TODO`);
     assert.ok(/hover/i.test(code), `${lang} hover`);
     assert.ok(/select_option|selectOption/.test(code), `${lang} select`);
@@ -78,7 +93,11 @@ test("a Ctrl combo becomes Playwright's key name", () => {
 
 test("SCROLL uses the amount the UI actually writes", () => {
   const { py, js } = emit([step("SCROLL", { mode: "pixel", amount: 1200 })]);
-  assert.match(py, /scrollBy\(0, 1200\)/, "config.amount, not the 300px default");
+  assert.match(
+    py,
+    /scrollBy\(0, 1200\)/,
+    "config.amount, not the 300px default",
+  );
   assert.match(js, /scrollBy\(0, 1200\)/);
 });
 
@@ -98,7 +117,11 @@ test("SCROLL honours its other modes", () => {
 test("an unexportable step fails loudly instead of becoming a comment", () => {
   const { py, js } = emit([step("AUTO_EXTRACT", {})]);
 
-  assert.match(py, /raise NotImplementedError/, "python refuses to run past it");
+  assert.match(
+    py,
+    /raise NotImplementedError/,
+    "python refuses to run past it",
+  );
   assert.match(js, /throw new Error/, "node refuses to run past it");
   assert.ok(!/# TODO/.test(py), "a comment let the script run and do nothing");
 });
@@ -110,11 +133,16 @@ test("unexportable steps are reported, including nested ones", () => {
     step(
       "IF_ELSE",
       {},
-      { ifBranch: [step("API_SNIFFER", {})], elseBranch: [step("CLICK", { selector: ".x" })] },
+      {
+        ifBranch: [step("API_SNIFFER", {})],
+        elseBranch: [step("CLICK", { selector: ".x" })],
+      },
     ),
   ]);
 
-  const found = findUnexportableSteps(ast).map((s) => s.type).sort();
+  const found = findUnexportableSteps(ast)
+    .map((s) => s.type)
+    .sort();
   assert.deepEqual(found, ["API_SNIFFER", "AUTO_EXTRACT"]);
 });
 
@@ -147,7 +175,11 @@ test("every step the registry calls exportable really is emitted", () => {
     const code = emitPython(compile([step(type, STEP_TYPES[type].def)]));
     if (/NotImplementedError|# TODO/.test(code)) missing.push(type);
   }
-  assert.deepEqual(missing, [], "these are marked exportable but emit a failure");
+  assert.deepEqual(
+    missing,
+    [],
+    "these are marked exportable but emit a failure",
+  );
 });
 
 test("the four unexportable types are the ones that need the extension", () => {

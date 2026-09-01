@@ -89,7 +89,9 @@ function makeDispatcher() {
           resolve(v);
         }
       };
-      const anyAsync = listeners.map((fn) => fn(msg, {}, respond)).some((k) => k === true);
+      const anyAsync = listeners
+        .map((fn) => fn(msg, {}, respond))
+        .some((k) => k === true);
       setTimeout(() => respond(undefined), anyAsync ? 50 : 0);
     });
 
@@ -102,7 +104,12 @@ function wireListeners({ add }) {
     PICK_SELECTOR: "FS_PICK_SELECTOR",
     FORM_FILL_ROW: "FS_FORM_FILL_ROW",
   };
-  const OWNED = new Set([CE.STEP_EXEC, CE.FORM_FILL_ROW, CE.PICK_SELECTOR, "step:execute"]);
+  const OWNED = new Set([
+    CE.STEP_EXEC,
+    CE.FORM_FILL_ROW,
+    CE.PICK_SELECTOR,
+    "step:execute",
+  ]);
 
   // injector.js
   add((msg, sender, respond) => {
@@ -117,7 +124,10 @@ function wireListeners({ add }) {
   // overlay-engine.js
   const overlayEngine = {
     async previewAll(steps) {
-      return { matched: ["z1"], unmatched: steps.length > 1 ? [".missing"] : [] };
+      return {
+        matched: ["z1"],
+        unmatched: steps.length > 1 ? [".missing"] : [],
+      };
     },
     setMode() {},
     async reloadPrefs() {},
@@ -149,8 +159,14 @@ test("injector still answers its own message types", async () => {
   const d = makeDispatcher();
   wireListeners(d);
 
-  assert.equal((await d.dispatch({ type: "step:execute", payload: {} }))?.result?.from, "injector");
-  assert.equal((await d.dispatch({ type: "FS_PICK_SELECTOR", payload: {} }))?.result?.from, "injector");
+  assert.equal(
+    (await d.dispatch({ type: "step:execute", payload: {} }))?.result?.from,
+    "injector",
+  );
+  assert.equal(
+    (await d.dispatch({ type: "FS_PICK_SELECTOR", payload: {} }))?.result?.from,
+    "injector",
+  );
 });
 
 test("Gate 7 receives real previewAll results", async () => {
@@ -162,23 +178,37 @@ test("Gate 7 receives real previewAll results", async () => {
     payload: { action: "previewAll", steps: [{}, {}] },
   });
   assert.equal(r?.ok, true);
-  assert.deepEqual(r.unmatched, [".missing"], "previewAll is async; spreading the promise lost this");
+  assert.deepEqual(
+    r.unmatched,
+    [".missing"],
+    "previewAll is async; spreading the promise lost this",
+  );
 
   const clean = await d.dispatch({
     type: "overlay:setMode",
     payload: { action: "previewAll", steps: [{}] },
   });
-  assert.deepEqual(clean.unmatched, [], "no findings is an empty array, never undefined");
+  assert.deepEqual(
+    clean.unmatched,
+    [],
+    "no findings is an empty array, never undefined",
+  );
 });
 
 test("overlay:reloadPrefs is handled", async () => {
   const d = makeDispatcher();
   wireListeners(d);
-  assert.equal((await d.dispatch({ type: "overlay:reloadPrefs", payload: {} }))?.ok, true);
+  assert.equal(
+    (await d.dispatch({ type: "overlay:reloadPrefs", payload: {} }))?.ok,
+    true,
+  );
 });
 
 test("a type neither listener owns draws no bogus ok:true", async () => {
   const d = makeDispatcher();
   wireListeners(d);
-  assert.equal(await d.dispatch({ type: "totally:unknown", payload: {} }), undefined);
+  assert.equal(
+    await d.dispatch({ type: "totally:unknown", payload: {} }),
+    undefined,
+  );
 });

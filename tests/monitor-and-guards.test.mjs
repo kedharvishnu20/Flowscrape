@@ -66,7 +66,9 @@ test("an EXTRACT publishes its rows immediately", () => {
 });
 
 test("the panel reads the row count from rows, not from progress", () => {
-  const handler = src.match(/if \(msg\.type === "pipeline:status"\) \{[\s\S]*?\n {6}\}/)[0];
+  const handler = src.match(
+    /if \(msg\.type === "pipeline:status"\) \{[\s\S]*?\n {6}\}/,
+  )[0];
   assert.ok(
     !/mon-rows"\)\.textContent = info\.progress\.current/.test(src),
     "the step counter is no longer wired to the row card",
@@ -86,16 +88,21 @@ test("the card says what it now shows", () => {
 // ── E-06: no more alert() ────────────────────────────────────────────────────
 
 test("no routine error goes through alert()", () => {
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
   assert.ok(!/\balert\(/.test(code), "alert() blocks the whole panel");
 });
 
 test("notify writes to the log pane and shows a banner", () => {
-  const dom = new JSDOM(`<!doctype html><body><div id="mon-logs"></div></body>`);
+  const dom = new JSDOM(
+    `<!doctype html><body><div id="mon-logs"></div></body>`,
+  );
   const { document } = dom.window;
 
-  const notifySrc =
-    src.match(/const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/)[0];
+  const notifySrc = src.match(
+    /const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/,
+  )[0];
   const notify = new Function(
     "document",
     "setTimeout",
@@ -109,13 +116,19 @@ test("notify writes to the log pane and shows a banner", () => {
   const toast = document.querySelector("#fs-toasts .fs-toast");
   assert.ok(toast, "and shown where the user is actually looking");
   assert.equal(toast.textContent, "Refresh the target webpage first.");
-  assert.ok(toast.classList.contains("error-log"), "the level is carried through");
+  assert.ok(
+    toast.classList.contains("error-log"),
+    "the level is carried through",
+  );
 });
 
 test("a toast carries page text as text, never as markup", () => {
-  const dom = new JSDOM(`<!doctype html><body><div id="mon-logs"></div></body>`);
-  const notifySrc =
-    src.match(/const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/)[0];
+  const dom = new JSDOM(
+    `<!doctype html><body><div id="mon-logs"></div></body>`,
+  );
+  const notifySrc = src.match(
+    /const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/,
+  )[0];
   const notify = new Function(
     "document",
     "setTimeout",
@@ -130,7 +143,10 @@ test("a toast carries page text as text, never as markup", () => {
 
 test("the toast layer is styled and sits above the board", () => {
   assert.match(htmlSrc, /#fs-toasts \{[\s\S]*?z-index: 10000/);
-  assert.match(htmlSrc, /\.fs-toast\.error-log \{ border-left-color: var\(--red\)/);
+  assert.match(
+    htmlSrc,
+    /\.fs-toast\.error-log \{\s*border-left-color: var\(--red\)/,
+  );
 });
 
 // ── E-07: what the test actually did ─────────────────────────────────────────
@@ -173,14 +189,26 @@ test("a huge result is clipped rather than flooding the pane", () => {
 
 test("_testStep logs the result and clears its outcome class", () => {
   const fn = extract(/async function _testStep\(e, id\) \{[\s\S]*?\n\}\n/);
-  assert.match(fn, /_describeStepResult\(res\?\.result\)/, "the result is shown");
-  assert.match(fn, /notify\(\s*\n?\s*"error-log"/, "failures go to the log, not alert()");
+  assert.match(
+    fn,
+    /_describeStepResult\(res\?\.result\)/,
+    "the result is shown",
+  );
+  assert.match(
+    fn,
+    /notify\(\s*\n?\s*"error-log"/,
+    "failures go to the log, not alert()",
+  );
   assert.match(
     fn,
     /card\.classList\.remove\("success", "error"\)/,
     "a stale outcome class used to sit there until the next render",
   );
-  assert.match(fn, /clearTimeout\(_testStepTimers\.get\(id\)\)/, "re-testing resets it");
+  assert.match(
+    fn,
+    /clearTimeout\(_testStepTimers\.get\(id\)\)/,
+    "re-testing resets it",
+  );
 });
 
 // ── E-14: destructive actions ────────────────────────────────────────────────
@@ -205,7 +233,9 @@ test("clearing the file library asks first", () => {
   assert.match(fn, /await _confirmDestructive\(/);
   assert.match(fn, /if \(!ok\) return;/);
   assert.match(fn, /UPLOAD_ACTIVITY/, "it says what else breaks");
-  assert.ok(fn.indexOf("_confirmDestructive") < fn.indexOf("_storageFiles = []"));
+  assert.ok(
+    fn.indexOf("_confirmDestructive") < fn.indexOf("_storageFiles = []"),
+  );
 });
 
 test("an empty pipeline or library does not prompt at all", () => {
@@ -222,7 +252,11 @@ test("the dialog defaults to the safe option and takes Escape", () => {
   assert.match(fn, /cancel\.focus\(\)/, "Enter must not confirm a delete");
   assert.match(fn, /if \(e\.key === "Escape"\) done\(false\)/);
   assert.ok(!/innerHTML/.test(fn), "the body carries counts and file names");
-  assert.match(fn, /removeEventListener\("keydown", onKey, true\)/, "no leaked listener");
+  assert.match(
+    fn,
+    /removeEventListener\("keydown", onKey, true\)/,
+    "no leaked listener",
+  );
 });
 
 test("the dialog resolves false when dismissed by the backdrop", async () => {
@@ -250,7 +284,10 @@ test("the dialog resolves true only on the confirm button", async () => {
 
   const p = confirmFn({ title: "t", body: "9 steps", confirmLabel: "Clear" });
   const buttons = [...g.document.querySelectorAll("button")];
-  assert.deepEqual(buttons.map((b) => b.textContent), ["Cancel", "Clear"]);
+  assert.deepEqual(
+    buttons.map((b) => b.textContent),
+    ["Cancel", "Clear"],
+  );
   assert.match(g.document.body.textContent, /9 steps/);
   buttons[1].click();
   assert.equal(await p, true);

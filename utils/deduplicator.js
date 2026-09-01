@@ -13,7 +13,7 @@
  * @dependencies none
  */
 
-'use strict';
+"use strict";
 
 /** @type {Set<number>} */
 const _seen = new Set();
@@ -27,7 +27,7 @@ let _totalDuplicates = 0;
 function _hash(str) {
   let h = 5381;
   for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) + h) + str.charCodeAt(i);
+    h = (h << 5) + h + str.charCodeAt(i);
     h |= 0; // convert to 32-bit integer
   }
   return h >>> 0; // unsigned
@@ -41,7 +41,7 @@ function _hash(str) {
  */
 function _hashRow(row, keyColumns) {
   const subset = keyColumns
-    ? Object.fromEntries(keyColumns.map(k => [k, row[k]]))
+    ? Object.fromEntries(keyColumns.map((k) => [k, row[k]]))
     : row;
   return _hash(JSON.stringify(subset));
 }
@@ -80,7 +80,7 @@ export function getStats() {
  * @returns {object[]}
  */
 export function deduplicateRows(rows, keyColumns) {
-  return rows.filter(row => !isDuplicate(row, keyColumns));
+  return rows.filter((row) => !isDuplicate(row, keyColumns));
 }
 
 // === END deduplicator.js ===

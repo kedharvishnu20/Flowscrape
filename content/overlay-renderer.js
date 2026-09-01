@@ -13,22 +13,28 @@
  * @dependencies color-utils
  */
 
-'use strict';
+"use strict";
 
 import {
-  hexToRGBA, badgeTextColor, ZONE_PALETTE,
-  COLOR_CAPTCHA, COLOR_BLOCKED, COLOR_SUCCESS, COLOR_WARNING, COLOR_ERROR,
-} from '../utils/color-utils.js';
+  hexToRGBA,
+  badgeTextColor,
+  ZONE_PALETTE,
+  COLOR_CAPTCHA,
+  COLOR_BLOCKED,
+  COLOR_SUCCESS,
+  COLOR_WARNING,
+  COLOR_ERROR,
+} from "../utils/color-utils.js";
 
 // ── Constants from canonical registry ────────────────────────────────────────
-const OVERLAY_OPACITY         = 0.28;
-const OVERLAY_BORDER_RADIUS   = '4px';
-const OVERLAY_LABEL_FONT      = '"JetBrains Mono", monospace';
-const OVERLAY_LABEL_SIZE      = '11px';
-const OVERLAY_LABEL_PADDING   = '2px 6px';
-const OVERLAY_Z_INDEX         = 2147483647;
-const OVERLAY_PULSE_DURATION  = '600ms';
-const OVERLAY_TRANSITION      = '180ms ease';
+const OVERLAY_OPACITY = 0.28;
+const OVERLAY_BORDER_RADIUS = "4px";
+const OVERLAY_LABEL_FONT = '"JetBrains Mono", monospace';
+const OVERLAY_LABEL_SIZE = "11px";
+const OVERLAY_LABEL_PADDING = "2px 6px";
+const OVERLAY_Z_INDEX = 2147483647;
+const OVERLAY_PULSE_DURATION = "600ms";
+const OVERLAY_TRANSITION = "180ms ease";
 const OVERLAY_LABEL_MAX_CHARS = 24;
 
 // Crosshatch SVG for 'blocked' mode (data URI, no remote fetch)
@@ -66,11 +72,14 @@ export function injectAnimationSheet(shadowRoot) {
   try {
     const sheet = new CSSStyleSheet();
     sheet.replaceSync(ANIM_CSS);
-    shadowRoot.adoptedStyleSheets = [...(shadowRoot.adoptedStyleSheets ?? []), sheet];
+    shadowRoot.adoptedStyleSheets = [
+      ...(shadowRoot.adoptedStyleSheets ?? []),
+      sheet,
+    ];
     shadowRoot._fsAnimInjected = true;
   } catch {
     // Fallback for browsers without adoptedStyleSheets
-    const style = document.createElement('style');
+    const style = document.createElement("style");
     style.textContent = ANIM_CSS;
     shadowRoot.appendChild(style);
     shadowRoot._fsAnimInjected = true;
@@ -79,15 +88,15 @@ export function injectAnimationSheet(shadowRoot) {
 
 // ── Truncate label ────────────────────────────────────────────────────────────
 function _truncLabel(label) {
-  if (!label) return '';
+  if (!label) return "";
   return label.length > OVERLAY_LABEL_MAX_CHARS
-    ? label.slice(0, OVERLAY_LABEL_MAX_CHARS - 1) + '…'
+    ? label.slice(0, OVERLAY_LABEL_MAX_CHARS - 1) + "…"
     : label;
 }
 
 // ── Badge element ─────────────────────────────────────────────────────────────
 function _createBadge(text, bgColor) {
-  const badge = document.createElement('div');
+  const badge = document.createElement("div");
   const textColor = badgeTextColor(bgColor);
   badge.style.cssText = [
     `position:absolute`,
@@ -105,15 +114,15 @@ function _createBadge(text, bgColor) {
     `z-index:${OVERLAY_Z_INDEX}`,
     `user-select:none`,
     `will-change:transform`,
-  ].join(';');
+  ].join(";");
   badge.textContent = _truncLabel(text);
-  badge.dataset.fsBadge = '1';
+  badge.dataset.fsBadge = "1";
   return badge;
 }
 
 // ── Base overlay div ──────────────────────────────────────────────────────────
 function _createOverlayDiv(rect, color, mode) {
-  const div = document.createElement('div');
+  const div = document.createElement("div");
   _applyOverlayBase(div, rect, color, mode);
   return div;
 }
@@ -132,78 +141,90 @@ function _applyOverlayBase(div, rect, color, mode) {
     `will-change:opacity,transform`,
     `transition:${OVERLAY_TRANSITION}`,
     `box-sizing:border-box`,
-  ].join(';');
+  ].join(";");
   _applyModeStyle(div, color, mode);
 }
 
 function _applyModeStyle(div, color, mode) {
   // Remove any existing animation
-  div.style.animation = 'none';
+  div.style.animation = "none";
 
   switch (mode) {
-    case 'preview':
+    case "preview":
       div.style.background = hexToRGBA(color, OVERLAY_OPACITY);
-      div.style.border     = `2px solid ${color}`;
+      div.style.border = `2px solid ${color}`;
       break;
 
-    case 'live':
+    case "live":
       div.style.background = hexToRGBA(color, 0.15);
-      div.style.border     = `2px solid ${color}`;
-      div.style.animation  = `fs-pulse ${OVERLAY_PULSE_DURATION} ease-in-out infinite`;
+      div.style.border = `2px solid ${color}`;
+      div.style.animation = `fs-pulse ${OVERLAY_PULSE_DURATION} ease-in-out infinite`;
       break;
 
-    case 'completed':
+    case "completed":
       div.style.background = hexToRGBA(COLOR_SUCCESS, 0.15);
-      div.style.border     = `2px solid ${COLOR_SUCCESS}`;
+      div.style.border = `2px solid ${COLOR_SUCCESS}`;
       break;
 
-    case 'error':
+    case "error":
       div.style.background = hexToRGBA(COLOR_ERROR, 0.35);
-      div.style.border     = `2px dashed ${COLOR_ERROR}`;
-      div.style.animation  = `fs-pulse 400ms ease-in-out 4`;
+      div.style.border = `2px dashed ${COLOR_ERROR}`;
+      div.style.animation = `fs-pulse 400ms ease-in-out 4`;
       break;
 
-    case 'blocked':
+    case "blocked":
       div.style.background = CROSSHATCH_SVG;
       div.style.backgroundColor = hexToRGBA(COLOR_BLOCKED, 0.15);
-      div.style.border     = `2px solid ${COLOR_BLOCKED}`;
-      div.style.opacity    = '0.8';
+      div.style.border = `2px solid ${COLOR_BLOCKED}`;
+      div.style.opacity = "0.8";
       break;
 
-    case 'selector':
-      div.style.background = 'transparent';
-      div.style.border     = `2px solid #06B6D4`; // teal
-      div.style.boxShadow  = `0 0 0 1px rgba(6,182,212,0.3)`;
+    case "selector":
+      div.style.background = "transparent";
+      div.style.border = `2px solid #06B6D4`; // teal
+      div.style.boxShadow = `0 0 0 1px rgba(6,182,212,0.3)`;
       break;
 
     default:
       div.style.background = hexToRGBA(color, OVERLAY_OPACITY);
-      div.style.border     = `2px solid ${color}`;
+      div.style.border = `2px solid ${color}`;
   }
 }
 
 // ── Badge label for mode ──────────────────────────────────────────────────────
 function _modeBadgeText(mode, label, message, isMulti, matchCount) {
   switch (mode) {
-    case 'completed': return `✓ ${_truncLabel(label)}`;
-    case 'error':     return `❌ ${_truncLabel(message ?? 'Error')}`;
-    case 'blocked':   return `⛔ Blocked`;
-    case 'live':      return `⟳ ${_truncLabel(label)}`;
-    case 'selector':  return `🖱 ${_truncLabel(label)}`;
+    case "completed":
+      return `✓ ${_truncLabel(label)}`;
+    case "error":
+      return `❌ ${_truncLabel(message ?? "Error")}`;
+    case "blocked":
+      return `⛔ Blocked`;
+    case "live":
+      return `⟳ ${_truncLabel(label)}`;
+    case "selector":
+      return `🖱 ${_truncLabel(label)}`;
     default:
-      if (isMulti && matchCount > 1) return `${_truncLabel(label)} · ×${matchCount}`;
+      if (isMulti && matchCount > 1)
+        return `${_truncLabel(label)} · ×${matchCount}`;
       return _truncLabel(label);
   }
 }
 
 function _modeBadgeColor(mode, color) {
   switch (mode) {
-    case 'completed': return COLOR_SUCCESS;
-    case 'error':     return COLOR_ERROR;
-    case 'blocked':   return COLOR_BLOCKED;
-    case 'live':      return color;
-    case 'selector':  return '#06B6D4';
-    default:          return color;
+    case "completed":
+      return COLOR_SUCCESS;
+    case "error":
+      return COLOR_ERROR;
+    case "blocked":
+      return COLOR_BLOCKED;
+    case "live":
+      return color;
+    case "selector":
+      return "#06B6D4";
+    default:
+      return color;
   }
 }
 
@@ -221,16 +242,24 @@ function _modeBadgeColor(mode, color) {
  * @param {number}  matchCount
  * @returns {HTMLElement}
  */
-export function createOverlayElement(shadowRoot, rect, color, mode, label, isMulti, matchCount) {
+export function createOverlayElement(
+  shadowRoot,
+  rect,
+  color,
+  mode,
+  label,
+  isMulti,
+  matchCount,
+) {
   const div = _createOverlayDiv(rect, color, mode);
 
-  const badgeText  = _modeBadgeText(mode, label, null, isMulti, matchCount);
+  const badgeText = _modeBadgeText(mode, label, null, isMulti, matchCount);
   const badgeColor = _modeBadgeColor(mode, color);
   const badge = _createBadge(badgeText, badgeColor);
   div.appendChild(badge);
-  div.dataset.fsLabel    = label;
-  div.dataset.fsColor    = color;
-  div.dataset.fsMode     = mode;
+  div.dataset.fsLabel = label;
+  div.dataset.fsColor = color;
+  div.dataset.fsMode = mode;
 
   shadowRoot.appendChild(div);
   return div;
@@ -246,17 +275,31 @@ export function createOverlayElement(shadowRoot, rect, color, mode, label, isMul
  * @param {boolean}     [isMulti]
  * @param {number}      [matchCount]
  */
-export function updateOverlayElement(div, color, mode, label, errorMessage, isMulti, matchCount) {
+export function updateOverlayElement(
+  div,
+  color,
+  mode,
+  label,
+  errorMessage,
+  isMulti,
+  matchCount,
+) {
   _applyModeStyle(div, color, mode);
   div.dataset.fsMode = mode;
 
-  const badge = div.querySelector('[data-fs-badge]');
+  const badge = div.querySelector("[data-fs-badge]");
   if (badge) {
-    const badgeText  = _modeBadgeText(mode, label ?? div.dataset.fsLabel, errorMessage, isMulti, matchCount);
+    const badgeText = _modeBadgeText(
+      mode,
+      label ?? div.dataset.fsLabel,
+      errorMessage,
+      isMulti,
+      matchCount,
+    );
     const badgeColor = _modeBadgeColor(mode, color);
     badge.textContent = _truncLabel(badgeText);
     badge.style.background = badgeColor;
-    badge.style.color      = badgeTextColor(badgeColor);
+    badge.style.color = badgeTextColor(badgeColor);
   }
 }
 
@@ -266,7 +309,7 @@ export function updateOverlayElement(div, color, mode, label, errorMessage, isMu
  * @param {string}      labelText
  */
 export function updateOverlayLabel(div, labelText) {
-  const badge = div.querySelector('[data-fs-badge]');
+  const badge = div.querySelector("[data-fs-badge]");
   if (badge) badge.textContent = _truncLabel(labelText);
 }
 
@@ -276,9 +319,9 @@ export function updateOverlayLabel(div, labelText) {
  * @param {DOMRect}     rect
  */
 export function repositionOverlay(div, rect) {
-  div.style.top    = `${rect.top}px`;
-  div.style.left   = `${rect.left}px`;
-  div.style.width  = `${rect.width}px`;
+  div.style.top = `${rect.top}px`;
+  div.style.left = `${rect.left}px`;
+  div.style.width = `${rect.width}px`;
   div.style.height = `${rect.height}px`;
 }
 
@@ -290,8 +333,8 @@ export function repositionOverlay(div, rect) {
 export function removeOverlayElement(shadowRoot, div) {
   if (div.parentNode === shadowRoot) {
     // Completed overlays fade out then remove
-    if (div.dataset.fsMode === 'completed') {
-      div.style.animation = 'fs-fadeout 400ms ease forwards';
+    if (div.dataset.fsMode === "completed") {
+      div.style.animation = "fs-fadeout 400ms ease forwards";
       setTimeout(() => {
         if (div.parentNode === shadowRoot) shadowRoot.removeChild(div);
       }, 420);
@@ -309,7 +352,15 @@ export function removeOverlayElement(shadowRoot, div) {
  * @returns {HTMLElement}
  */
 export function createPickerOverlay(shadowRoot, rect, selectorText) {
-  return createOverlayElement(shadowRoot, rect, '#06B6D4', 'selector', selectorText, false, 1);
+  return createOverlayElement(
+    shadowRoot,
+    rect,
+    "#06B6D4",
+    "selector",
+    selectorText,
+    false,
+    1,
+  );
 }
 
 // === END overlay-renderer.js ===

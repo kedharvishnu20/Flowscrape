@@ -47,7 +47,12 @@ const findUnresolvedTemplates = (ast) => compiler.findUnresolvedTemplates(ast);
 
 const compile = (steps) =>
   compilePipeline({ name: "t", targetOrigin: "https://shop.test", steps }).ast;
-const step = (type, config = {}, extra = {}) => ({ id: `s_${type}`, type, config, ...extra });
+const step = (type, config = {}, extra = {}) => ({
+  id: `s_${type}`,
+  type,
+  config,
+  ...extra,
+});
 
 // ── B-14: credentials ────────────────────────────────────────────────────────
 
@@ -73,7 +78,8 @@ test("an Authorization header becomes an environment lookup", () => {
     step("API", {
       url: "https://api.shop.test/v1",
       method: "GET",
-      headers: '{"Accept":"application/json","Authorization":"Bearer sk-live-123"}',
+      headers:
+        '{"Accept":"application/json","Authorization":"Bearer sk-live-123"}',
     }),
   ]);
   const secrets = redactSecrets(ast);
@@ -83,7 +89,10 @@ test("an Authorization header becomes an environment lookup", () => {
 
   const py = emitPython(ast);
   const js = emitNode(ast);
-  for (const [lang, code] of [["python", py], ["node", js]]) {
+  for (const [lang, code] of [
+    ["python", py],
+    ["node", js],
+  ]) {
     assert.ok(!code.includes("sk-live-123"), `${lang} leaked the token`);
     assert.ok(code.includes("__FS_ENV__FS_SECRET_1__"), `${lang} marker`);
   }
@@ -103,7 +112,10 @@ test("credential-named config keys are caught wherever they sit", () => {
 test("ordinary values are left alone", () => {
   const ast = compile([
     step("FILL", { selector: "#search", text: "blue running shoes" }),
-    step("API", { url: "https://a.test", headers: '{"Accept":"application/json"}' }),
+    step("API", {
+      url: "https://a.test",
+      headers: '{"Accept":"application/json"}',
+    }),
   ]);
   assert.deepEqual(redactSecrets(ast), []);
   assert.match(emitPython(ast), /blue running shoes/);
@@ -119,7 +131,9 @@ test("the Node script can resolve markers too", () => {
 });
 
 test("a header block that is not JSON is left alone rather than mangled", () => {
-  const ast = compile([step("API", { url: "https://a.test", headers: "not: json" })]);
+  const ast = compile([
+    step("API", { url: "https://a.test", headers: "not: json" }),
+  ]);
   assert.deepEqual(redactSecrets(ast), []);
   assert.equal(ast.steps[0].config.headers, "not: json");
 });
@@ -130,29 +144,41 @@ test("templates left in a pipeline are found, with where they are", () => {
   const found = findUnresolvedTemplates(
     compile([
       step("NAVIGATE", { url: "https://shop.test/p/{{loop.index}}" }),
-      step("LOOP", { max: 2 }, { children: [step("CLICK", { selector: ".x{{item.id}}" })] }),
+      step(
+        "LOOP",
+        { max: 2 },
+        { children: [step("CLICK", { selector: ".x{{item.id}}" })] },
+      ),
     ]),
   );
   assert.equal(found.length, 2);
-  assert.deepEqual(found.map((f) => f.template).sort(), ["{{item.id}}", "{{loop.index}}"]);
+  assert.deepEqual(found.map((f) => f.template).sort(), [
+    "{{item.id}}",
+    "{{loop.index}}",
+  ]);
   assert.equal(found[0].where, "config.url");
   assert.equal(found[1].type, "CLICK", "nested steps are scanned too");
 });
 
 test("a pipeline with no templates reports none", () => {
   assert.deepEqual(
-    findUnresolvedTemplates(compile([step("NAVIGATE", { url: "https://shop.test" })])),
+    findUnresolvedTemplates(
+      compile([step("NAVIGATE", { url: "https://shop.test" })]),
+    ),
     [],
   );
 });
 
 test("the export handler reports templates and secrets alongside the code", () => {
-  const handler = swSrc.match(/_registerHandler\("script:export"[\s\S]*?\n\}\);/)[0];
+  const handler = swSrc.match(
+    /_registerHandler\("script:export"[\s\S]*?\n\}\);/,
+  )[0];
   assert.match(handler, /findUnresolvedTemplates\(ast\)/);
   assert.match(handler, /redactSecrets\(ast\)/);
   assert.match(handler, /return \{ code, unexportable, templates, secrets \}/);
   assert.ok(
-    handler.indexOf("findUnresolvedTemplates") < handler.indexOf("redactSecrets"),
+    handler.indexOf("findUnresolvedTemplates") <
+      handler.indexOf("redactSecrets"),
     "the scans must read the original values, before redaction rewrites them",
   );
 });
@@ -169,17 +195,27 @@ test("the Node emitter is reachable from the UI", () => {
   assert.match(htmlSrc, /id="sel-export-format"/);
   assert.match(htmlSrc, /<option value="node">Node<\/option>/);
 
-  const code = panelSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const code = panelSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
   assert.ok(
     !/const format = "python";/.test(code),
     "the format was pinned to python in code",
   );
-  assert.match(panelSrc, /getElementById\("sel-export-format"\)\?\.value === "node"/);
+  assert.match(
+    panelSrc,
+    /getElementById\("sel-export-format"\)\?\.value === "node"/,
+  );
 });
 
 test("the worker honours the requested format", () => {
-  const handler = swSrc.match(/_registerHandler\("script:export"[\s\S]*?\n\}\);/)[0];
-  assert.match(handler, /payload\.format === "node" \? emitNode\(ast\) : emitPython\(ast\)/);
+  const handler = swSrc.match(
+    /_registerHandler\("script:export"[\s\S]*?\n\}\);/,
+  )[0];
+  assert.match(
+    handler,
+    /payload\.format === "node" \? emitNode\(ast\) : emitPython\(ast\)/,
+  );
 });
 
 // ── D-09: import validation ──────────────────────────────────────────────────
@@ -225,7 +261,11 @@ test("an internal dispatch type cannot be imported as a step", () => {
 });
 
 test("a known type is accepted and gets the registry defaults", () => {
-  const out = normalize({ type: "CLICK", config: { selector: ".buy" } }, "steps[0]", new Set());
+  const out = normalize(
+    { type: "CLICK", config: { selector: ".buy" } },
+    "steps[0]",
+    new Set(),
+  );
   assert.equal(out.type, "CLICK");
   assert.equal(out.config.selector, ".buy", "the file's value wins");
   assert.equal(out.config.all, false, "and the missing keys are filled in");
@@ -243,5 +283,8 @@ test("lowercase types are still accepted, as they always were", () => {
 });
 
 test("a missing type still fails with its own message", () => {
-  assert.throws(() => normalize({ config: {} }, "steps[3]", new Set()), /missing a step type/);
+  assert.throws(
+    () => normalize({ config: {} }, "steps[3]", new Set()),
+    /missing a step type/,
+  );
 });

@@ -175,7 +175,6 @@ let _insertCtx = { index: -1, parentId: "", branchKey: "" };
 let _runState = { active: false, timer: null, startTs: 0, runId: null };
 let _storageFiles = [];
 let _uploadActivities = [];
-let _selectedStorageFileIds = new Set();
 let _dragSourceId = null;
 let _keyListening = false;
 let _boardState = {
@@ -321,42 +320,9 @@ function bindStorageControls() {
     .getElementById("btn-storage-clear")
     ?.addEventListener("click", async () => {
       _storageFiles = [];
-      _selectedStorageFileIds.clear();
       await _saveStorageFiles();
       renderStoragePanel();
       logToMonitor("info-log", "Storage library cleared.");
-    });
-
-  document
-    .getElementById("btn-upload-setup-select-all")
-    ?.addEventListener("click", () => {
-      _selectedStorageFileIds = new Set(_storageFiles.map((f) => f.id));
-      renderStoragePanel();
-    });
-
-  document
-    .getElementById("btn-upload-setup-clear")
-    ?.addEventListener("click", () => {
-      _selectedStorageFileIds.clear();
-      renderStoragePanel();
-    });
-
-  document.getElementById("btn-upload-start")?.addEventListener("click", () => {
-    _startUploadActivityFromSelection();
-  });
-
-  document
-    .getElementById("upload-file-selector")
-    ?.addEventListener("change", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLInputElement)) return;
-      if (!target.classList.contains("upload-file-check")) return;
-
-      const fileId = target.dataset.fileId;
-      if (!fileId) return;
-      if (target.checked) _selectedStorageFileIds.add(fileId);
-      else _selectedStorageFileIds.delete(fileId);
-      renderStoragePanel();
     });
 
   document
@@ -368,7 +334,6 @@ function bindStorageControls() {
       if (!fileId) return;
 
       _storageFiles = _storageFiles.filter((f) => f.id !== fileId);
-      _selectedStorageFileIds.delete(fileId);
       await _saveStorageFiles();
       renderStoragePanel();
     });
@@ -426,29 +391,6 @@ async function _stageFilesInStorage(files) {
   renderUploadActivities();
 }
 
-function _startUploadActivityFromSelection() {
-  const selected = _storageFiles.filter((f) =>
-    _selectedStorageFileIds.has(f.id),
-  );
-  if (!selected.length) {
-    logToMonitor(
-      "warn-log",
-      "Select at least one file in Upload Setup before starting.",
-    );
-    return;
-  }
-
-  const activityId = _createActivity({
-    kind: "upload",
-    fileIds: selected.map((f) => f.id),
-    fileNames: selected.map((f) => f.name),
-    totalFiles: selected.length,
-    message: "Upload started",
-  });
-
-  _runUploadActivity(activityId, selected.length);
-}
-
 function _createActivity({ kind, fileIds, fileNames, totalFiles, message }) {
   const activity = {
     id: `ua_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -483,37 +425,8 @@ function _updateActivity(activityId, patch) {
   renderUploadActivities();
 }
 
-async function _runUploadActivity(activityId, totalFiles) {
-  for (let i = 1; i <= totalFiles; i++) {
-    await _sleep(450);
-    _updateActivity(activityId, {
-      processedFiles: i,
-      progress: Math.round((i / totalFiles) * 100),
-      status: "running",
-      message: `Uploading ${i}/${totalFiles}`,
-    });
-  }
-
-  _updateActivity(activityId, {
-    processedFiles: totalFiles,
-    progress: 100,
-    status: "completed",
-    completedAt: Date.now(),
-    message: "Upload completed",
-  });
-}
-
 function renderStoragePanel() {
   const listEl = document.getElementById("storage-file-list");
-  const selectorEl = document.getElementById("upload-file-selector");
-  const countEl = document.getElementById("upload-setup-count");
-
-  const validIds = new Set(_storageFiles.map((f) => f.id));
-  _selectedStorageFileIds = new Set(
-    [..._selectedStorageFileIds].filter((id) => validIds.has(id)),
-  );
-
-  if (countEl) countEl.textContent = String(_selectedStorageFileIds.size);
 
   if (listEl) {
     if (!_storageFiles.length) {
@@ -532,33 +445,11 @@ function renderStoragePanel() {
         .join("");
     }
   }
-
-  if (selectorEl) {
-    if (!_storageFiles.length) {
-      selectorEl.innerHTML = `<div class="empty-inline">Upload files to Storage first. They will appear here for pre-selection.</div>`;
-    } else {
-      selectorEl.innerHTML = _storageFiles
-        .map(
-          (
-            file,
-          ) => `<label class="selector-item" style="display:flex; gap:8px; align-items:flex-start;">
-          <input class="upload-file-check" data-file-id="${file.id}" type="checkbox" ${_selectedStorageFileIds.has(file.id) ? "checked" : ""} style="margin-top:3px;" />
-          <div>
-            <div class="mono" style="font-size:12px;">${esc(file.name)}</div>
-            <div class="storage-meta">${esc(file.type || "application/octet-stream")} · ${_formatBytes(file.size)}</div>
-          </div>
-        </label>`,
-        )
-        .join("");
-    }
-  }
 }
 
 function renderUploadActivities() {
-  const targets = [
-    document.getElementById("upload-activity-list"),
-    document.getElementById("upload-activity-list-monitor"),
-  ].filter(Boolean);
+  const target = document.getElementById("upload-activity-list-monitor");
+  if (!target) return;
 
   const html = !_uploadActivities.length
     ? `<div class="empty-inline">No upload activity yet.</div>`
@@ -572,7 +463,7 @@ function renderUploadActivities() {
                 : "pill pill-interrupted";
           return `<div class="upload-item">
           <div class="upload-item-head">
-            <div style="font-size:12px;"><b>${activity.kind === "storage-stage" ? "Storage Intake" : "Upload Activity"}</b></div>
+            <div style="font-size:12px;"><b>${activity.kind === "storage-stage" ? "Storage Intake" : "Activity"}</b></div>
             <span class="${statusClass}">${activity.status}</span>
           </div>
           <div class="upload-meta">${activity.message || ""}</div>
@@ -583,9 +474,7 @@ function renderUploadActivities() {
         })
         .join("");
 
-  for (const target of targets) {
-    target.innerHTML = html;
-  }
+  target.innerHTML = html;
 }
 
 function _readFileAsDataUrl(file) {

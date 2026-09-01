@@ -565,15 +565,54 @@ function bindGlobalControls() {
     document.getElementById("mon-progress-fill").style.width = "0%";
     document.getElementById("mon-progress-text").textContent = "0%";
 
+    const runPayload = {
+      pipeline: _pipeline,
+      tabId: targetTabId,
+      targetOrigin: urlObj ? urlObj.origin : null,
+      targetPath: urlObj ? urlObj.pathname : "/",
+      bypassRobots,
+    };
+
+    // Pre-flight: run the ethics gates and show the user what they found before
+    // anything executes. The background re-runs them at start, so this is for
+    // visibility and consent, not enforcement.
+    const pre = await chrome.runtime.sendMessage({
+      type: "pipeline:preflight",
+      payload: runPayload,
+    });
+
+    if (!pre?.ok) {
+      logToMonitor(
+        "error-log",
+        `Pre-flight check failed: ${pre?.error || "Unknown error"}`,
+      );
+      return;
+    }
+
+    const { blocked, blocker, warnings = [] } = pre.result ?? {};
+
+    if (blocked) {
+      document.querySelector('[data-tab="monitor"]').click();
+      logToMonitor("error-log", `Blocked · ${blocker?.code}: ${blocker?.message}`);
+      return;
+    }
+
+    if (warnings.length) {
+      document.querySelector('[data-tab="monitor"]').click();
+      for (const w of warnings) {
+        logToMonitor("warn-log", `Ethics · ${w.code}: ${w.message}`);
+      }
+      const proceed = await _confirmEthicsWarnings(warnings);
+      if (!proceed) {
+        logToMonitor("warn-log", "Run cancelled at the ethics check.");
+        return;
+      }
+      runPayload.confirmed = true;
+    }
+
     const res = await chrome.runtime.sendMessage({
       type: MSG.PIPELINE_START,
-      payload: {
-        pipeline: _pipeline,
-        tabId: targetTabId,
-        targetOrigin: urlObj ? urlObj.origin : null,
-        targetPath: urlObj ? urlObj.pathname : "/",
-        bypassRobots,
-      },
+      payload: runPayload,
     });
     if (res?.ok) {
       _runState = {
@@ -2091,6 +2130,66 @@ async function _testStep(e, id) {
         : `Test failed: ${err.message}`,
     );
   }
+}
+
+// ── Ethics warning confirmation ───────────────────────────────────────────────
+/**
+ * Show what the ethics gates flagged and let the user decide.
+ * @param {Array<{code:string,message:string}>} warnings
+ * @returns {Promise<boolean>} true to run anyway
+ */
+function _confirmEthicsWarnings(warnings) {
+  return new Promise((resolve) => {
+    const modal = document.createElement("div");
+    modal.style.cssText = `
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999; backdrop-filter: blur(4px);
+    `;
+
+    const card = document.createElement("div");
+    card.style.cssText = `
+      background: var(--bg-raised); border: 1px solid var(--bg-border);
+      border-radius: 12px; padding: 22px; max-width: 400px; max-height: 80vh;
+      overflow-y: auto; box-shadow: var(--shadow-fly);
+    `;
+
+    card.innerHTML = `
+      <h2 style="margin:0 0 6px; font-size:15px;">⚠ Ethics check</h2>
+      <p style="margin:0 0 14px; color:var(--text-dim); font-size:12px;">
+        ${warnings.length} warning${warnings.length === 1 ? "" : "s"} before this run starts.
+      </p>
+      <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:18px;">
+        ${warnings
+          .map(
+            (w) => `<div style="border-left:3px solid var(--yellow, #FACC15); background:var(--bg-hover); padding:8px 10px; border-radius:4px;">
+              <div class="mono" style="font-size:10px; color:var(--text-dim); letter-spacing:.04em;">${esc(w.code)}</div>
+              <div style="font-size:12px; margin-top:3px;">${esc(w.message)}</div>
+            </div>`,
+          )
+          .join("")}
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn" id="ethics-cancel" style="flex:1;">Cancel</button>
+        <button class="btn btn-primary" id="ethics-proceed" style="flex:1;">Run anyway</button>
+      </div>
+    `;
+
+    const done = (value) => {
+      modal.remove();
+      resolve(value);
+    };
+
+    card.querySelector("#ethics-cancel").addEventListener("click", () => done(false));
+    card.querySelector("#ethics-proceed").addEventListener("click", () => done(true));
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) done(false);
+    });
+
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    card.querySelector("#ethics-proceed").focus();
+  });
 }
 
 // ── Selector picker with mode toggle ──────────────────────────────────────────

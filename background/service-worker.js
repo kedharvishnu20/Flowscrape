@@ -185,6 +185,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ── Message handlers ───────────────────────────────────────────────────────────
 
+/**
+ * Build the argument object for runEthicsGates from a run payload.
+ *
+ * Shared by pipeline:preflight and pipeline:start so the two cannot drift —
+ * the preflight the user confirms must be the same evaluation that gates the
+ * run. Note bypassRobots: it is sent by the side panel's "Bypass robots.txt"
+ * checkbox and used to be dropped here, which made the checkbox inert.
+ */
+function _gateArgs(payload, tabId) {
+  return {
+    steps: payload.pipeline?.steps ?? [],
+    targetOrigin: payload.targetOrigin,
+    targetPath: payload.targetPath ?? "/",
+    timing: payload.timing ?? {},
+    captcha: {
+      enabled: payload.captchaEnabled,
+      authorized: payload.captchaAuthorized,
+    },
+    tabId,
+    confirmed: payload.confirmed ?? false,
+    rowCount: payload.rowCount ?? 0,
+    bypassRobots: payload.bypassRobots ?? false,
+  };
+}
+
+/** Serialize gate output for the side panel. */
+function _serializeEthics(result) {
+  return {
+    blocked: result.blocked,
+    blocker: result.blocker
+      ? { code: result.blocker.code, message: result.blocker.message }
+      : null,
+    warnings: result.warnings.map((w) => ({
+      code: w.code,
+      message: w.message,
+    })),
+  };
+}
+
+/**
+ * Evaluate the ethics gates without starting anything, so the side panel can
+ * show the user what the gates found and let them decide. The gates still run
+ * again inside pipeline:start — this is for visibility, not enforcement, and a
+ * caller that skips it cannot bypass anything.
+ */
+_registerHandler("pipeline:preflight", async (payload, sender) => {
+  const { pipeline } = payload;
+  if (!pipeline) throw new Error("No pipeline provided");
+  const tabId = payload.tabId ?? sender.tab?.id;
+
+  const result = await runEthicsGates(_gateArgs(payload, tabId));
+  logger.info(MODULE, "preflight", {
+    blocked: result.blocked,
+    warnings: result.warnings.length,
+  });
+  return _serializeEthics(result);
+});
+
 _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
   const { pipeline, tabId } = payload;
   if (!pipeline) throw new Error("No pipeline provided");
@@ -211,19 +269,9 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
     fs_run_log: { runId, startedAt: Date.now(), status: "running" },
   });
 
-  // Run ethics gates first
-  const { targetOrigin, targetPath, captchaEnabled, captchaAuthorized } =
-    payload;
-  const ethicsResult = await runEthicsGates({
-    steps: pipeline.steps ?? [],
-    targetOrigin,
-    targetPath: targetPath ?? "/",
-    timing: payload.timing ?? {},
-    captcha: { enabled: captchaEnabled, authorized: captchaAuthorized },
-    tabId: runState.tabId,
-    confirmed: payload.confirmed ?? false,
-    rowCount: payload.rowCount ?? 0,
-  });
+  // Run ethics gates first. Re-run rather than trusting the preflight result:
+  // enforcement must not depend on the caller having asked politely.
+  const ethicsResult = await runEthicsGates(_gateArgs(payload, runState.tabId));
 
   // If ethics gates hard-blocked, abort the run
   if (ethicsResult.blocked) {
@@ -236,6 +284,12 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
 
   const warnings = ethicsResult.warnings;
   logger.info(MODULE, "pipeline-start", { runId, warnings: warnings.length });
+
+  // Echo warnings into the run log. They were previously returned to the caller
+  // and nothing rendered them, so every soft gate was silent.
+  for (const warning of warnings) {
+    _broadcastLog("warn-log", `Ethics · ${warning.code}: ${warning.message}`, runId);
+  }
 
   // Start execution loop async (do not await so UI returns early!)
   _executePipeline(runId, pipeline, runState.tabId).catch((err) => {

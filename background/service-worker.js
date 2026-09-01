@@ -33,7 +33,11 @@ import {
   setRotationMode,
 } from "./proxy-manager.js";
 import { acquire, backoff, resetRetry } from "./rate-limiter.js";
-import { runEthicsGates, EthicsBlock } from "./ethics-engine.js";
+import {
+  runEthicsGates,
+  EthicsBlock,
+  collectDeclaredOrigins,
+} from "./ethics-engine.js";
 import {
   initBuffer,
   pushRow,
@@ -67,6 +71,47 @@ const RESTRICTED_UPLOAD_SITES = Object.freeze({
   "instagram.com": true,
   "www.instagram.com": true,
 });
+
+// ── Cross-origin enforcement ──────────────────────────────────────────────────
+/**
+ * Refuse to navigate or call an origin the pipeline never declared.
+ *
+ * The pre-run gate can only see URLs the author typed. A templated URL —
+ * `{{item.href}}`, most often — is resolved from the page's own DOM by
+ * QUERY_ELEMENTS, which means the *page* chooses it. A hostile or merely
+ * compromised page could point a NAVIGATE at any origin it liked and have the
+ * following steps (a FILL carrying credentials, an UPLOAD_ACTIVITY carrying
+ * files) run there.
+ *
+ * So the check happens here, where the resolved URL is finally known, against
+ * the set of origins the pipeline declared. Same-origin templated links — the
+ * ordinary "loop the product cards and open each one" case — pass untouched.
+ *
+ * @param {string} rawUrl   - already template-resolved
+ * @param {object} runState
+ * @param {string} stepType
+ */
+function _assertOriginAllowed(rawUrl, runState, stepType) {
+  const allowed = runState?.allowedOrigins;
+  if (!allowed || allowed.size === 0) return; // nothing declared; nothing to enforce
+
+  let origin;
+  try {
+    origin = new URL(rawUrl, runState.targetOrigin || undefined).origin;
+  } catch {
+    return; // not resolvable here; the step will fail on its own terms
+  }
+
+  if (allowed.has(origin)) return;
+
+  throw new EthicsBlock(
+    "UndeclaredOrigin",
+    `${stepType} resolved to ${origin}, which this pipeline never declared. ` +
+      `Allowed: ${[...allowed].join(", ")}. ` +
+      `A URL built from page content (for example {{item.href}}) is chosen by the page, ` +
+      `not by you — add a step targeting ${origin} explicitly if you meant to go there.`,
+  );
+}
 
 // ── Network sniffer lifecycle ─────────────────────────────────────────────────
 /**
@@ -356,6 +401,11 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
     runId,
     tabId: tabId ?? sender.tab?.id,
     enableSniffer,
+    targetOrigin: payload.targetOrigin ?? null,
+    allowedOrigins: collectDeclaredOrigins(
+      pipeline.steps ?? [],
+      payload.targetOrigin,
+    ),
     results: [],
     screenshots: [],
   };
@@ -1238,6 +1288,7 @@ async function _executeStepList(steps, tabId, runId, ctx = {}) {
       .catch(() => {});
 
     if (resolvedStep.type === "WEBSITE" || resolvedStep.type === "NAVIGATE") {
+      _assertOriginAllowed(resolvedStep.config.url, runState, resolvedStep.type);
       await chrome.tabs.update(tabId, { url: resolvedStep.config.url });
       await _sleep(resolvedStep.config.wait ? 3000 : 800);
     } else if (resolvedStep.type === "WAIT") {
@@ -1245,6 +1296,7 @@ async function _executeStepList(steps, tabId, runId, ctx = {}) {
     } else if (resolvedStep.type === "SCREENSHOT") {
       await _captureScreenshot(tabId, resolvedStep.config, runId);
     } else if (resolvedStep.type === "API") {
+      _assertOriginAllowed(resolvedStep.config.url, runState, "API");
       const apiResult = await _executeApiStep(resolvedStep.config, liveCtx);
       const storeAs =
         String(resolvedStep.config.storeAs || "api").trim() || "api";
@@ -1351,6 +1403,7 @@ async function _executePipeline(runId, pipeline, targetTabId) {
 
     try {
       if (resolvedStep.type === "WEBSITE" || resolvedStep.type === "NAVIGATE") {
+        _assertOriginAllowed(resolvedStep.config.url, runState, resolvedStep.type);
         await chrome.tabs.update(targetTabId, { url: resolvedStep.config.url });
         await _sleep(resolvedStep.config.wait ? 3000 : 800);
       } else if (resolvedStep.type === "WAIT") {
@@ -1358,6 +1411,7 @@ async function _executePipeline(runId, pipeline, targetTabId) {
       } else if (resolvedStep.type === "SCREENSHOT") {
         await _captureScreenshot(targetTabId, resolvedStep.config, runId);
       } else if (resolvedStep.type === "API") {
+        _assertOriginAllowed(resolvedStep.config.url, runState, "API");
         const apiResult = await _executeApiStep(
           resolvedStep.config,
           runtimeCtx,

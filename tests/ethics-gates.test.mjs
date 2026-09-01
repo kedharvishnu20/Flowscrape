@@ -65,16 +65,97 @@ test("warnings survive the trip to the side panel", async () => {
   );
 });
 
-test("a cross-origin step still hard-blocks", async () => {
+test("a cross-origin step is reported, not blocked", async () => {
+  // Changed deliberately in B-03: the gate blocked the case the author typed
+  // and could see, while waving through page-controlled origins. Enforcement
+  // moved to execution time; see tests/cross-origin.test.mjs.
   const r = await runEthicsGates({
     ...base,
     targetPath: "/public",
     steps: [{ type: "NAVIGATE", config: { url: "https://elsewhere.test/page" } }],
   });
 
-  assert.equal(r.blocked, true);
-  assert.equal(r.blocker?.code, "DomainMismatch");
-  assert.match(r.blocker.message, /elsewhere\.test/);
+  assert.equal(r.blocked, false);
+  const warning = r.warnings.find((w) => w.code === "CrossOrigin");
+  assert.ok(warning);
+  assert.match(warning.message, /elsewhere\.test/);
+});
+
+// ── Gate 3: rate estimate ────────────────────────────────────────────────────
+// It used to count every step — clicks, extracts, waits — against a hardcoded
+// 1200ms interval, so a two-step pipeline estimated 6000 req/hr and essentially
+// every run produced a warning. A gate that always fires teaches people to
+// dismiss the dialog, which costs the gates that matter.
+
+test("a pipeline that makes no requests raises no rate warning", async () => {
+  const r = await runEthicsGates({
+    ...base,
+    targetPath: "/public",
+    steps: [
+      { type: "CLICK", config: { selector: ".a" } },
+      { type: "EXTRACT", config: { fields: [] } },
+      { type: "WAIT", config: { ms: 500 } },
+      { type: "SCREENSHOT", config: {} },
+    ],
+  });
+  assert.ok(
+    !r.warnings.some((w) => w.code === "HighRate"),
+    "none of these steps touch the network",
+  );
+});
+
+test("a handful of navigations stays under the threshold", async () => {
+  const r = await runEthicsGates({
+    ...base,
+    targetPath: "/public",
+    steps: [
+      { type: "NAVIGATE", config: { url: "https://example.com/a" } },
+      { type: "CLICK", config: { selector: ".x" } },
+      { type: "EXTRACT", config: { fields: [] } },
+    ],
+  });
+  assert.ok(!r.warnings.some((w) => w.code === "HighRate"));
+});
+
+test("a large loop of navigations does warn", async () => {
+  const r = await runEthicsGates({
+    ...base,
+    targetPath: "/public",
+    steps: [
+      {
+        type: "LOOP",
+        config: { type: "elements", max: 200 },
+        children: [
+          { type: "NAVIGATE", config: { url: "{{item.href}}" } },
+          { type: "EXTRACT", config: { fields: [] } },
+        ],
+      },
+    ],
+  });
+
+  const warning = r.warnings.find((w) => w.code === "HighRate");
+  assert.ok(warning, "200 page loads is worth flagging");
+  assert.match(warning.message, /about 200 requests/, "the count is the loop bound, not the step count");
+});
+
+test("only the more expensive branch of an IF/ELSE is charged", async () => {
+  const r = await runEthicsGates({
+    ...base,
+    targetPath: "/public",
+    steps: [
+      {
+        type: "IF_ELSE",
+        config: {},
+        ifBranch: [{ type: "NAVIGATE", config: { url: "https://example.com/a" } }],
+        elseBranch: [
+          { type: "NAVIGATE", config: { url: "https://example.com/b" } },
+          { type: "NAVIGATE", config: { url: "https://example.com/c" } },
+        ],
+      },
+    ],
+  });
+  // 2 requests, not 3 — only one branch runs.
+  assert.ok(!r.warnings.some((w) => w.code === "HighRate"));
 });
 
 // ── Wiring ───────────────────────────────────────────────────────────────────

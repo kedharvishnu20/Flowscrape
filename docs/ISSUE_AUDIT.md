@@ -73,7 +73,13 @@ removed or kept. Enabling them adds a class of capability that was never asked
 for; deleting them forecloses that. Each module now states plainly that nothing
 calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 
-**Still open:** C-09, C-10, C-12; B-03 (the domain-lock decision), B-10 through
+**Batch 5 — fixed:**
+
+| Finding | Commit | Notes |
+|---|---|---|
+| B-03 | *this batch* | Gate 6 reports authored origins; undeclared ones are blocked at execution, where a templated URL is finally known. Gates 2, 3, 4 and the FORM_FILL constraints now walk nested steps too |
+
+**Still open:** C-09, C-10, C-12; B-10 through
 B-18, B-22 onward; D-01, D-02, D-07, D-09 through D-14; most of E; G-05 through
 G-09; I-02, I-04.
 
@@ -166,11 +172,14 @@ The side panel reads it and sends it (`pipeline-builder.js:686`), but `service-w
 ### B-02 · HIGH · Ethics warnings are computed and then thrown away
 `runEthicsGates` returns up to five soft warnings; `service-worker.js:224` returns them to the caller — and `pipeline-builder.js`'s run handler reads only `res.result.runId`. The warnings are never logged, never shown, never confirmed. The run starts regardless. **All five soft gates are invisible to the user**, contradicting `README.md`'s "confirm to override" model.
 
-### B-03 · HIGH · Gate 6 (domain lock) hard-blocks ordinary pipelines
-`_gate6_domainLock` (`ethics-engine.js:138`) blocks the run if **any** `NAVIGATE`/`WEBSITE`/`API` step's origin differs from the active tab's origin. Consequences:
-* Any pipeline that crawls more than one domain is impossible
-* Any `API` step calling a third-party API is blocked — including the registry's own default (`https://api.example.com/resource`), so dropping in an API step and pressing Run instantly hard-fails
-* The error surfaces as a raw `EthicsBlock` message with no guidance and no override
+### B-03 · HIGH · Gate 6 (domain lock) had the risk exactly backwards
+`_gate6_domainLock` (`ethics-engine.js:138`) blocked the run if any `NAVIGATE`/`WEBSITE`/`API` step's origin differed from the active tab's. Three distinct problems, confirmed by running the gate:
+
+1. **It blocked the safe case.** A cross-origin URL the author typed is visible in the step config and was chosen deliberately — yet multi-domain pipelines were impossible and every third-party API call was rejected, including the API step's own registry default (`https://api.example.com/resource`). Adding an API step and pressing Run hard-failed immediately.
+2. **It only walked top-level steps.** Moving the same step inside a `LOOP` or an `IF_ELSE` branch bypassed it completely.
+3. **It permitted the dangerous case.** `{{item.href}}` is not a valid URL at gate time, so `new URL()` threw and the step was waved through. That value comes from the page's own DOM via `QUERY_ELEMENTS` — meaning **the page chooses where the pipeline navigates**, and subsequent steps (a `FILL` carrying credentials, an `UPLOAD_ACTIVITY` carrying files) then run there.
+
+Verified before fixing: an authored cross-origin `NAVIGATE` was `BLOCKED`; the same step inside a `LOOP` was `allowed`; and a page-controlled `{{item.href}}` was `allowed`.
 
 ### B-04 · HIGH · `AUTO_EXTRACT`'s `useLlm` toggle is ignored
 `pipeline-builder.js:1892` renders a "Enable AI fallback (Gemini)" toggle, but `_executeAutoExtract` (`service-worker.js:359`) branches only on `extraction.needsLlm`. Turning the toggle off does not prevent the page content from being sent to Google.

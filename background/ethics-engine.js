@@ -25,6 +25,7 @@ const MODULE = "ethics-engine";
 const MAX_FORM_ROWS_DEFAULT = 500;
 const MAX_FORM_ROWS_CONFIRMED = 5000;
 const MIN_INTER_ROW_DELAY_MS = 800;
+const MAX_REQUESTS_BEFORE_WARN = 100;
 const ROBOTS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 // ── Block/warn error classes ──────────────────────────────────────────────────
@@ -87,7 +88,7 @@ async function _gate1_robots(targetOrigin, targetPath, bypass) {
 
 async function _gate2_pii(pipelineSteps) {
   // Only scan FORM_FILL data sources
-  const formSteps = pipelineSteps.filter((s) => s.type === "FORM_FILL");
+  const formSteps = _flattenSteps(pipelineSteps).filter((s) => s.type === "FORM_FILL");
   if (!formSteps.length) return null;
 
   // We can't read the actual file here in SW; PII check deferred to content script
@@ -96,22 +97,83 @@ async function _gate2_pii(pipelineSteps) {
   return null;
 }
 
-function _gate3_rateLimit(pipelineSteps, timingConfig) {
-  const stepCount = pipelineSteps.length;
-  const minDelay = timingConfig?.min ?? 1200;
-  const estimatedReqPerHr = Math.round((3600000 / minDelay) * stepCount);
-  if (estimatedReqPerHr > 100) {
-    return new EthicsWarn(
-      "HighRate",
-      `Estimated rate: ~${estimatedReqPerHr} req/hr (> 100 threshold). Review timing settings.`,
-    );
+/**
+ * Steps that actually put a request on the network. A CLICK or an EXTRACT does
+ * not; counting them made the estimate meaningless.
+ */
+const NETWORK_STEP_TYPES = new Set(["WEBSITE", "NAVIGATE", "API", "PDF_EXTRACTION"]);
+
+/**
+ * Count network requests a pipeline will make, multiplying nested steps by
+ * their enclosing loop counts.
+ *
+ * @param {object[]} steps
+ * @param {number} [multiplier=1]
+ * @returns {number}
+ */
+function _countRequests(steps, multiplier = 1) {
+  let total = 0;
+  for (const step of Array.isArray(steps) ? steps : []) {
+    if (NETWORK_STEP_TYPES.has(step.type)) total += multiplier;
+
+    if (step.type === "LOOP") {
+      // A loop over elements has no known count until it runs; `max` is the
+      // ceiling the user set, which is the honest figure to warn against.
+      const max = Number(step.config?.max);
+      const iterations = Number.isFinite(max) && max > 0 ? max : 10;
+      total += _countRequests(step.children, multiplier * iterations);
+      continue;
+    }
+
+    // Only one branch runs, so charge the more expensive of the two rather
+    // than both.
+    if (step.type === "IF_ELSE") {
+      total += Math.max(
+        _countRequests(step.ifBranch, multiplier),
+        _countRequests(step.elseBranch, multiplier),
+      );
+      continue;
+    }
+
+    total += _countRequests(step.children, multiplier);
   }
-  return null;
+  return total;
+}
+
+/**
+ * Gate 3: warn when the pipeline would hit a site hard.
+ *
+ * This used to count *every* step — clicks, extracts, waits — against a
+ * hardcoded 1200ms interval, so a two-step pipeline estimated 6000 req/hr and
+ * essentially every run produced a warning. A gate that always fires teaches
+ * people to dismiss it, which costs the gates that matter.
+ *
+ * @param {object[]} pipelineSteps
+ * @param {object} timingConfig
+ * @returns {EthicsWarn|null}
+ */
+function _gate3_rateLimit(pipelineSteps, timingConfig) {
+  const requests = _countRequests(pipelineSteps);
+  if (requests <= MAX_REQUESTS_BEFORE_WARN) return null;
+
+  // Pace is a property of the delay between requests, not of how many there
+  // are: N requests at one every 1200ms is 3000/hr whether N is 2 or 2000. The
+  // old formula multiplied the two, so a two-step pipeline "estimated"
+  // 6000 req/hr and every single run produced a warning.
+  const minDelay = Number(timingConfig?.min) || 1200;
+  const perHour = Math.round(3600000 / minDelay);
+  const minutes = Math.max(1, Math.round((requests * minDelay) / 60000));
+
+  return new EthicsWarn(
+    "HighRate",
+    `This pipeline makes about ${requests} requests, roughly ${perHour}/hr sustained ` +
+      `for ${minutes} minute${minutes === 1 ? "" : "s"}. Add WAIT steps if that is faster than the site expects.`,
+  );
 }
 
 function _gate4_captcha(pipelineSteps, captchaConfig) {
   if (!captchaConfig?.enabled) return null;
-  const formSteps = pipelineSteps.filter((s) => s.type === "FORM_FILL");
+  const formSteps = _flattenSteps(pipelineSteps).filter((s) => s.type === "FORM_FILL");
   const minDelay = formSteps[0]?.config?.interRowDelay?.min ?? 1200;
   const solveRatePerHr = Math.round(3600000 / minDelay);
   if (solveRatePerHr > 50) {
@@ -135,47 +197,104 @@ function _gate5_proxyGeo(proxyEntry, declaredRegion) {
   return null;
 }
 
-function _gate6_domainLock(pipelineSteps, targetOrigin) {
-  // Skip domain-lock entirely when launched from an internal/new-tab page.
-  // chrome://newtab, about:blank, chrome-extension://* are not real site origins.
-  const internalPrefixes = [
-    "chrome",
-    "about",
-    "edge",
-    "chrome-extension",
-    "moz-extension",
-  ];
+/**
+ * Walk every step, including LOOP children and IF/ELSE branches.
+ * @param {object[]} steps
+ * @returns {object[]}
+ */
+function _flattenSteps(steps, out = []) {
+  for (const step of Array.isArray(steps) ? steps : []) {
+    out.push(step);
+    _flattenSteps(step.children, out);
+    _flattenSteps(step.ifBranch, out);
+    _flattenSteps(step.elseBranch, out);
+  }
+  return out;
+}
+
+/** Config keys that carry a navigable URL, by step type. */
+const URL_STEP_TYPES = Object.freeze({
+  WEBSITE: "url",
+  NAVIGATE: "url",
+  API: "url",
+  API_FETCH: "url",
+});
+
+/**
+ * Origins this pipeline declares statically — i.e. that its author typed.
+ *
+ * A URL containing a template is deliberately excluded: its origin is not known
+ * until the step runs, and if it came from the page (a `{{item.href}}` read out
+ * of the DOM by QUERY_ELEMENTS) then the page, not the author, chooses it. Those
+ * are checked at execution time instead, against exactly this set.
+ *
+ * @param {object[]} steps
+ * @param {string} targetOrigin
+ * @returns {Set<string>}
+ */
+export function collectDeclaredOrigins(steps, targetOrigin) {
+  const origins = new Set();
+  if (targetOrigin) origins.add(targetOrigin);
+
+  for (const step of _flattenSteps(steps)) {
+    const key = URL_STEP_TYPES[step.type];
+    if (!key) continue;
+
+    const raw = step.config?.[key];
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    if (raw.includes("{{")) continue; // resolved at runtime; see above
+
+    try {
+      origins.add(new URL(raw, targetOrigin || undefined).origin);
+    } catch {
+      // Not a URL yet (a bare path with no target origin); nothing to declare.
+    }
+  }
+
+  return origins;
+}
+
+/**
+ * Gate 6: report the origins this pipeline will visit.
+ *
+ * This used to be a hard block on any step whose origin differed from the
+ * tab's, and it got the risk backwards in three ways:
+ *
+ *   - It blocked the safe case. A cross-origin URL the author typed into a
+ *     NAVIGATE or API step is visible in the step config and was chosen
+ *     deliberately, yet it made multi-domain pipelines impossible and rejected
+ *     every third-party API call — including the API step's own default URL.
+ *   - It only walked top-level steps, so moving the same step inside a LOOP or
+ *     an IF/ELSE branch bypassed it entirely.
+ *   - It permitted the dangerous case. A templated URL like `{{item.href}}` is
+ *     not a valid URL at gate time, so `new URL` threw and the step was waved
+ *     through — and that value comes from the page's own DOM, which means the
+ *     page chose where the pipeline navigates.
+ *
+ * Authored origins are now surfaced for the user to confirm, and the origins
+ * that are not authored are enforced where they become known: at execution.
+ *
+ * @param {object[]} steps
+ * @param {string} targetOrigin
+ * @returns {EthicsWarn|null}
+ */
+function _gate6_crossOrigin(steps, targetOrigin) {
+  const internalPrefixes = ["chrome", "about", "edge", "chrome-extension", "moz-extension"];
   const isInternalOrigin =
     !targetOrigin ||
     targetOrigin === "null" ||
     internalPrefixes.some((p) => targetOrigin.startsWith(p));
 
-  if (isInternalOrigin) return null; // allow freely when starting from new tab
+  const declared = collectDeclaredOrigins(steps, targetOrigin);
+  const others = [...declared].filter((o) => o !== targetOrigin);
+  if (others.length === 0) return null;
 
-  for (const step of pipelineSteps) {
-    const cfg = step.config ?? {};
-    let stepOrigin = null;
-
-    if ((step.type === "WEBSITE" || step.type === "NAVIGATE") && cfg.url) {
-      try {
-        stepOrigin = new URL(cfg.url).origin;
-      } catch {}
-    } else if (step.type === "FORM_FILL" && cfg.submitOrigin) {
-      stepOrigin = cfg.submitOrigin;
-    } else if ((step.type === "API" || step.type === "API_FETCH") && cfg.url) {
-      try {
-        stepOrigin = new URL(cfg.url).origin;
-      } catch {}
-    }
-
-    if (stepOrigin && stepOrigin !== targetOrigin) {
-      return new EthicsBlock(
-        "DomainMismatch",
-        `Step "${step.type}" targets ${stepOrigin} but pipeline origin is ${targetOrigin}`,
-      );
-    }
-  }
-  return null;
+  return new EthicsWarn(
+    "CrossOrigin",
+    isInternalOrigin
+      ? `This pipeline will visit: ${others.join(", ")}`
+      : `This pipeline leaves ${targetOrigin} for: ${others.join(", ")}`,
+  );
 }
 
 /**
@@ -302,15 +421,13 @@ export async function runEthicsGates(opts = {}) {
   const w5 = _gate5_proxyGeo(proxy, region);
   if (w5) warnings.push(w5);
 
-  // Gate 6: Domain lock (can throw EthicsBlock)
-  const g6 = _gate6_domainLock(steps, targetOrigin);
-  if (g6 instanceof EthicsBlock) {
-    logger.error(MODULE, "gate6-block", { code: g6.code, message: g6.message });
-    return { blocked: true, blocker: g6, warnings };
-  }
+  // Gate 6: cross-origin reporting. Enforcement of *unauthored* origins happens
+  // at execution time, where the resolved URL is actually known.
+  const w6 = _gate6_crossOrigin(steps, targetOrigin);
+  if (w6) warnings.push(w6);
 
   // FORM_FILL hard constraints
-  const formSteps = steps.filter((s) => s.type === "FORM_FILL");
+  const formSteps = _flattenSteps(steps).filter((s) => s.type === "FORM_FILL");
   for (const step of formSteps) {
     try {
       _checkFormFillHardConstraints(step.config ?? {}, rowCount, confirmed);

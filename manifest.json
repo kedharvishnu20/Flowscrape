@@ -5,17 +5,15 @@
   "description": "Production-grade web automation and data extraction with proxy rotation, form filling, and ethical safeguards.",
   "minimum_chrome_version": "120",
 
+  "_comment_permissions": "Every entry here must have a caller. Dropped in the C-08 trim: activeTab (redundant beside <all_urls> host access), declarativeNetRequest and webRequest (zero uses), notifications (zero uses; the notification providers the README advertises do not exist).",
+
   "permissions": [
-    "activeTab",
     "scripting",
     "storage",
     "alarms",
     "sidePanel",
     "proxy",
-    "declarativeNetRequest",
-    "webRequest",
     "tabs",
-    "notifications",
     "downloads"
   ],
 
@@ -72,23 +70,16 @@
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
   },
 
-  "declarative_net_request": {
-    "rule_resources": []
-  },
+  "_comment_web_accessible_resources": "Only modules a content script dynamically imports belong here; anything listed is readable by every page and can be probed to fingerprint the extension. This is the transitive closure of the two import(chrome.runtime.getURL(...)) calls in content/injector.js.",
 
   "web_accessible_resources": [
     {
       "resources": [
-        "sidepanel/*",
-        "icons/*",
-        "content/*",
-        "background/*",
-        "utils/*",
-        "data-sources/*",
-        "exporters/*",
-        "script-gen/*",
-        "ethics/*",
-        "checkpoint/*"
+        "content/form-filler.js",
+        "content/overlay-engine.js",
+        "content/overlay-renderer.js",
+        "utils/color-utils.js",
+        "utils/logger.js"
       ],
       "matches": ["<all_urls>"]
     }

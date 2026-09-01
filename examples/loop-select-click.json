@@ -1,4 +1,6 @@
 {
+  "name": "Loop product cards and extract",
+  "targetOrigin": "https://example.test",
   "steps": [
     {
       "id": "step_loop_products",
@@ -14,7 +16,7 @@
           "id": "step_click_product",
           "type": "CLICK",
           "config": {
-            "selector": "{{item.tag}}.product-link",
+            "selector": ".product-link",
             "all": false
           }
         },
@@ -38,7 +40,7 @@
           "id": "step_navigate_specific",
           "type": "NAVIGATE",
           "config": {
-            "url": "{{loop.items[2].href}}",
+            "url": "{{item.href}}",
             "wait": true
           }
         }

@@ -95,12 +95,16 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 
 | B-12, B-14, B-16, D-09 | `cc38011` | Node emitter reachable; credentials become env markers both scripts resolve; templates named before download; imports validated against the registry and filled from its defaults |
 
-| E-10, E-13, B-29, B-30, C-12 | _this batch_ | The board stays with a running tab; editing no longer loses the caret; screenshots stop stealing focus and honour quality; the file library checks its budget before writing |
+| E-10, E-13, B-29, B-30, C-12 | `7a03e5d` | The board stays with a running tab; editing no longer loses the caret; screenshots stop stealing focus and honour quality; the file library checks its budget before writing |
 
-| I-02, I-04, G-06, G-07, G-08 | _this batch_ | Prettier config and `npm run format`; one `utils/version.js` with a test that fails on drift; MCP search takes a file-name pattern and says a glob is not a directory; `pipeline_report` stops emitting two scripts to measure them. The MCP emit tools also gained the B-14/B-16 handling |
+| I-02, I-04, G-06, G-07, G-08 | `92e2ac7` | Prettier config and `npm run format`; one `utils/version.js` with a test that fails on drift; MCP search takes a file-name pattern and says a glob is not a directory; `pipeline_report` stops emitting two scripts to measure them. The MCP emit tools also gained the B-14/B-16 handling |
+| F-03, F-10 | _this batch_ | API keys are validated on save, which makes the six validators reachable; the example uses a selector that can match, and `examples/` has a README |
 
-**Still open:** C-09, C-10;
-B-15, B-22 through B-25, B-28 onward; D-12, D-13; E-05, E-08, E-09, E-11, E-12, E-15 onward; G-05; I-02, I-04.
+**Still open** — 27 of 126, all MEDIUM or LOW: B-28, B-32, B-33, B-34; C-09,
+C-10; D-12, D-13; E-05, E-09, E-11, E-12, E-15, E-16, E-17, E-19, E-20; F-01,
+F-02, F-04, F-07, F-09; G-05; H-12. Plus A-05, A-06 and A-07, left by decision
+(see above). F-01, F-02, F-04, F-07 and F-09 all describe the same unreachable
+half of the tree that decision covers; each module now says so in its own header.
 
 **E-01 was worse than recorded, and partly my doing.** The finding says the
 backend was fully wired and only the button was missing. By the time it was

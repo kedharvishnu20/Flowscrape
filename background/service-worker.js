@@ -1956,13 +1956,34 @@ _registerHandler(MSG.CAPTCHA_SOLVE, async (payload) => {
   return { token };
 });
 
+// Never returns key values — only which providers have one stored and, on
+// request, whether that key actually works.
+//
+// This handler used to import getApiKey and validateApiKey (and import the
+// module twice), use neither, and return the provider list alone. So no key was
+// ever validated: all six _validate* functions in api-key-manager.js were
+// unreachable, and saving a bad key gave the same "saved" as a good one (F-03).
 _registerHandler(MSG.KEY_GET, async (payload) => {
-  const { getApiKey } = await import("./api-key-manager.js");
-  // Only serves non-secret validation status — never key values to content scripts
   const { listProviders, validateApiKey } =
     await import("./api-key-manager.js");
   const providers = await listProviders();
-  return { providers };
+  if (!payload?.validate) return { providers };
+
+  // Validation makes a network call per provider, so it is opt-in.
+  const only = payload.provider ? [payload.provider] : providers;
+  const results = {};
+  for (const provider of only) {
+    if (!providers.includes(provider)) {
+      results[provider] = { valid: false, error: "No key stored" };
+      continue;
+    }
+    try {
+      results[provider] = await validateApiKey(provider);
+    } catch (err) {
+      results[provider] = { valid: null, error: err.message };
+    }
+  }
+  return { providers, validation: results };
 });
 
 _registerHandler(MSG.FORM_ROW_START, async (payload) => {

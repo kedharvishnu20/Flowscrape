@@ -716,46 +716,19 @@ function bindGlobalControls() {
 
   document
     .getElementById("btn-save-key-2captcha")
-    ?.addEventListener("click", async () => {
-      const val = document.getElementById("key-2captcha").value.trim();
-      if (!val) return;
-      const res = await chrome.runtime.sendMessage({
-        type: "key:set",
-        payload: { provider: "2captcha", value: val },
-      });
-      logToMonitor(
-        res?.ok ? "info-log" : "error-log",
-        res?.ok ? "2Captcha key saved." : "Failed to save 2Captcha key.",
-      );
-    });
+    ?.addEventListener("click", () =>
+      _saveAndValidateKey("2captcha", "2Captcha", "key-2captcha"),
+    );
   document
     .getElementById("btn-save-key-openai")
-    ?.addEventListener("click", async () => {
-      const val = document.getElementById("key-openai").value.trim();
-      if (!val) return;
-      const res = await chrome.runtime.sendMessage({
-        type: "key:set",
-        payload: { provider: "openai", value: val },
-      });
-      logToMonitor(
-        res?.ok ? "info-log" : "error-log",
-        res?.ok ? "OpenAI key saved." : "Failed to save OpenAI key.",
-      );
-    });
+    ?.addEventListener("click", () =>
+      _saveAndValidateKey("openai", "OpenAI", "key-openai"),
+    );
   document
     .getElementById("btn-save-key-gemini")
-    ?.addEventListener("click", async () => {
-      const val = document.getElementById("key-gemini").value.trim();
-      if (!val) return;
-      const res = await chrome.runtime.sendMessage({
-        type: "key:set",
-        payload: { provider: "gemini", value: val },
-      });
-      logToMonitor(
-        res?.ok ? "info-log" : "error-log",
-        res?.ok ? "Gemini key saved." : "Failed to save Gemini key.",
-      );
-    });
+    ?.addEventListener("click", () =>
+      _saveAndValidateKey("gemini", "Gemini", "key-gemini"),
+    );
   document
     .getElementById("btn-update-proxies")
     ?.addEventListener("click", async () => {
@@ -2070,6 +2043,57 @@ function _normalizeStepConfig(step, changedKey) {
   if (changedKey !== "type" && changedKey !== "max") return;
   const mode = step.config.type || "count";
   if (mode !== "elements" && !(step.config.max > 0)) step.config.max = 10;
+}
+
+/**
+ * Save a key and then check that it works.
+ *
+ * Saving reported "saved" whether the key was valid, expired or a typo — the
+ * six validators in api-key-manager.js existed but nothing ever called them
+ * (F-03). Validation is one network call and only happens on an explicit save,
+ * so it costs nothing on a normal run.
+ *
+ * @param {string} provider
+ * @param {string} label
+ * @param {string} inputId
+ */
+async function _saveAndValidateKey(provider, label, inputId) {
+  const val = document.getElementById(inputId)?.value.trim();
+  if (!val) return;
+
+  const res = await chrome.runtime.sendMessage({
+    type: "key:set",
+    payload: { provider, value: val },
+  });
+  if (!res?.ok) {
+    notify("error-log", `Failed to save ${label} key.`);
+    return;
+  }
+  logToMonitor("info-log", `${label} key saved — checking it…`);
+
+  const check = await chrome.runtime
+    .sendMessage({
+      type: "key:get",
+      payload: { validate: true, provider },
+    })
+    .catch(() => null);
+
+  const result = check?.result?.validation?.[provider];
+  if (!result) {
+    logToMonitor("warn-log", `${label} key saved; could not check it.`);
+  } else if (result.valid === true) {
+    notify("info-log", `${label} key saved and verified.`);
+  } else if (result.valid === false) {
+    notify(
+      "error-log",
+      `${label} key was rejected: ${result.error || "invalid"}.`,
+    );
+  } else {
+    logToMonitor(
+      "warn-log",
+      `${label} key saved; validation was inconclusive (${result.error || "no validator"}).`,
+    );
+  }
 }
 
 // ── Config input binding ──────────────────────────────────────────────────────

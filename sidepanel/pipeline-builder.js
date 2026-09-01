@@ -1431,7 +1431,9 @@ function getStepSubtitle(step) {
     case "WAIT":
       return `Wait ${c.ms}ms`;
     case "LOOP":
-      return `${c.type} mode · max ${c.max}`;
+      return c.type === "elements" && !(c.max > 0)
+        ? "elements mode · every match"
+        : `${c.type} mode · max ${c.max}`;
     case "IF_ELSE":
       return `${c.condition}: ${c.selector || "?"}`;
     case "UPLOAD_ACTIVITY": {
@@ -1589,12 +1591,21 @@ function generateConfigHtml(step) {
       html += field(
         step,
         "max",
-        "Safety max (0 = unlimited)",
+        "Safety max (0 = every match)",
         "number",
         c.max ?? 0,
       );
     } else if (ltype === "count") {
-      html += field(step, "max", "Repeat N times", "number", c.max ?? 10);
+      // 0 is only "unlimited" in elements mode, where the page supplies the
+      // bound. Here it means zero iterations, so do not offer it as a default
+      // when switching over from elements mode (B-22).
+      html += field(
+        step,
+        "max",
+        "Repeat N times (at least 1)",
+        "number",
+        c.max > 0 ? c.max : 10,
+      );
     } else {
       // paginate
       html += selectorRow(step, "selector");
@@ -1890,6 +1901,24 @@ function toggle(step, key, label) {
   </div>`;
 }
 
+/**
+ * Keep a step's config self-consistent after one field changes.
+ *
+ * Switching a LOOP from elements mode to count mode carried the "0 = every
+ * match" value over, where 0 means zero iterations — the loop then ran nothing
+ * and said nothing (B-22). The executor now rejects it outright, so fix it here
+ * rather than letting the user hit that error.
+ *
+ * @param {object} step
+ * @param {string} changedKey
+ */
+function _normalizeStepConfig(step, changedKey) {
+  if (step.type !== "LOOP") return;
+  if (changedKey !== "type" && changedKey !== "max") return;
+  const mode = step.config.type || "count";
+  if (mode !== "elements" && !(step.config.max > 0)) step.config.max = 10;
+}
+
 // ── Config input binding ──────────────────────────────────────────────────────
 function bindConfigInputs(container = document) {
   container.querySelectorAll(".cfg-bind").forEach((el) => {
@@ -1905,6 +1934,7 @@ function bindConfigInputs(container = document) {
       else if (e.target.type === "number")
         step.config[key] = parseFloat(e.target.value) || 0;
       else step.config[key] = e.target.value;
+      _normalizeStepConfig(step, key);
       saveState();
 
       // Re-render card config if marked (mode-switching selects)

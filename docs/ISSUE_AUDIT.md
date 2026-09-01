@@ -87,9 +87,11 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 
 | B-17, B-18 | `3e19288` | Empty `Disallow:` no longer blocks the site; `$` is escaped and anchors deliberately; group merging and Allow tie-breaks now follow RFC 9309; any 4xx counts as no-robots |
 
-| B-10, B-23, B-24, B-25, B-31 | *this batch* | FILL writes through the native setter and handles checkbox/radio/select/contenteditable; SELECT matches by label and fails loudly; KEYBOARD emits real `code` values; text conditions normalise whitespace; percent scroll measures the document |
+| B-10, B-23, B-24, B-25, B-31 | `2331ef5` | FILL writes through the native setter and handles checkbox/radio/select/contenteditable; SELECT matches by label and fails loudly; KEYBOARD emits real `code` values; text conditions normalise whitespace; percent scroll measures the document |
 
-**Still open:** C-09, C-10, C-12; B-11, B-12,
+| B-11, B-22 | *this batch* | Templates resolve at any depth; LOOP rejects a zero count instead of running nothing, and a failed element query skips rather than looping blind |
+
+**Still open:** C-09, C-10, C-12; B-12,
 B-14 through B-16, B-22 through B-25, B-28 onward; D-02, D-07, D-09 through D-13; E-05, E-08
 onward except E-14; G-05 through G-09; I-02, I-04.
 
@@ -580,7 +582,7 @@ It lists `xlsx-parser.js`, `sqlite-writer.js`, `lua-emitter.js` and `config-emit
 35 manual test cases, including TC-01→07 (proxy rotation — A-05), TC-08→14 (form-fill caps — A-07), TC-19→22 (checkpoint/resume — A-03) and TC-34→35 (captcha gate — A-06). Roughly half the checklist covers unreachable code paths.
 
 ### H-11 · LOW · `JinjaTemplateGuide.md` overstates nested resolution
-§3's `FILL` and `EXTRACT` examples imply templates resolve inside `config.fields[]`. See B-11.
+§3's `FILL` and `EXTRACT` examples imply templates resolve inside `config.fields[]`. See B-11. **Resolved by fixing the code rather than the doc:** nested resolution now works, so the guide is accurate.
 
 ### H-12 · LOW · No `CONTRIBUTING`, `CHANGELOG`, or architecture-decision record
 For a repo with four "v3/v4" commits and a 1,483-line manual, there is no record of what changed between versions.

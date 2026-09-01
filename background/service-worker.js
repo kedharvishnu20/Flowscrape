@@ -969,11 +969,12 @@ function _resolveStr(s, ctx) {
 }
 function _resolveConfig(step, ctx) {
   if (!ctx || !Object.keys(ctx).length) return step;
-  const cfg = {};
-  for (const [k, v] of Object.entries(step.config || {})) {
-    cfg[k] = typeof v === "string" ? _resolveStr(v, ctx) : v;
-  }
-  return { ...step, config: cfg, __fsContext: ctx };
+  // Every string, at any depth. This used to map top-level values only, so a
+  // template inside FILL.fields[].value or an EXTRACT field passed through
+  // literally and got typed into the page as "{{item.href}}" (B-11).
+  // EXTRACT selectors survived by accident, because injector.js re-renders them
+  // from __fsContext; resolving here first is a no-op for those.
+  return { ...step, config: _resolveAny(step.config || {}, ctx), __fsContext: ctx };
 }
 
 function _resolveAny(value, ctx) {
@@ -1172,6 +1173,13 @@ async function _executeUploadActivityStep(config = {}, tabId, runId = null) {
   };
 }
 
+/**
+ * Ceiling on any single loop, whatever the page reports. A selector that
+ * matches thousands of nodes should not be able to wedge the worker in a loop
+ * no one can see the end of.
+ */
+const LOOP_HARD_CAP = 10000;
+
 async function _executeLoop(step, tabId, runId, parentCtx = {}) {
   const {
     type: ltype = "count",
@@ -1180,39 +1188,65 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
     onFail = "skip",
   } = step.config;
   const children = step.children || [];
-  let iters = max;
+  const limit = Number(max);
+  let iters;
   let elementsData = null;
 
   if (ltype === "elements" && selector) {
+    let found = null;
     try {
       // Pre-collect ALL element data upfront so templates can use {{item.href}}, {{item.text}} etc.
       const r = await chrome.tabs.sendMessage(tabId, {
         type: "step:execute",
         payload: { type: "QUERY_ELEMENTS", config: { selector } },
       });
-      if (r?.ok && Array.isArray(r.result) && r.result.length > 0) {
-        elementsData = r.result;
-        iters = Math.min(elementsData.length, max || 9999);
-        _broadcastLog(
-          "info-log",
-          `Loop: found ${elementsData.length} elements for "${selector}"`,
-          runId,
-        );
-      } else {
-        _broadcastLog(
-          "warn-log",
-          `Loop: no elements matched "${selector}" — skipping.`,
-          runId,
-        );
-        return;
-      }
+      if (r?.ok && Array.isArray(r.result)) found = r.result;
     } catch (e) {
+      // Falling through with elementsData still null used to leave iters at
+      // `max`, so a failed query quietly ran the body N times against empty
+      // items instead of skipping the loop.
+      _broadcastLog("warn-log", `Loop: element query failed: ${e.message}`, runId);
+      return;
+    }
+
+    if (!found || found.length === 0) {
       _broadcastLog(
         "warn-log",
-        `Loop: element query failed: ${e.message}`,
+        `Loop: no elements matched "${selector}" — skipping.`,
         runId,
       );
+      return;
     }
+
+    elementsData = found;
+    // Here 0 really does mean unlimited, as the UI says — bounded only by how
+    // many elements the page has, and by the hard cap below.
+    iters = limit > 0 ? Math.min(found.length, limit) : found.length;
+    _broadcastLog(
+      "info-log",
+      `Loop: found ${found.length} elements for "${selector}"`,
+      runId,
+    );
+  } else {
+    // count and paginate. There is nothing to derive a bound from here, so 0 is
+    // not "unlimited" — it is a loop that runs zero times and says nothing,
+    // which is what it silently did (B-22).
+    if (!Number.isFinite(limit) || limit < 1) {
+      throw new Error(
+        `Loop in "${ltype}" mode needs a repeat count of at least 1 (got ${max}). ` +
+          `Only "elements" mode treats 0 as unlimited, because the page supplies the bound.`,
+      );
+    }
+    iters = limit;
+  }
+
+  if (iters > LOOP_HARD_CAP) {
+    _broadcastLog(
+      "warn-log",
+      `Loop: ${iters} iterations exceeds the ${LOOP_HARD_CAP} cap — running ${LOOP_HARD_CAP}.`,
+      runId,
+    );
+    iters = LOOP_HARD_CAP;
   }
 
   const runState = _runStates.get(runId);

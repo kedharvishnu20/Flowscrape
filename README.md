@@ -27,7 +27,7 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 278 tests, ~9s, no browser needed
+npm test        # 293 tests, ~9s, no browser needed
 npm run check   # parses every source file as an ES module
 ```
 
@@ -133,7 +133,7 @@ data-sources/
   json-parser.js               (unreachable)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         278 tests; node:test, jsdom, fake-indexeddb
+tests/                         293 tests; node:test, jsdom, fake-indexeddb
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, manual, template guide, limitations
 ```
@@ -161,9 +161,10 @@ the MCP server's `pdf_extract_text`, which does the real work.
 
 String config values support `{{loop.index}}`, `{{item.href}}`,
 `{{extracted.price}}` and array indexing. See
-[`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md). Only top-level
-string values are resolved by the executor; selectors nested in `EXTRACT` fields
-are resolved separately in the page.
+[`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md). Every string in a
+step's config is resolved, at any depth — including `FILL` field values and
+`EXTRACT` field selectors. Templates are a runtime feature of the executor, so
+an exported script carries them literally (audit B-16).
 
 ### AUTO_EXTRACT
 

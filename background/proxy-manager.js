@@ -76,12 +76,36 @@ function _normalizeProtocol(proto) {
 }
 
 /**
+ * Describe a proxy line safely enough to log.
+ *
+ * A proxy line is `host:port:user:pass`, so logging the raw text — as the parse
+ * failure path used to — put credentials straight into the console, in a module
+ * whose logger documents that it never logs them. Nothing beyond scheme and
+ * host:port is ever returned.
+ *
+ * @param {string} line
+ * @returns {string}
+ */
+function _describeProxyLine(line) {
+  const trimmed = String(line ?? '').trim();
+  if (!trimmed) return '(empty)';
+
+  // scheme://user:pass@host:port -> scheme://host:port
+  const withoutUserInfo = trimmed.replace(/\/\/[^@/]*@/, '//');
+
+  const parts = withoutUserInfo.split(':');
+  if (parts.length > 2) return `${parts[0]}:${parts[1]}:***`;
+  return withoutUserInfo.slice(0, 64);
+}
+
+/**
  * Parse a single proxy line in any of the 5 supported text formats.
  * Returns null (and logs) if the line is malformed.
  * @param {string} line
+ * @param {number} [index] - line number, for the failure log
  * @returns {ProxyEntry|null}
  */
-function _parseLine(line) {
+function _parseLine(line, index) {
   line = line.trim();
   if (!line || line.startsWith('#')) return null;
 
@@ -131,7 +155,11 @@ function _parseLine(line) {
     return _makeEntry({ host, port, type: _inferProtocol(port) });
 
   } catch (err) {
-    logger.warn(MODULE, 'parse-line-fail', { line: line.slice(0, 50), error: err.message });
+    logger.warn(MODULE, 'parse-line-fail', {
+      line: index === undefined ? undefined : index + 1,
+      value: _describeProxyLine(line),
+      error: err.message,
+    });
     return null;
   }
 }
@@ -217,7 +245,12 @@ export function parseProxyJSON(input) {
         country: obj.country ?? undefined,
       });
     } catch (err) {
-      logger.warn(MODULE, 'json-entry-skip', { obj: JSON.stringify(obj).slice(0, 80), error: err.message });
+      // Never log the entry itself — a JSON proxy record carries pass/password.
+      logger.warn(MODULE, 'json-entry-skip', {
+        host: typeof obj?.host === 'string' ? obj.host : '(missing)',
+        port: Number.isFinite(Number(obj?.port)) ? Number(obj.port) : '(missing)',
+        error: err.message,
+      });
       return null;
     }
   }).filter(Boolean);

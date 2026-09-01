@@ -31,7 +31,13 @@ function _sanitize(data) {
   for (const [k, v] of Object.entries(data)) {
     if (REDACT_KEYS.test(k)) {
       out[k] = '[REDACTED]';
-    } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+    } else if (Array.isArray(v)) {
+      // Arrays were skipped, so a secret inside an array of objects was logged
+      // in full.
+      out[k] = v.map((item) =>
+        item && typeof item === 'object' ? _sanitize(item) : item,
+      );
+    } else if (v && typeof v === 'object') {
       out[k] = _sanitize(v);
     } else {
       out[k] = v;

@@ -1,0 +1,17 @@
+{
+  "name": "flowscrape",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Chrome MV3 extension for visual web automation and data extraction.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "node scripts/check-syntax.mjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

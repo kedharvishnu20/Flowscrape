@@ -47,8 +47,17 @@ code the way the rest of the docs did.
 | B-08 | `02a4f60` | Adds a jsdom harness; audit entry corrected in the same commit |
 | B-09 | `293b215` | Fallback is now a per-step toggle, off by default |
 
-**Still open:** everything else, including all of section C (security) and the
-dead-code decision in section F.
+**Batch 3 — fixed** (Phase 3, security):
+
+| Finding | Commit | Notes |
+|---|---|---|
+| C-01, H-09 | `afe806b` | Page-facing step surface removed; sniffer payload clamped |
+| C-03, C-11 | `a6d6595` | Credentials redacted in logs; `_sanitize` now recurses arrays |
+| C-02 | `84b98ca` | Sniffer registered at runtime, origin-scoped, only during a sniffer run |
+| C-07, C-08 | `1b57423` | 4 unused permissions dropped; WAR cut from 10 wildcards to 5 files |
+
+**Still open:** C-04, C-05, C-06, C-09, C-10, C-12; the dead-code decision in
+section F; and everything in D, E, G, H.
 
 ---
 

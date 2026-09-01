@@ -196,12 +196,18 @@ test("enforcement is skipped when nothing was declared", () => {
   );
 });
 
-test("both executors enforce before navigating", () => {
-  // The step dispatch chain is duplicated in _executeStepList and
-  // _executePipeline (audit B-27); a check added to only one is a hole.
-  const calls = swSrc.match(/_assertOriginAllowed\(/g) ?? [];
+test("there is one dispatch chain, so one place to enforce", () => {
+  // This originally asserted four call sites, because the chain was duplicated
+  // between _executeStepList and _executePipeline (audit B-27) and a check
+  // added to only one was a hole. They are now merged into _dispatchStep, so
+  // the correct assertion is that the duplicate is gone.
   assert.ok(
-    calls.length >= 5,
-    `expected the helper plus both navigation and both API sites, found ${calls.length}`,
+    !/} else if \(resolvedStep\.type === "API"\)/.test(swSrc),
+    "the if/else copy of the step chain should be gone",
   );
+  assert.match(swSrc, /async function _dispatchStep\(/);
+
+  const dispatch = swSrc.match(/async function _dispatchStep\([\s\S]*?\n\}\n/)[0];
+  const calls = dispatch.match(/_assertOriginAllowed\(/g) ?? [];
+  assert.equal(calls.length, 2, "navigation and API, checked once each");
 });

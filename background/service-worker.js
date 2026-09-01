@@ -1263,96 +1263,115 @@ async function _executeIfElse(step, tabId, runId, parentCtx = {}) {
   );
 }
 
-async function _executeStepList(steps, tabId, runId, ctx = {}) {
-  // ctx is mutable — EXTRACT results update it so later steps can use {{extracted.field}}
-  const liveCtx = { ...ctx, extracted: { ...(ctx.extracted || {}) } };
-
+/**
+ * Execute one already-resolved step.
+ *
+ * This chain used to exist twice — once in _executeStepList for loop and branch
+ * bodies, once inline in _executePipeline for top-level steps — and the copies
+ * had already drifted: only the nested one flushed the row buffer before an
+ * EXPORT. Adding the B-03 origin check meant patching four call sites instead
+ * of two, which is what prompted merging them.
+ *
+ * @param {object} step     - resolved step (templates already applied)
+ * @param {number} tabId
+ * @param {string} runId
+ * @param {object} ctx      - mutable run context; EXTRACT and API results land here
+ */
+async function _dispatchStep(step, tabId, runId, ctx) {
   const runState = _runStates.get(runId);
-  for (const step of steps) {
-    if (!runState || !runState.active) break;
 
-    // Resolve template variables in this step's config
-    const resolvedStep = _resolveConfig(step, liveCtx);
+  switch (step.type) {
+    case "WEBSITE":
+    case "NAVIGATE": {
+      _assertOriginAllowed(step.config.url, runState, step.type);
+      await chrome.tabs.update(tabId, { url: step.config.url });
+      await _sleep(step.config.wait ? 3000 : 800);
+      return;
+    }
 
-    chrome.runtime
-      .sendMessage({
-        type: "pipeline:status",
-        payload: {
-          state: "running",
-          currentStepId: step.id,
-          progress: {},
-          runId,
-          tabId: runState?.tabId,
-        },
-      })
-      .catch(() => {});
+    case "WAIT":
+      await _sleep(step.config.ms || 1000);
+      return;
 
-    if (resolvedStep.type === "WEBSITE" || resolvedStep.type === "NAVIGATE") {
-      _assertOriginAllowed(resolvedStep.config.url, runState, resolvedStep.type);
-      await chrome.tabs.update(tabId, { url: resolvedStep.config.url });
-      await _sleep(resolvedStep.config.wait ? 3000 : 800);
-    } else if (resolvedStep.type === "WAIT") {
-      await _sleep(resolvedStep.config.ms || 1000);
-    } else if (resolvedStep.type === "SCREENSHOT") {
-      await _captureScreenshot(tabId, resolvedStep.config, runId);
-    } else if (resolvedStep.type === "API") {
-      _assertOriginAllowed(resolvedStep.config.url, runState, "API");
-      const apiResult = await _executeApiStep(resolvedStep.config, liveCtx);
-      const storeAs =
-        String(resolvedStep.config.storeAs || "api").trim() || "api";
-      liveCtx[storeAs] = apiResult;
-      liveCtx.api = apiResult;
+    case "SCREENSHOT":
+      await _captureScreenshot(tabId, step.config, runId);
+      return;
+
+    case "API": {
+      _assertOriginAllowed(step.config.url, runState, "API");
+      const apiResult = await _executeApiStep(step.config, ctx);
+      const storeAs = String(step.config.storeAs || "api").trim() || "api";
+      ctx[storeAs] = apiResult;
+      ctx.api = apiResult;
       if (
-        resolvedStep.config.exposeBodyAsExtracted === true &&
+        step.config.exposeBodyAsExtracted === true &&
         apiResult.body &&
         typeof apiResult.body === "object" &&
         !Array.isArray(apiResult.body)
       ) {
-        Object.assign(liveCtx.extracted, apiResult.body);
+        Object.assign(ctx.extracted, apiResult.body);
       }
       _broadcastLog(
         "info-log",
         `API ${apiResult.method} ${apiResult.url} → ${apiResult.status}`,
         runId,
       );
-    } else if (resolvedStep.type === "API_SNIFFER") {
+      return;
+    }
+
+    case "API_SNIFFER":
+      // Capture is set up when the run starts; nothing to do per step.
       await _sleep(50);
-    } else if (resolvedStep.type === "PDF_EXTRACTION") {
-      const pdfResult = await _executePdfExtraction(resolvedStep.config, runId);
+      return;
+
+    case "PDF_EXTRACTION": {
+      const pdfResult = await _executePdfExtraction(step.config, runId);
       const storeAs = Object.keys(pdfResult)[0] || "pdf_text";
-      liveCtx[storeAs] = pdfResult[storeAs];
-      _broadcastLog(
-        "info-log",
-        `PDF extraction queued: use MCP tool to extract text from PDF.`,
-        runId,
-      );
-    } else if (resolvedStep.type === "UPLOAD_ACTIVITY") {
-      await _executeUploadActivityStep(resolvedStep.config, tabId, runId);
-    } else if (resolvedStep.type === "AUTO_EXTRACT") {
-      const row = await _executeAutoExtract(resolvedStep.config, tabId, runId, liveCtx);
+      ctx[storeAs] = pdfResult[storeAs];
+      return;
+    }
+
+    case "UPLOAD_ACTIVITY":
+      await _executeUploadActivityStep(step.config, tabId, runId);
+      return;
+
+    case "AUTO_EXTRACT": {
+      const row = await _executeAutoExtract(step.config, tabId, runId, ctx);
       runState.results.push(row);
       await pushRow(runId, row);
-      Object.assign(liveCtx.extracted, row);
+      Object.assign(ctx.extracted, row);
       _broadcastLog(
         "info-log",
         `AUTO_EXTRACT: product row saved (confidence: ${row._confidence}%).`,
         runId,
       );
-    } else if (resolvedStep.type === "EXPORT") {
+      return;
+    }
+
+    case "EXPORT":
+      // Flush buffered rows first, or the export misses anything still in
+      // memory. The top-level copy of this chain did not do it.
       await finalizeBuffer(runId).catch(() => {});
       initBuffer(runId);
-      await _doExport(runId, resolvedStep.config);
-    } else if (resolvedStep.type === "LOOP") {
-      await _executeLoop(resolvedStep, tabId, runId, liveCtx);
-    } else if (resolvedStep.type === "IF_ELSE") {
-      await _executeIfElse(resolvedStep, tabId, runId, liveCtx);
-    } else {
+      await _doExport(runId, step.config);
+      return;
+
+    case "LOOP":
+      await _executeLoop(step, tabId, runId, ctx);
+      return;
+
+    case "IF_ELSE":
+      await _executeIfElse(step, tabId, runId, ctx);
+      return;
+
+    default: {
       const resp = await chrome.tabs.sendMessage(tabId, {
         type: "step:execute",
-        payload: resolvedStep,
+        payload: step,
       });
       if (!resp?.ok) throw new Error(resp?.error || "Step failed");
-      if (resolvedStep.type === "EXTRACT" && Array.isArray(resp.result)) {
+
+      if (step.type === "EXTRACT" && Array.isArray(resp.result)) {
         runState.results.push(...resp.result);
         for (const row of resp.result) await pushRow(runId, row);
         _broadcastLog(
@@ -1360,161 +1379,136 @@ async function _executeStepList(steps, tabId, runId, ctx = {}) {
           `Extracted ${resp.result.length} rows (total: ${runState.results.length}).`,
           runId,
         );
-        // Update live context so next steps can reference {{extracted.fieldName}}
-        if (resp.result.length > 0)
-          Object.assign(liveCtx.extracted, resp.result[resp.result.length - 1]);
+        // So later steps can reference {{extracted.fieldName}}
+        if (resp.result.length > 0) {
+          Object.assign(ctx.extracted, resp.result[resp.result.length - 1]);
+        }
       }
     }
   }
 }
 
-// ── Background Execution Orchestrator ─────────────────────────────────────────
-async function _executePipeline(runId, pipeline, targetTabId) {
-  let stepIndex = 0,
-    progressCount = 0;
-  const total = pipeline.steps.length;
-  const runtimeCtx = { extracted: {} };
-  initBuffer(runId);
+/**
+ * Run a list of steps in order.
+ *
+ * @param {object[]} steps
+ * @param {number} tabId
+ * @param {string} runId
+ * @param {object} ctx
+ * @param {{ total: number, count: number }} [progress] - present only for the
+ *   top-level list. Its presence also selects the error policy: at the top
+ *   level a non-optional failure stops the run, whereas nested it propagates so
+ *   the enclosing LOOP can apply its own onFail setting.
+ */
+async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
+  const runState = _runStates.get(runId);
 
-  while (
-    _runStates.has(runId) &&
-    _runStates.get(runId).active &&
-    stepIndex < pipeline.steps.length
-  ) {
-    const runState = _runStates.get(runId);
-    if (runState.paused) {
-      await _sleep(1000);
-      continue;
-    }
+  for (const step of steps) {
+    if (!runState || !runState.active) break;
 
-    const step = pipeline.steps[stepIndex];
-    const resolvedStep = _resolveConfig(step, runtimeCtx);
+    const resolvedStep = _resolveConfig(step, ctx);
+
     chrome.runtime
       .sendMessage({
         type: "pipeline:status",
         payload: {
           state: "running",
           currentStepId: step.id,
-          progress: { current: progressCount, total },
+          progress: progress
+            ? { current: progress.count, total: progress.total }
+            : {},
           runId,
+          tabId: runState?.tabId,
         },
       })
       .catch(() => {});
 
     try {
-      if (resolvedStep.type === "WEBSITE" || resolvedStep.type === "NAVIGATE") {
-        _assertOriginAllowed(resolvedStep.config.url, runState, resolvedStep.type);
-        await chrome.tabs.update(targetTabId, { url: resolvedStep.config.url });
-        await _sleep(resolvedStep.config.wait ? 3000 : 800);
-      } else if (resolvedStep.type === "WAIT") {
-        await _sleep(resolvedStep.config.ms || 1000);
-      } else if (resolvedStep.type === "SCREENSHOT") {
-        await _captureScreenshot(targetTabId, resolvedStep.config, runId);
-      } else if (resolvedStep.type === "API") {
-        _assertOriginAllowed(resolvedStep.config.url, runState, "API");
-        const apiResult = await _executeApiStep(
-          resolvedStep.config,
-          runtimeCtx,
-        );
-        const storeAs =
-          String(resolvedStep.config.storeAs || "api").trim() || "api";
-        runtimeCtx[storeAs] = apiResult;
-        runtimeCtx.api = apiResult;
-        if (
-          resolvedStep.config.exposeBodyAsExtracted === true &&
-          apiResult.body &&
-          typeof apiResult.body === "object" &&
-          !Array.isArray(apiResult.body)
-        ) {
-          Object.assign(runtimeCtx.extracted, apiResult.body);
-        }
-        _broadcastLog(
-          "info-log",
-          `API ${apiResult.method} ${apiResult.url} → ${apiResult.status}`,
-        );
-      } else if (resolvedStep.type === "EXPORT") {
-        await _doExport(runId, resolvedStep.config);
-      } else if (resolvedStep.type === "API_SNIFFER") {
-        await _sleep(50);
-      } else if (resolvedStep.type === "UPLOAD_ACTIVITY") {
-        await _executeUploadActivityStep(
-          resolvedStep.config,
-          targetTabId,
-          runId,
-        );
-      } else if (resolvedStep.type === "AUTO_EXTRACT") {
-        const row = await _executeAutoExtract(resolvedStep.config, targetTabId, runId, runtimeCtx);
-        runState.results.push(row);
-        await pushRow(runId, row);
-        Object.assign(runtimeCtx.extracted, row);
-        _broadcastLog(
-          "info-log",
-          `AUTO_EXTRACT: product row saved (confidence: ${row._confidence}%).`,
-          runId,
-        );
-      } else if (resolvedStep.type === "LOOP") {
-        await _executeLoop(resolvedStep, targetTabId, runId, runtimeCtx);
-      } else if (resolvedStep.type === "IF_ELSE") {
-        await _executeIfElse(resolvedStep, targetTabId, runId, runtimeCtx);
-      } else {
-        const resp = await chrome.tabs.sendMessage(targetTabId, {
-          type: "step:execute",
-          payload: resolvedStep,
-        });
-        if (!resp?.ok) throw new Error(resp?.error || "Execution rejected");
-        if (resolvedStep.type === "EXTRACT" && Array.isArray(resp.result)) {
-          runState.results.push(...resp.result);
-          for (const row of resp.result) await pushRow(runId, row);
-          _broadcastLog(
-            "info-log",
-            `Extracted ${resp.result.length} rows. (auto-saved)`,
-          );
-          if (resp.result.length > 0) {
-            Object.assign(
-              runtimeCtx.extracted,
-              resp.result[resp.result.length - 1],
-            );
-          }
-        }
-      }
-      progressCount++;
-      stepIndex++;
-      await saveCursor({ runId, rowIndex: progressCount, stepIndex }).catch(
-        () => {},
-      );
+      await _dispatchStep(resolvedStep, tabId, runId, ctx);
     } catch (err) {
-      const isCritical = !resolvedStep.config.optional;
+      const optional = Boolean(resolvedStep.config?.optional);
       _broadcastLog(
-        isCritical ? "error-log" : "warn-log",
-        `[${resolvedStep.type}] ${err.message}${isCritical ? "" : " (optional, skipping)"}`,
+        optional ? "warn-log" : "error-log",
+        `[${resolvedStep.type}] ${err.message}${optional ? " (optional, skipping)" : ""}`,
         runId,
       );
-      if (isCritical) {
+
+      if (!optional) {
+        if (!progress) throw err; // nested: the LOOP decides what to do
         runState.active = false;
         break;
       }
-      progressCount++;
-      stepIndex++;
     }
+
+    if (progress) {
+      progress.count += 1;
+      await saveCursor({
+        runId,
+        rowIndex: progress.count,
+        stepIndex: progress.count,
+      }).catch(() => {});
+    }
+  }
+}
+
+/** Loop and branch bodies. */
+function _executeStepList(steps, tabId, runId, ctx = {}) {
+  // A child list gets its own `extracted` layer so a nested EXTRACT does not
+  // leak back into the parent's context.
+  return _executeSteps(
+    steps,
+    tabId,
+    runId,
+    { ...ctx, extracted: { ...(ctx.extracted || {}) } },
+    null,
+  );
+}
+
+// ── Background Execution Orchestrator ─────────────────────────────────────────
+async function _executePipeline(runId, pipeline, targetTabId) {
+  const progress = { count: 0, total: pipeline.steps.length };
+  const runtimeCtx = { extracted: {} };
+  initBuffer(runId);
+
+  try {
+    await _executeSteps(
+      pipeline.steps,
+      targetTabId,
+      runId,
+      runtimeCtx,
+      progress,
+    );
+  } catch (err) {
+    // _executeSteps handles per-step failures at the top level; anything
+    // reaching here is the orchestration itself failing.
+    logger.error(MODULE, "pipeline-crash", { runId, error: err.message });
+    _broadcastLog("error-log", `Pipeline stopped: ${err.message}`, runId);
+    const rs = _runStates.get(runId);
+    if (rs) rs.active = false;
   }
 
   await finalizeBuffer(runId).catch(() => {});
   await _disableSniffer(runId);
+
   const endRunState = _runStates.get(runId);
   const stateStr = endRunState?.active ? "completed" : "stopped";
+
   chrome.runtime
     .sendMessage({
       type: "pipeline:status",
       payload: {
         state: stateStr,
         currentStepId: null,
-        progress: { current: progressCount, total },
+        progress: { current: progress.count, total: progress.total },
         runId,
       },
     })
     .catch(() => {});
+
   _runStates.delete(runId);
-  if (_runStates.size === 0) await chrome.alarms.clear("fs_sw_heartbeat").catch(() => {});
+  if (_runStates.size === 0) {
+    await chrome.alarms.clear("fs_sw_heartbeat").catch(() => {});
+  }
 }
 
 _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
@@ -1702,5 +1696,22 @@ _registerHandler("data:download", async (payload) => {
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch(() => {});
+
+// ── Test surface ──────────────────────────────────────────────────────────────
+// The executor is the heart of the product and had no behavioural coverage,
+// because this module has no exports and registers listeners at import. ES
+// module exports are inert in a service worker and nothing in the extension
+// imports these; they exist so tests/executor.test.mjs can drive the step
+// chain directly. Keep this list minimal.
+export const __testing = {
+  _dispatchStep,
+  _executeSteps,
+  _executeStepList,
+  _executePipeline,
+  _assertOriginAllowed,
+  _resolveStr,
+  _resolveConfig,
+  _runStates,
+};
 
 // === END service-worker.js ===

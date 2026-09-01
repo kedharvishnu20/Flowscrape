@@ -99,12 +99,34 @@ const MSG = Object.freeze({
 /** @type {{ active: boolean, paused: boolean, runId: string|null, tabId: number|null, results: any[], screenshots: string[] }} */
 const _runStates = new Map();
 
-// ── SW activation ─────────────────────────────────────────────────────────────
-self.addEventListener("activate", async () => {
+// ── SW bootstrap ──────────────────────────────────────────────────────────────
+/**
+ * Re-hydrate module-scope state that does not survive worker termination.
+ *
+ * This runs at module scope, not only from the `activate` event: MV3 tears an
+ * idle worker down after ~30s and fires `activate` only on a genuine
+ * (re)installation, not when it wakes the worker again. Anything hung off
+ * `activate` alone is therefore absent for the rest of the browser session —
+ * which is why the proxy pool used to come back empty after the first idle
+ * timeout.
+ *
+ * Kept as a floating promise so MV3 listener registration below stays
+ * synchronous.
+ */
+async function _bootstrap() {
+  await initSessionKey().catch((err) =>
+    logger.error(MODULE, "session-key-init-fail", { error: err.message }),
+  );
+  await loadPool().catch((err) =>
+    logger.error(MODULE, "pool-load-fail", { error: err.message }),
+  );
+  logger.info(MODULE, "sw-bootstrapped", {});
+}
+
+_bootstrap();
+
+self.addEventListener("activate", () => {
   logger.info(MODULE, "sw-activated", {});
-  await initSessionKey(); // Always re-init AES key on activation
-  await loadPool(); // Re-hydrate proxy pool
-  _startHeartbeat(); // Keep SW alive during runs
 });
 
 self.addEventListener("install", () => {
@@ -182,6 +204,7 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
     screenshots: [],
   };
   _runStates.set(runId, runState);
+  _startHeartbeat(); // only needed while a run is in flight
 
   // Persist state before any await
   await chrome.storage.local.set({
@@ -1289,6 +1312,7 @@ async function _executePipeline(runId, pipeline, targetTabId) {
     })
     .catch(() => {});
   _runStates.delete(runId);
+  if (_runStates.size === 0) await chrome.alarms.clear("fs_sw_heartbeat").catch(() => {});
 }
 
 _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {

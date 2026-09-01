@@ -4,11 +4,25 @@
  * @description AES-GCM 256-bit encrypted API key storage for third-party
  *   providers (captcha solvers, data enrichment, notifications).
  *
- *   Design decision: The AES-GCM session key is derived once per service-worker
- *   activation via crypto.getRandomValues(). It lives ONLY in module scope —
- *   never in any storage. Key ciphertexts go to chrome.storage.session, which
- *   Chrome auto-purges on browser close. This means keys survive SW restarts
- *   within a session but not across browser sessions.
+ *   Lifetime: keys survive service-worker restarts but not browser restarts.
+ *   Both the wrapped AES key and the ciphertexts live in
+ *   chrome.storage.session, which Chrome clears when the browser closes.
+ *
+ *   Why the key is stored rather than held in module scope: MV3 terminates an
+ *   idle service worker after ~30s and does NOT re-fire `activate` when it
+ *   wakes it again. A module-scope-only key is therefore gone on the next
+ *   wake, and regenerating one silently turns every stored ciphertext into
+ *   garbage — which is exactly what used to happen here, a minute after the
+ *   user saved a key. There is no MV3 mechanism for a key that both outlives
+ *   worker termination and is never written down, so the key is persisted to
+ *   the same session-scoped, memory-backed area as the data.
+ *
+ *   What that encryption is and is not worth: chrome.storage.session is
+ *   already restricted to trusted extension contexts, and the key sits beside
+ *   the ciphertext. This is defence in depth against incidental exposure — a
+ *   storage dump, a casual devtools read, a sync bug that ships the wrong area
+ *   somewhere — not protection against an attacker who can already read the
+ *   extension's storage. Do not describe it as more than that.
  *
  *   Validation calls check the minimum required endpoint for each provider.
  *   On network failure, returns { valid: null, error: 'network' } to distinguish
@@ -21,28 +35,73 @@ import { logger } from '../utils/logger.js';
 
 const MODULE = 'api-key-manager';
 
-// Storage keys
-const SESSION_KEY_KEYS = 'fs_api_keys_enc';   // session: ciphertext map
-const SESSION_KEY_SK   = 'fs_session_key';     // NOT in storage — module scope only
+// Storage keys (both session-scoped; Chrome clears them on browser close)
+const SESSION_KEY_KEYS = 'fs_api_keys_enc';  // ciphertext map, provider -> blob
+const SESSION_KEY_SK   = 'fs_session_key';   // wrapped AES key (JWK)
 
-// ── AES-GCM session key (module scope only, never persisted) ──────────────────
-let _sessionCryptoKey = null;  // CryptoKey object
+// ── AES-GCM session key ───────────────────────────────────────────────────────
+/** @type {CryptoKey|null} In-memory handle; rehydrated from storage on demand. */
+let _sessionCryptoKey = null;
+/** @type {Promise<CryptoKey>|null} De-dupes concurrent initialisation. */
+let _keyInitPromise = null;
 
 /**
- * Initialize (or re-initialize) the AES-GCM session key.
- * Call this once per service-worker activation.
+ * Load the existing session key, or mint one if this is a fresh browser
+ * session. Safe to call repeatedly and concurrently: the same key is returned
+ * every time within a browser session, so previously stored ciphertexts stay
+ * readable across service-worker restarts.
+ *
+ * @returns {Promise<CryptoKey>}
  */
 export async function initSessionKey() {
-  _sessionCryptoKey = await crypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    false,           // NOT extractable — prevents accidental export
-    ['encrypt', 'decrypt']
-  );
-  logger.info(MODULE, 'session-key-init', {});
+  if (_sessionCryptoKey) return _sessionCryptoKey;
+  if (_keyInitPromise) return _keyInitPromise;
+
+  _keyInitPromise = (async () => {
+    const stored = await chrome.storage.session.get([SESSION_KEY_SK]);
+    const jwk = stored?.[SESSION_KEY_SK];
+
+    if (jwk) {
+      try {
+        _sessionCryptoKey = await crypto.subtle.importKey(
+          'jwk',
+          jwk,
+          { name: 'AES-GCM', length: 256 },
+          true,
+          ['encrypt', 'decrypt']
+        );
+        logger.info(MODULE, 'session-key-restored', {});
+        return _sessionCryptoKey;
+      } catch (err) {
+        // A key we cannot import cannot decrypt anything either. Clear both
+        // halves rather than leaving undecryptable blobs behind.
+        logger.error(MODULE, 'session-key-import-fail', { error: err.message });
+        await chrome.storage.session.remove([SESSION_KEY_SK, SESSION_KEY_KEYS]);
+      }
+    }
+
+    const key = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,            // extractable so it can be persisted for the session
+      ['encrypt', 'decrypt']
+    );
+    const exported = await crypto.subtle.exportKey('jwk', key);
+    await chrome.storage.session.set({ [SESSION_KEY_SK]: exported });
+
+    _sessionCryptoKey = key;
+    logger.info(MODULE, 'session-key-created', {});
+    return key;
+  })().finally(() => {
+    _keyInitPromise = null;
+  });
+
+  return _keyInitPromise;
 }
 
 /**
- * Ensure we have a session key; generate if missing (SW restart recovery).
+ * Ensure the session key is available before an encrypt/decrypt call.
+ * Never mints a replacement for a key that already has ciphertexts — that is
+ * what initSessionKey's storage lookup is for.
  */
 async function _ensureKey() {
   if (!_sessionCryptoKey) await initSessionKey();
@@ -133,7 +192,11 @@ export async function getApiKey(provider) {
   try {
     return await _decrypt(blob);
   } catch (err) {
+    // The blob cannot be recovered — the key that wrote it is gone. Drop it so
+    // listProviders/hasApiKey stop reporting a key the user does not have, and
+    // the UI can prompt for re-entry instead of failing on every use.
     logger.error(MODULE, 'key-decrypt-fail', { provider, error: err.message });
+    await removeApiKey(provider).catch(() => {});
     return null;
   }
 }

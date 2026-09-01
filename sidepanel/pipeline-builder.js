@@ -1857,8 +1857,21 @@ function generateConfigHtml(step) {
 }
 
 // ── Config helpers ────────────────────────────────────────────────────────────
+/**
+ * Escape a value for interpolation into the config HTML.
+ *
+ * Previously escaped only " and <, so an & passed through raw — meaning a value
+ * containing the literal text "&quot;" round-tripped as a double quote, and a
+ * value in a single-quoted attribute was not escaped at all. & must be replaced
+ * first or it would double-escape the entities added after it.
+ */
 function esc(s) {
-  return String(s).replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function field(step, key, label, type, value) {
@@ -2551,15 +2564,38 @@ function listenToSystem() {
   });
 }
 
+const MAX_LOG_ENTRIES = 500;
+
 function logToMonitor(levelClass, message) {
   const logs = document.getElementById("mon-logs");
   if (!logs) return;
   const d = new Date();
   const ts = `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}`;
+
   const div = document.createElement("div");
   div.className = `log-entry ${levelClass}`;
-  div.innerHTML = `<span class="log-ts">[${ts}]</span><span class="log-msg">${message}</span>`;
+
+  // Built as nodes, not innerHTML. Log messages routinely carry page-derived
+  // text — selectors, extracted values, API URLs, thrown error messages — so
+  // interpolating them as markup let a page break the panel's layout or inject
+  // content into it. CSP blocks inline script, but not markup injection.
+  const tsEl = document.createElement("span");
+  tsEl.className = "log-ts";
+  tsEl.textContent = `[${ts}]`;
+
+  const msgEl = document.createElement("span");
+  msgEl.className = "log-msg";
+  msgEl.textContent = String(message ?? "");
+
+  div.append(tsEl, msgEl);
   logs.appendChild(div);
+
+  // The pane grew without bound; a long run accumulated tens of thousands of
+  // nodes and the panel got slower the longer it ran.
+  while (logs.childElementCount > MAX_LOG_ENTRIES) {
+    logs.removeChild(logs.firstElementChild);
+  }
+
   logs.scrollTop = logs.scrollHeight;
 }
 

@@ -1,15 +1,17 @@
 // === injector.js ===
 /**
  * @module injector
- * @description Content script entry point. Creates a shadow DOM host,
- *   handles FS_STEP_EXEC / FS_STEP_RESULT / FS_PICK_SELECTOR /
- *   FS_FORM_FILL_ROW / FS_CAPTCHA_FOUND window.postMessage events,
- *   and dispatches to the appropriate handler modules.
+ * @description Content script entry point. Creates a shadow DOM host and
+ *   dispatches step execution requests from the background over
+ *   chrome.runtime.onMessage.
  *
  *   Design decision: Shadow DOM isolation ensures our injected UI (selector
- *   picker overlay) doesn't conflict with page styles. All postMessage events
- *   are source-checked against window.location.origin to prevent page scripts
- *   from spoofing our event protocol.
+ *   picker overlay) doesn't conflict with page styles.
+ *
+ *   Trust boundary: the background is trusted, the page is not. The only
+ *   window.postMessage input accepted is FS_NETWORK_SNIFF from
+ *   page-sniffer.js, and it is treated as page-controlled data — validated and
+ *   clamped, never used to choose an action.
  *
  *   This file must stay under 40 KB. Heavy logic lives in form-filler.js,
  *   field-auto-mapper.js, etc. — which are injected via chrome.scripting
@@ -23,12 +25,13 @@
 const FS_ORIGIN = chrome.runtime.getURL("").replace(/\/$/, "");
 
 // ── Content event names ────────────────────────────────────────────────────────
+// Message types accepted from the background over chrome.runtime.
+// These were once also accepted from the page over postMessage; see the
+// listener below for why that is gone.
 const CE = Object.freeze({
   STEP_EXEC: "FS_STEP_EXEC",
-  STEP_RESULT: "FS_STEP_RESULT",
   PICK_SELECTOR: "FS_PICK_SELECTOR",
   FORM_FILL_ROW: "FS_FORM_FILL_ROW",
-  CAPTCHA_FOUND: "FS_CAPTCHA_FOUND",
 });
 
 // ── Shadow DOM host ────────────────────────────────────────────────────────────
@@ -126,30 +129,64 @@ function _queryScoped(selector, context, all = false) {
   }
 }
 
+/**
+ * Bridge from the MAIN world to the background.
+ *
+ * This listener used to route FS_STEP_EXEC, FS_PICK_SELECTOR and
+ * FS_FORM_FILL_ROW into _handleEvent, guarded only by
+ * `event.source !== window` — a check every script running in the page
+ * satisfies. Any page could therefore drive CLICK, FILL, SELECT, DRAG_DROP,
+ * NAVIGATE, UPLOAD_ACTIVITY and the selector picker on any site the user
+ * visited, and read the results back off the `_ACK` reply.
+ *
+ * Nothing ever sent those events: the background talks to this content script
+ * over chrome.tabs.sendMessage, and no code anywhere listened for an _ACK. The
+ * whole surface was reachable only by an attacker, so it is gone.
+ *
+ * What remains is the one real sender — page-sniffer.js, which runs in the MAIN
+ * world and has no other way to reach the extension. Its payload is page-
+ * controlled by definition (it is the page's own traffic), so it is validated
+ * and clamped here rather than trusted: a hostile sender must not be able to
+ * push unbounded strings into the service worker's memory.
+ */
+const SNIFF_LIMITS = { url: 2048, body: 512 * 1024, type: 32 };
+
+function _sanitizeSniffPayload(payload) {
+  if (!payload || typeof payload !== "object") return null;
+
+  const str = (value, max) =>
+    typeof value === "string" ? value.slice(0, max) : "";
+
+  const url = str(payload.url, SNIFF_LIMITS.url);
+  if (!url) return null;
+
+  const status = Number(payload.status);
+
+  return {
+    method: str(payload.method, 16).toUpperCase() || "GET",
+    url,
+    status: Number.isFinite(status) ? status : 0,
+    reqBody: str(payload.reqBody, SNIFF_LIMITS.body),
+    resBody: str(payload.resBody, SNIFF_LIMITS.body),
+    apiType: str(payload.apiType, SNIFF_LIMITS.type),
+  };
+}
+
 window.addEventListener("message", (event) => {
-  // Source check: only trust messages from our extension background
   if (event.source !== window) return;
-  const { type, payload, id } = event.data ?? {};
-  if (!type || !type.startsWith("FS_")) return;
+  const { type, payload } = event.data ?? {};
+  if (type !== "FS_NETWORK_SNIFF") return;
 
-  if (type === "FS_NETWORK_SNIFF") {
-    try {
-      chrome.runtime
-        .sendMessage({ type: "network:sniff", payload })
-        .catch(() => {});
-    } catch (e) {
-      // Extension context invalidated (reloaded)
-    }
-    return;
+  const clean = _sanitizeSniffPayload(payload);
+  if (!clean) return;
+
+  try {
+    chrome.runtime
+      .sendMessage({ type: "network:sniff", payload: clean })
+      .catch(() => {});
+  } catch {
+    // Extension context invalidated (extension reloaded while the page lives on)
   }
-
-  _handleEvent(type, payload, id)
-    .then((result) => {
-      window.postMessage({ type: `${type}_ACK`, id, result }, "*");
-    })
-    .catch((err) => {
-      window.postMessage({ type: `${type}_ACK`, id, error: err.message }, "*");
-    });
 });
 
 // ── Runtime message bridge (SW → content script) ──────────────────────────────

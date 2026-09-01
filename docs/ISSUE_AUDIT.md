@@ -20,6 +20,28 @@
 
 ---
 
+## Status
+
+Findings are recorded as of the audited commit. Fixes land on `dev` and are
+listed here as they do, so this document does not drift out of step with the
+code the way the rest of the docs did.
+
+**Batch 1 — fixed** (the blockers that stop the product working at all):
+
+| Finding | Commit | Notes |
+|---|---|---|
+| A-03 | `1d3ca3d` | Schema moved to `checkpoint/idb-schema.js`; `DB_VERSION` 2 |
+| A-04 | `30234ac` | Also fixes the proxy pool emptying after idle (part of D-02) |
+| A-08 | `9502845` | Also fixes the un-awaited `previewAll`, and F-08's `overlay:reloadPrefs` |
+| A-09 | `44e3958` | Latin-subset variable faces vendored under `sidepanel/fonts/` |
+| A-01, A-02 | `94507cf` | Dead code removed rather than the missing markup added |
+| B-01, B-02 | `d4a5d74` | New `pipeline:preflight`; gate 6 left as-is pending the B-03 decision |
+
+**Still open:** everything else, including all of section C (security) and the
+dead-code decision in section F.
+
+---
+
 ## Severity key
 
 | Tag | Meaning |

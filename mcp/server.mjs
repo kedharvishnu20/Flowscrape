@@ -28,12 +28,30 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = path.resolve(__dirname, "..");
 const ROOT = resolveRootFromArgs(process.argv.slice(2)) ?? DEFAULT_ROOT;
 const TRANSPORT_MODE =
-  resolveArgValue(process.argv.slice(2), "--transport=") ??
+  resolveArgValue(process.argv.slice(2), "--transport") ??
   process.env.MCP_TRANSPORT ??
   "stdio";
 const HTTP_PORT = Number(
-  resolveArgValue(process.argv.slice(2), "--port=") ?? process.env.PORT ?? 3000,
+  resolveArgValue(process.argv.slice(2), "--port") ?? process.env.PORT ?? 3000,
 );
+
+// Loopback by default. The previous app.listen(HTTP_PORT) bound every
+// interface, so the server was reachable from the local network with no
+// authentication at all — while repo_write_file was a registered tool.
+const HTTP_HOST =
+  resolveArgValue(process.argv.slice(2), "--host") ?? process.env.HOST ?? "127.0.0.1";
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+/**
+ * Whether tools that modify the workspace may run.
+ *
+ * Over stdio the client is a process the user started, so writes are allowed.
+ * Over HTTP anyone who can reach the port is the client, so they are refused
+ * unless explicitly enabled.
+ */
+const WRITES_ALLOWED =
+  TRANSPORT_MODE === "stdio" || process.argv.slice(2).includes("--allow-write");
 const PIPELINES_DIR = path.join(ROOT, "pipelines");
 const httpSessions = new Map();
 const httpSessionServers = new Map();
@@ -123,6 +141,7 @@ server.tool(
     content: z.string(),
   },
   async ({ path: filePath, content }) => {
+    assertWritesAllowed("repo_write_file");
     const resolved = resolveWorkspacePath(filePath);
     await fs.mkdir(path.dirname(resolved), { recursive: true });
     await fs.writeFile(resolved, content, "utf8");
@@ -319,6 +338,7 @@ server.tool(
     recipe,
     overwrite = false,
   }) => {
+    assertWritesAllowed("pipeline_save");
     const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
     const { ast, errors } = compilePipeline(input);
     if (!ast) return textResult({ errors });
@@ -527,17 +547,45 @@ main().catch((error) => {
 });
 
 function resolveRootFromArgs(args) {
-  const rootArg = args.find((arg) => arg.startsWith("--root="));
-  if (!rootArg) return null;
-  const value = rootArg.slice("--root=".length).trim();
+  const value = resolveArgValue(args, "--root");
   return value ? path.resolve(value) : null;
 }
 
-function resolveArgValue(args, prefix) {
-  const arg = args.find((value) => value.startsWith(prefix));
-  if (!arg) return null;
-  const value = arg.slice(prefix.length).trim();
-  return value || null;
+/**
+ * Read `--name=value` or `--name value`.
+ *
+ * Only the `=` form used to be accepted, while the README documents the
+ * space-separated form — so following the README silently ignored --root and
+ * rooted the server at the repository directory instead.
+ *
+ * @param {string[]} args
+ * @param {string} name - flag name, with or without a trailing "="
+ */
+function resolveArgValue(args, name) {
+  const flag = name.endsWith("=") ? name.slice(0, -1) : name;
+
+  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
+  if (inline) {
+    const value = inline.slice(flag.length + 1).trim();
+    if (value) return value;
+  }
+
+  const index = args.indexOf(flag);
+  if (index !== -1) {
+    const next = args[index + 1];
+    if (next && !next.startsWith("--")) return next.trim() || null;
+  }
+
+  return null;
+}
+
+function assertWritesAllowed(toolName) {
+  if (WRITES_ALLOWED) return;
+  throw new Error(
+    `${toolName} is disabled: this server is running over HTTP, where any client ` +
+      `that can reach the port could modify the workspace. Restart with ` +
+      `--allow-write to enable it.`,
+  );
 }
 
 function resolveWorkspacePath(targetPath) {
@@ -576,7 +624,16 @@ async function listPipelineFiles(
   const entries = [];
   if (currentDepth > maxDepth) return entries;
 
-  const dirents = await fs.readdir(directory, { withFileTypes: true });
+  // The pipelines folder does not exist in a fresh clone, and readdir throwing
+  // ENOENT made pipeline_list fail instead of reporting an empty library.
+  let dirents;
+  try {
+    dirents = await fs.readdir(directory, { withFileTypes: true });
+  } catch (err) {
+    if (err.code === "ENOENT") return entries;
+    throw err;
+  }
+
   for (const dirent of dirents) {
     const fullPath = path.join(directory, dirent.name);
     if (dirent.isDirectory()) {
@@ -623,7 +680,10 @@ async function listPipelineFiles(
 }
 
 async function startHttpServer() {
-  const app = createMcpExpressApp();
+  // createMcpExpressApp applies DNS-rebinding protection automatically for
+  // loopback hosts; pass the host explicitly so the middleware and the socket
+  // agree about what is being protected.
+  const app = createMcpExpressApp({ host: HTTP_HOST });
 
   app.post("/mcp", async (req, res) => {
     const sessionId = req.headers["mcp-session-id"];
@@ -713,10 +773,22 @@ async function startHttpServer() {
   });
 
   await new Promise((resolve) => {
-    app.listen(HTTP_PORT, () => {
+    app.listen(HTTP_PORT, HTTP_HOST, () => {
       console.log(
-        `HTTP MCP server listening on http://localhost:${HTTP_PORT}/mcp`,
+        `HTTP MCP server listening on http://${HTTP_HOST}:${HTTP_PORT}/mcp`,
       );
+      if (!LOOPBACK_HOSTS.has(HTTP_HOST)) {
+        console.warn(
+          `WARNING: bound to ${HTTP_HOST}, which is reachable beyond this machine. ` +
+            `This server has no authentication. DNS-rebinding protection is not ` +
+            `applied to non-loopback hosts.`,
+        );
+      }
+      if (!WRITES_ALLOWED) {
+        console.log(
+          "Workspace writes are disabled over HTTP. Pass --allow-write to enable them.",
+        );
+      }
       resolve();
     });
   });

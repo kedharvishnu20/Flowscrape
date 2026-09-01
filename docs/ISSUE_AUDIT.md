@@ -272,8 +272,10 @@ This is a significant privacy exposure and a performance tax on every page load.
 ### C-05 · MEDIUM · `esc()` does not escape `&` or `'`
 `pipeline-builder.js:1920` replaces only `"` and `<`. Every config value rendered into the node cards goes through it. Unescaped `&` breaks entity round-tripping (`&quot;` in a value renders as `"`), and the function is unsafe for any single-quoted attribute context.
 
-### C-06 · MEDIUM · The MCP HTTP server has no authentication and exposes file writes
-`startHttpServer()` binds `app.listen(HTTP_PORT)` on all interfaces with no auth, no allow-list, and no DNS-rebinding protection. `repo_write_file` is a registered tool. Anyone who can reach the port — including any site in the user's browser via DNS rebinding — gets arbitrary write access inside the workspace root. At minimum: bind to `127.0.0.1`, enable the SDK's host-header validation, and gate `repo_write_file` behind a flag.
+### C-06 · MEDIUM · The MCP HTTP server binds every interface and exposes file writes
+`startHttpServer()` calls `app.listen(HTTP_PORT)` with no host, so the socket binds all interfaces, while `repo_write_file` is a registered tool and there is no authentication of any kind.
+
+*Corrected while fixing:* the entry also said there was no DNS-rebinding protection. There was — `createMcpExpressApp()` defaults its host to `127.0.0.1` and applies host-header validation automatically, so a LAN request was answered with 403. Verified by probing the machine's own LAN address: pre-fix it returns 403 (socket open, middleware refusing), post-fix the connection is refused outright. The exposure was an open port defended by one header check, not an open door — but the socket should not have been listening there at all.
 
 ### C-07 · MEDIUM · `web_accessible_resources` exposes the entire source tree to every site
 `manifest.json` lists `sidepanel/*, icons/*, content/*, background/*, utils/*, data-sources/*, exporters/*, script-gen/*, ethics/*, checkpoint/*` with `matches: ["<all_urls>"]`. Any page can fetch and read all of them, and can fingerprint the extension by probing a known URL. Only the modules actually loaded via `import(chrome.runtime.getURL(...))` — `content/overlay-engine.js`, `content/form-filler.js` and their transitive imports — need to be listed.

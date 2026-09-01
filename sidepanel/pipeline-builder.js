@@ -29,7 +29,7 @@ const STEP_REGISTRY = {
     icon: "🖱️",
     cat: "Action",
     desc: "Click element",
-    def: { selector: "", all: false },
+    def: { selector: "", all: false, fallbackToLoopItem: false },
   },
   FILL: {
     icon: "✏️",
@@ -1524,6 +1524,11 @@ function generateConfigHtml(step) {
   if (step.type === "CLICK") {
     html += selectorRow(step, "selector");
     html += toggle(step, "all", "Click ALL matching elements");
+    html += toggle(
+      step,
+      "fallbackToLoopItem",
+      "Inside a loop, click the item itself if the selector misses",
+    );
     html += toggle(step, "optional", "optional");
     return html;
   }

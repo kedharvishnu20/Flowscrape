@@ -15,6 +15,37 @@ const SOURCE = new URL("../../content/injector.js", import.meta.url);
 const EXPOSED = ["_executeStep", "_stepExtract", "_stepIfElse", "_queryScoped"];
 
 /**
+ * jsdom has no layout engine: every getBoundingClientRect is 0x0, and
+ * scrollIntoView / elementsFromPoint are absent. injector's click path treats a
+ * zero-sized element as non-interactable and would refuse to click anything, so
+ * give the page enough geometry to behave like a rendered one.
+ *
+ * Elements are laid out as a simple vertical stack: each gets a 100x20 box, and
+ * elementsFromPoint returns nothing so _resolveTopmostAtCenter falls back to the
+ * element it was given.
+ */
+function stubLayout(window) {
+  const { Element, HTMLElement, document } = window;
+
+  Element.prototype.scrollIntoView = function () {};
+  Element.prototype.getBoundingClientRect = function () {
+    const index = [...document.querySelectorAll("*")].indexOf(this);
+    const top = Math.max(0, index) * 24;
+    return {
+      x: 0, y: top, top, left: 0,
+      width: 100, height: 20,
+      right: 100, bottom: top + 20,
+      toJSON() { return this; },
+    };
+  };
+  if (!HTMLElement.prototype.focus.__stubbed) {
+    HTMLElement.prototype.focus = function () {};
+    HTMLElement.prototype.focus.__stubbed = true;
+  }
+  document.elementsFromPoint = () => [];
+}
+
+/**
  * Build a page and load injector.js into it.
  *
  * @param {string} html - body markup for the page under test
@@ -38,6 +69,8 @@ export async function loadInjector(html = "") {
       lastError: null,
     },
   };
+
+  stubLayout(window);
 
   let source = await readFile(SOURCE, "utf8");
 

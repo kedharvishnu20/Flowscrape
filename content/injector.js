@@ -484,7 +484,7 @@ function _pickBestClickMatch(candidates) {
 }
 
 async function _stepClick(
-  { selector, retries = 3, all = false },
+  { selector, retries = 3, all = false, fallbackToLoopItem = false },
   context = {},
 ) {
   let els = [];
@@ -509,16 +509,25 @@ async function _stepClick(
       : [_pickBestClickMatch(iframeMatches)].filter(Boolean);
   }
 
-  // In LOOP children, if selector still misses, click the current loop item root.
-  if (!els.length && scopedRoot && !all) {
+  // In LOOP children, optionally fall back to the current loop item root.
+  //
+  // This used to happen unconditionally: a selector that matched nothing inside
+  // a loop silently clicked the item container instead, so a typo produced a
+  // plausible-looking successful click on the wrong element. It is now opt-in,
+  // because "click the row itself" is a real pattern but it must be a choice.
+  if (!els.length && scopedRoot && !all && fallbackToLoopItem) {
     els = [scopedRoot];
     usedRootFallback = true;
   }
 
   if (!els.length) {
+    const inLoop = Boolean(scopedRoot);
     throw new Error(
       `❌ Click target not found. Selector: "${renderedSelector || selector}"\n` +
-        `Try: 1) Wait longer before click, 2) Use element picker (🎯), 3) Check if in iframe`,
+        `Try: 1) Wait longer before click, 2) Use element picker (🎯), 3) Check if in iframe` +
+        (inLoop
+          ? `\n4) Or enable "Fall back to the loop item" to click the row itself`
+          : ""),
     );
   }
 

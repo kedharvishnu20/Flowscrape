@@ -240,6 +240,7 @@ function _broadcastLog(level, message, runId) {
 const MSG = Object.freeze({
   PIPELINE_START: "pipeline:start",
   PIPELINE_PAUSE: "pipeline:pause",
+  PIPELINE_RESUME: "pipeline:resume",
   PIPELINE_STOP: "pipeline:stop",
   PIPELINE_STATUS: "pipeline:status",
   STEP_EXECUTE: "step:execute",
@@ -1433,6 +1434,15 @@ async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
   for (const step of steps) {
     if (!runState || !runState.active) break;
 
+    // Hold here while paused. The old _executePipeline loop did this and the
+    // merge in B-27 dropped it, so pause silently stopped working — it lives
+    // here now, which also means it applies inside loops and branches for the
+    // first time.
+    while (runState.paused && runState.active) {
+      await _sleep(500);
+    }
+    if (!runState.active) break;
+
     const resolvedStep = _resolveConfig(step, ctx);
 
     chrome.runtime
@@ -1594,11 +1604,22 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
 
 _registerHandler(MSG.PIPELINE_PAUSE, async (payload) => {
   const rs = _runStates.get(payload?.runId);
-  if (rs) {
-    rs.paused = true;
-    logger.info(MODULE, "pipeline-paused", { runId: rs.runId });
-  }
-  return { ok: true };
+  if (!rs) return { ok: false, paused: false };
+  rs.paused = true;
+  logger.info(MODULE, "pipeline-paused", { runId: rs.runId });
+  _broadcastLog("warn-log", "Paused. The current step finishes first.", rs.runId);
+  return { ok: true, paused: true };
+});
+
+// There was no resume: PIPELINE_PAUSE could set the flag and only PIPELINE_STOP
+// ever cleared it, so pausing a run meant ending it.
+_registerHandler(MSG.PIPELINE_RESUME, async (payload) => {
+  const rs = _runStates.get(payload?.runId);
+  if (!rs) return { ok: false, paused: false };
+  rs.paused = false;
+  logger.info(MODULE, "pipeline-resumed", { runId: rs.runId });
+  _broadcastLog("info-log", "Resumed.", rs.runId);
+  return { ok: true, paused: false };
 });
 
 _registerHandler(MSG.PIPELINE_STOP, async (payload) => {

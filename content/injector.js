@@ -1365,6 +1365,18 @@ function _buildSpecificSelector(el) {
 let _pickerActive = false;
 let _pickerResolve = null;
 
+/**
+ * Let the user click an element and return a selector for it.
+ *
+ * Cancelling used to be impossible. The promise resolved only from onClick —
+ * no Escape, no right-click, no timeout — so a user who changed their mind left
+ * `_pickerActive` true for the life of the page, every later pick returned null
+ * immediately, and the side panel sat awaiting a message that never came. Only
+ * a page reload recovered it.
+ *
+ * @param {{ bulk?: boolean }} payload
+ * @returns {Promise<string|null>} selector, or null if cancelled
+ */
 async function _activateSelectorPicker(payload) {
   if (_pickerActive) return null;
   _pickerActive = true;
@@ -1373,12 +1385,15 @@ async function _activateSelectorPicker(payload) {
   return new Promise((resolve) => {
     _pickerResolve = resolve;
 
-    // Use an invisible blocker div instead of a global CSS * override.
-    // This physically stops mouse events from reaching the page (thus freezing CSS hovers).
+    // The blocker div. The host element sets pointer-events:none so the rest of
+    // our shadow UI never eats page clicks, and this inherited it — so despite
+    // the comment that used to sit here, it blocked nothing and the page kept
+    // firing its own hover styles under the crosshair.
     const overlay = document.createElement("div");
     overlay.style.cssText = [
       "position:fixed;top:0;left:0;width:100%;height:100%;",
       "z-index:2147483645;cursor:crosshair;background:transparent;",
+      "pointer-events:auto;",
     ].join("");
     _shadow.appendChild(overlay);
 
@@ -1393,13 +1408,16 @@ async function _activateSelectorPicker(payload) {
     const tooltip = document.createElement("div");
     tooltip.style.cssText =
       "position:absolute;bottom:-24px;left:-2px;background:#2563eb;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;white-space:nowrap;font-family:sans-serif;pointer-events:none;";
-    tooltip.textContent = "Click to pick element";
+    tooltip.textContent = "Click to pick · Esc to cancel";
     highlight.appendChild(tooltip);
 
     _shadow.appendChild(highlight);
 
     document.addEventListener("mousemove", onMove, true); // Capture phase!
     document.addEventListener("click", onClick, true);
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("contextmenu", onContextMenu, true);
+    window.addEventListener("beforeunload", onUnload);
 
     let _blockTimer = null;
     let _lastX = 0,
@@ -1471,6 +1489,30 @@ async function _activateSelectorPicker(payload) {
       }
     }
 
+    /**
+     * Tear everything down exactly once and settle the promise.
+     * Every exit path goes through here, so the picker cannot be left armed.
+     * @param {string|null} selector
+     */
+    function finish(selector) {
+      if (!_pickerActive) return; // already settled
+      _pickerActive = false;
+
+      document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("contextmenu", onContextMenu, true);
+      window.removeEventListener("beforeunload", onUnload);
+
+      if (_blockTimer) cancelAnimationFrame(_blockTimer);
+      overlay.remove();
+      highlight.remove();
+
+      const settle = _pickerResolve;
+      _pickerResolve = null;
+      settle?.(selector);
+    }
+
     function onClick(e) {
       e.preventDefault();
       e.stopPropagation();
@@ -1481,18 +1523,27 @@ async function _activateSelectorPicker(payload) {
         _pickRealTargetAtPoint(e.clientX, e.clientY) ||
         currentTarget;
 
-      document.removeEventListener("mousemove", onMove, true);
-      document.removeEventListener("click", onClick, true);
+      finish(currentTarget ? _buildSelector(currentTarget, isBulk) : null);
+    }
 
-      _shadow.removeChild(overlay);
-      _shadow.removeChild(highlight);
-      _pickerActive = false;
+    function onKey(e) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      finish(null);
+    }
 
-      // Calculate CSS path using our intelligent engine
-      const selector = currentTarget
-        ? _buildSelector(currentTarget, isBulk)
-        : null;
-      _pickerResolve?.(selector);
+    function onContextMenu(e) {
+      // Right-click is the other reflex for "get me out of this mode".
+      e.preventDefault();
+      e.stopPropagation();
+      finish(null);
+    }
+
+    function onUnload() {
+      // A navigation destroys the page the picker was pointing at; settle so
+      // the caller is not left waiting on a tab that no longer exists.
+      finish(null);
     }
   });
 }

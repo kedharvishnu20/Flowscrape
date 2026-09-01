@@ -12,7 +12,13 @@ import vm from "node:vm";
 const SOURCE = new URL("../../content/injector.js", import.meta.url);
 
 /** Functions the harness exposes to tests. Extend as more come under test. */
-const EXPOSED = ["_executeStep", "_stepExtract", "_stepIfElse", "_queryScoped"];
+const EXPOSED = [
+  "_executeStep",
+  "_stepExtract",
+  "_stepIfElse",
+  "_queryScoped",
+  "_activateSelectorPicker",
+];
 
 /**
  * jsdom has no layout engine: every getBoundingClientRect is 0x0, and

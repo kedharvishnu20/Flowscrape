@@ -1482,10 +1482,16 @@
         style="font-size: 14px; padding: 8px; justify-content: center;">
         ▶ Run Pipeline
       </button>
-      <button class="btn btn-danger hidden w-full" id="btn-master-stop"
-        style="font-size: 14px; padding: 8px; justify-content: center;">
-        ⏹ Stop Execution
-      </button>
+      <div class="hidden" id="run-controls" style="display: flex; gap: 8px;">
+        <button class="btn" id="btn-master-pause"
+          style="font-size: 14px; padding: 8px; justify-content: center; flex: 1;">
+          ⏸ Pause
+        </button>
+        <button class="btn btn-danger" id="btn-master-stop"
+          style="font-size: 14px; padding: 8px; justify-content: center; flex: 1;">
+          ⏹ Stop
+        </button>
+      </div>
     </div>
 
     <div id="views">

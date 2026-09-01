@@ -7,6 +7,8 @@ import { formatRows, formatMeta, ROW_FORMATS } from "../exporters/row-formatters
 const MSG = {
   PIPELINE_START: "pipeline:start",
   PIPELINE_STOP: "pipeline:stop",
+  PIPELINE_PAUSE: "pipeline:pause",
+  PIPELINE_RESUME: "pipeline:resume",
 };
 let SK = { PIPELINE: "fs_active_pipeline" };
 SK.STORAGE_FILES = "fs_storage_files_v1";
@@ -26,7 +28,7 @@ const STEP_REGISTRY = Object.fromEntries(
 let _pipeline = { steps: [] };
 let _expandedNodeId = null;
 let _insertCtx = { index: -1, parentId: "", branchKey: "" };
-let _runState = { active: false, timer: null, startTs: 0, runId: null };
+let _runState = { active: false, paused: false, timer: null, startTs: 0, runId: null };
 let _storageFiles = [];
 let _uploadActivities = [];
 let _dragSourceId = null;
@@ -456,6 +458,28 @@ function bindGlobalControls() {
 
   const btnRun = document.getElementById("btn-master-run");
   const btnStop = document.getElementById("btn-master-stop");
+  const btnPause = document.getElementById("btn-master-pause");
+
+  // The service worker has always had a pause flag and the executor waits on
+  // it, but nothing in the UI could set it — and there was no resume message at
+  // all, so pausing a run would have meant ending it.
+  btnPause?.addEventListener("click", async () => {
+    if (!_runState.active || !_runState.runId) return;
+
+    const next = !_runState.paused;
+    const res = await chrome.runtime
+      .sendMessage({
+        type: next ? MSG.PIPELINE_PAUSE : MSG.PIPELINE_RESUME,
+        payload: { runId: _runState.runId },
+      })
+      .catch(() => null);
+
+    if (!res?.ok || res.result?.ok === false) {
+      logToMonitor("warn-log", "That run is no longer active.");
+      return;
+    }
+    _setPausedUI(next);
+  });
 
   btnRun.addEventListener("click", async () => {
     if (!_pipeline.steps.length) {
@@ -544,7 +568,8 @@ function bindGlobalControls() {
         timer: null,
       };
       btnRun.classList.add("hidden");
-      btnStop.classList.remove("hidden");
+      document.getElementById("run-controls")?.classList.remove("hidden");
+      _setPausedUI(false);
       document.querySelector('[data-tab="monitor"]').click();
       startMonitorTimer();
       logToMonitor("info-log", "Pipeline started.");
@@ -778,11 +803,26 @@ async function _checkRunAlive() {
   await _showResumeBanner();
   logToMonitor("info-log", `Interrupted run: ${lostRunId}`);
 }
+/** Reflect paused state in the button and the status card. */
+function _setPausedUI(paused) {
+  _runState.paused = paused;
+  const btn = document.getElementById("btn-master-pause");
+  if (btn) btn.textContent = paused ? "▶ Resume" : "⏸ Pause";
+
+  const state = document.getElementById("mon-state");
+  if (state && paused) {
+    state.textContent = "Paused";
+    state.style.color = "var(--yellow, #FACC15)";
+  }
+}
+
 function stopRunUI() {
   _runState.active = false;
+  _runState.paused = false;
   clearInterval(_runState.timer);
   document.getElementById("btn-master-run").classList.remove("hidden");
-  document.getElementById("btn-master-stop").classList.add("hidden");
+  document.getElementById("run-controls")?.classList.add("hidden");
+  _setPausedUI(false);
   document.getElementById("mon-state").textContent = "Stopped";
   document.getElementById("mon-state").style.color = "var(--text-dim)";
   document

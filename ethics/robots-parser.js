@@ -45,11 +45,18 @@ export function parseRobots(text) {
   let crawlDelay   = 0;
 
   let currentAgents = [];
+  // RFC 9309 §2.2.1: a group is one or more user-agent lines followed by rule
+  // lines. A user-agent line that follows a rule line therefore starts a *new*
+  // group. Without this, back-to-back groups with no blank line between them
+  // merged, and the second group's rules were applied to the first group's
+  // agents as well — so a `Disallow: /` meant for one bot blocked everything.
+  let seenRuleForGroup = false;
 
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.split('#')[0].trim(); // strip comments
     if (!line) {
       currentAgents = [];
+      seenRuleForGroup = false;
       continue;
     }
 
@@ -61,11 +68,20 @@ export function parseRobots(text) {
 
     switch (field) {
       case 'user-agent':
+        if (seenRuleForGroup) {
+          currentAgents = [];
+          seenRuleForGroup = false;
+        }
         currentAgents.push(value.toLowerCase());
         break;
 
       case 'disallow':
       case 'allow': {
+        seenRuleForGroup = true;
+        // An empty value is a rule with no path. RFC 9309 §2.2.2 says such a
+        // rule is ignored; recording it and matching it against everything is
+        // what made `Disallow:` (the canonical "allow all") block the site.
+        if (!value) break;
         const rule = { path: value, allow: field === 'allow' };
         for (const agent of currentAgents) {
           if (!agentRules.has(agent)) agentRules.set(agent, []);
@@ -94,15 +110,22 @@ export function parseRobots(text) {
  * @returns {boolean}
  */
 function _pathMatches(rulePattern, path) {
-  if (!rulePattern) return true; // empty pattern = matches nothing (treat as allow-all)
+  // A rule with no path matches nothing, so it can never be the winning rule.
+  // The code used to return true here — the opposite — while its own comment
+  // said "treat as allow-all".
+  if (!rulePattern) return false;
 
-  // Escape regex special chars except * and $
+  // Escape every regex metacharacter, `$` included. The old class omitted `$`,
+  // so it reached the regex unescaped: the `endsWith('\\$')` branch below could
+  // never fire (the string ended in a bare `$`), a trailing `$` anchored only
+  // by accident, and a `$` anywhere else silently became an anchor that made
+  // the pattern match nothing.
   let regex = rulePattern
-    .replace(/[-[\]{}()+?.,\\^|#\s]/g, '\\$&')
+    .replace(/[-[\]{}()+?.,\\^|#$\s]/g, '\\$&')
     .replace(/\*/g, '.*');
 
   if (regex.endsWith('\\$')) {
-    // $ at end means end of path
+    // A trailing `$` anchors the end of the path (RFC 9309 §2.2.3).
     regex = regex.slice(0, -2) + '$';
   }
 
@@ -131,16 +154,20 @@ export function isAllowedByRules(parsed, path, userAgent = FS_USER_AGENT) {
 
   if (rules.length === 0) return true; // no rules = allowed
 
-  // Find matching rules, pick longest path (most specific)
+  // Find matching rules, pick longest path (most specific). RFC 9309 §2.2.2:
+  // where an Allow and a Disallow are equally specific, Allow wins. The old
+  // `>` comparison gave it to whichever appeared first in the file instead.
   let bestRule = null;
   let bestLen  = -1;
 
   for (const rule of rules) {
-    if (_pathMatches(rule.path, path)) {
-      if (rule.path.length > bestLen) {
-        bestLen  = rule.path.length;
-        bestRule = rule;
-      }
+    if (!_pathMatches(rule.path, path)) continue;
+    if (
+      rule.path.length > bestLen ||
+      (rule.path.length === bestLen && rule.allow && !bestRule.allow)
+    ) {
+      bestLen  = rule.path.length;
+      bestRule = rule;
     }
   }
 
@@ -165,8 +192,10 @@ export async function fetchRobots(origin) {
     const res  = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
     clearTimeout(t);
 
-    if (res.status === 404) {
-      // No robots.txt = everything allowed
+    if (res.status >= 400 && res.status < 500) {
+      // RFC 9309 §2.3.1.3: "unavailable" (any 4xx) means no restrictions.
+      // Only 404 was handled before, so a 401 or 403 on robots.txt — common on
+      // sites behind a login or a WAF — came back as a fetch error instead.
       const empty = { agentRules: new Map(), crawlDelay: 0, sitemaps: [] };
       _cache.set(origin, { rules: empty, fetchedAt: Date.now() });
       return empty;

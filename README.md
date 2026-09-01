@@ -27,7 +27,7 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 231 tests, ~9s, no browser needed
+npm test        # 249 tests, ~9s, no browser needed
 npm run check   # parses every source file as an ES module
 ```
 
@@ -133,7 +133,7 @@ data-sources/
   json-parser.js               (unreachable)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         231 tests; node:test, jsdom, fake-indexeddb
+tests/                         249 tests; node:test, jsdom, fake-indexeddb
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, manual, template guide, limitations
 ```

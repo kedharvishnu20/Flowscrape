@@ -1407,6 +1407,19 @@ async function _dispatchStep(step, tabId, runId, ctx) {
           `Extracted ${resp.result.length} rows (total: ${runState.results.length}).`,
           runId,
         );
+        // Without this the count only moves on the next step's status message,
+        // so the last EXTRACT of a run never showed its rows at all.
+        chrome.runtime
+          .sendMessage({
+            type: "pipeline:status",
+            payload: {
+              state: "running",
+              rows: runState.results.length,
+              runId,
+              tabId: runState.tabId,
+            },
+          })
+          .catch(() => {});
         // So later steps can reference {{extracted.fieldName}}
         if (resp.result.length > 0) {
           Object.assign(ctx.extracted, resp.result[resp.result.length - 1]);
@@ -1454,6 +1467,10 @@ async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
           progress: progress
             ? { current: progress.count, total: progress.total }
             : {},
+          // Rows collected so far. The panel's "Processed" card used to show
+          // progress.current, which counts steps — next to a Download Data
+          // button, so it read as a row count and was not one (E-04).
+          rows: runState?.results.length ?? 0,
           runId,
           tabId: runState?.tabId,
         },

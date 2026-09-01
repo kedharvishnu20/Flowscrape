@@ -243,10 +243,19 @@ function bindStorageControls() {
   document
     .getElementById("btn-storage-clear")
     ?.addEventListener("click", async () => {
+      const n = _storageFiles.length;
+      if (!n) return;
+      const ok = await _confirmDestructive({
+        title: "Clear the file library?",
+        body: `${n} stored file${n === 1 ? "" : "s"} will be deleted. This cannot be undone, and any UPLOAD_ACTIVITY step referencing them will stop working.`,
+        confirmLabel: "Delete all",
+      });
+      if (!ok) return;
+
       _storageFiles = [];
       await _saveStorageFiles();
       renderStoragePanel();
-      logToMonitor("info-log", "Storage library cleared.");
+      logToMonitor("warn-log", `Storage library cleared (${n} files).`);
     });
 
   document
@@ -448,12 +457,22 @@ function bindGlobalControls() {
   document
     .getElementById("btn-clear-pipeline")
     .addEventListener("click", async () => {
+      const n = _pipeline.steps.length;
+      if (!n) return;
+      const ok = await _confirmDestructive({
+        title: "Clear the pipeline?",
+        body: `${n} step${n === 1 ? "" : "s"} will be deleted. This cannot be undone.`,
+        confirmLabel: "Clear",
+      });
+      if (!ok) return;
+
       _pipeline.steps = [];
       _expandedNodeId = null;
       _boardState.fittedOnce = false;
       await chrome.storage.local.remove(SK.PIPELINE);
       saveState();
       renderPipeline();
+      logToMonitor("warn-log", `Pipeline cleared (${n} steps).`);
     });
 
   const btnRun = document.getElementById("btn-master-run");
@@ -2110,16 +2129,51 @@ function _removeStep(e, id) {
   saveState();
   renderPipeline();
 }
+/** Per-step timers that clear a test outcome class. @type {Map<string, number>} */
+const _testStepTimers = new Map();
+
+/**
+ * Summarise what a test run of a step returned, for the log pane.
+ *
+ * The result was thrown away, so testing a CLICK or an EXTRACT told you only
+ * that it did not throw — never what it matched or what it read back (E-07).
+ *
+ * @param {*} result
+ * @returns {string}
+ */
+function _describeStepResult(result) {
+  if (result === null || result === undefined) return "no result";
+  if (Array.isArray(result)) {
+    if (!result.length) return "0 rows";
+    const keys = Object.keys(result[0] ?? {});
+    const head = JSON.stringify(result[0]);
+    return `${result.length} row${result.length === 1 ? "" : "s"}, ${keys.length} field${keys.length === 1 ? "" : "s"} — first: ${_clip(head, 220)}`;
+  }
+  if (typeof result === "object") return _clip(JSON.stringify(result), 260);
+  return _clip(String(result), 260);
+}
+
+/** @param {string} str @param {number} max */
+function _clip(str, max) {
+  return str.length > max ? `${str.slice(0, max)}…` : str;
+}
+
 async function _testStep(e, id) {
   e.stopPropagation();
   const step = _findStepDeep(_pipeline.steps, id);
   if (!step) return;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return alert("No active tab to test against.");
+  if (!tab) return notify("error-log", "No active tab to test against.");
   const card = document.querySelector(
     `.node-wrapper[data-id="${id}"] .node-card`,
   );
+
+  // The outcome class used to sit on the card until the next full render, so a
+  // card could still read "success" long after the pipeline had changed.
+  clearTimeout(_testStepTimers.get(id));
+  card?.classList.remove("success", "error");
   if (card) card.classList.add("running");
+
   try {
     const res = await chrome.runtime.sendMessage({
       type: "step:execute",
@@ -2130,17 +2184,99 @@ async function _testStep(e, id) {
       card.classList.remove("running");
       card.classList.add("success");
     }
+    notify(
+      "info-log",
+      `Test ${step.type}: ${_describeStepResult(res?.result)}`,
+    );
   } catch (err) {
     if (card) {
       card.classList.remove("running");
       card.classList.add("error");
     }
-    alert(
+    notify(
+      "error-log",
       err.message.includes("Receiving end")
-        ? "Refresh the target webpage first."
-        : `Test failed: ${err.message}`,
+        ? `Test ${step.type}: refresh the target webpage first.`
+        : `Test ${step.type} failed: ${err.message}`,
     );
   }
+
+  if (card) {
+    _testStepTimers.set(
+      id,
+      setTimeout(() => card.classList.remove("success", "error"), 6000),
+    );
+  }
+}
+
+// ── Confirmation ──────────────────────────────────────────────────────────────
+/**
+ * Ask before doing something that cannot be undone.
+ *
+ * "🗑 Clear" wiped the whole pipeline and "🧹 Clear Library" deleted every
+ * stored file, both on a single click with no confirm and no undo (E-14).
+ *
+ * @param {{ title: string, body: string, confirmLabel: string }} opts
+ * @returns {Promise<boolean>} true if the user confirmed
+ */
+function _confirmDestructive({ title, body, confirmLabel }) {
+  return new Promise((resolve) => {
+    const modal = document.createElement("div");
+    modal.style.cssText = `
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999; backdrop-filter: blur(4px);
+    `;
+
+    const card = document.createElement("div");
+    card.style.cssText = `
+      background: var(--bg-raised); border: 1px solid var(--bg-border);
+      border-radius: 12px; padding: 22px; max-width: 340px;
+      box-shadow: var(--shadow-fly);
+    `;
+
+    // Built as nodes: the body can carry a file name or a step count (C-04).
+    const h = document.createElement("h2");
+    h.style.cssText = "margin:0 0 6px; font-size:15px;";
+    h.textContent = title;
+
+    const p = document.createElement("p");
+    p.style.cssText = "margin:0 0 18px; color:var(--text-dim); font-size:12px;";
+    p.textContent = body;
+
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; gap:8px;";
+    const cancel = document.createElement("button");
+    cancel.className = "btn";
+    cancel.style.flex = "1";
+    cancel.textContent = "Cancel";
+    const ok = document.createElement("button");
+    ok.className = "btn btn-danger";
+    ok.style.flex = "1";
+    ok.textContent = confirmLabel;
+    row.append(cancel, ok);
+    card.append(h, p, row);
+
+    const done = (value) => {
+      modal.remove();
+      document.removeEventListener("keydown", onKey, true);
+      resolve(value);
+    };
+    function onKey(e) {
+      if (e.key === "Escape") done(false);
+    }
+
+    cancel.addEventListener("click", () => done(false));
+    ok.addEventListener("click", () => done(true));
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) done(false);
+    });
+    document.addEventListener("keydown", onKey, true);
+
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    cancel.focus(); // the safe option, not the destructive one
+  });
 }
 
 // ── Ethics warning confirmation ───────────────────────────────────────────────
@@ -2206,7 +2342,7 @@ function _confirmEthicsWarnings(warnings) {
 // ── Selector picker with mode toggle ──────────────────────────────────────────
 async function _pickSelector(stepId, key) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return alert("No active tab available.");
+  if (!tab) return notify("error-log", "No active tab available.");
 
   const stepType = _findStepDeep(_pipeline.steps, stepId)?.type;
   const defaultBulk =
@@ -2233,7 +2369,7 @@ async function _pickSelector(stepId, key) {
       }
     }
   } catch {
-    alert("Refresh the target webpage to connect the picker.");
+    notify("error-log", "Refresh the target webpage to connect the picker.");
   }
 }
 
@@ -2302,7 +2438,8 @@ async function _selectSelectorMode(defaultBulk) {
 // ── Extract field management ──────────────────────────────────────────────────
 async function _addExtractField(stepId) {
   const nameInput = document.getElementById(`new-ex-name-${stepId}`);
-  if (!nameInput?.value.trim()) return alert("Enter a field name first.");
+  if (!nameInput?.value.trim())
+    return notify("warn-log", "Enter a field name first.");
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
   try {
@@ -2323,7 +2460,7 @@ async function _addExtractField(stepId) {
       }
     }
   } catch {
-    alert("Refresh the target webpage to connect the picker.");
+    notify("error-log", "Refresh the target webpage to connect the picker.");
   }
 }
 function _removeExtractField(stepId, idx) {
@@ -2356,7 +2493,7 @@ async function _addFillField(stepId) {
       }
     }
   } catch {
-    alert("Refresh the target webpage to connect the picker.");
+    notify("error-log", "Refresh the target webpage to connect the picker.");
   }
 }
 function _removeFillField(stepId, idx) {
@@ -2471,7 +2608,11 @@ function listenToSystem() {
           fill.style.width = `${pct}%`;
           document.getElementById("mon-progress-text").textContent = `${pct}%`;
         }
-        document.getElementById("mon-rows").textContent = info.progress.current;
+      }
+      // The card is labelled Rows Extracted and now reports rows. It used to
+      // show progress.current, which is a step counter (E-04).
+      if (typeof info.rows === "number") {
+        document.getElementById("mon-rows").textContent = info.rows;
       }
       if (info.currentStepId) {
         document
@@ -2534,6 +2675,37 @@ function listenToSystem() {
 }
 
 const MAX_LOG_ENTRIES = 500;
+
+/**
+ * Say something the user needs to see now.
+ *
+ * Routine errors used to come out of `alert()` — a blocking, unstyled, OS-level
+ * dialog for "refresh the page first" (E-06). The log pane was already there
+ * for this, but it lives behind a tab the user may not be looking at, so this
+ * writes to both: a transient banner, and a permanent log entry.
+ *
+ * @param {'info-log'|'warn-log'|'error-log'} levelClass
+ * @param {string} message
+ */
+function notify(levelClass, message) {
+  logToMonitor(levelClass, message);
+
+  let host = document.getElementById("fs-toasts");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "fs-toasts";
+    document.body.appendChild(host);
+  }
+
+  const el = document.createElement("div");
+  el.className = `fs-toast ${levelClass}`;
+  el.textContent = String(message ?? "");
+  host.appendChild(el);
+
+  const kill = () => el.remove();
+  el.addEventListener("click", kill);
+  setTimeout(kill, levelClass === "error-log" ? 7000 : 4000);
+}
 
 function logToMonitor(levelClass, message) {
   const logs = document.getElementById("mon-logs");

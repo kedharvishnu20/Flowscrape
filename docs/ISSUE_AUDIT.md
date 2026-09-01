@@ -81,11 +81,13 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 | B-27 | `f7a742c` | One `_dispatchStep`; first behavioural tests for the executor |
 | B-13, B-15 | `27865a4` | 6 more step types emitted; the remaining 4 fail loudly and are reported. SCROLL reads `config.amount` |
 | D-01, B-26, D-14, H-08 | `c9b7d93` | A lost run is detected and reported instead of hanging the UI; completed runs stop being resumable; the `"latest"` sentinel is gone |
-| E-01, E-02, E-03 | *this batch* | Pause/Resume exists end to end; the picker can be cancelled and its overlay actually blocks. See the note below on E-01 |
+| E-01, E-02, E-03 | `0b087e5` | Pause/Resume exists end to end; the picker can be cancelled and its overlay actually blocks. See the note below on E-01 |
+
+| E-04, E-06, E-07, E-14 | *this batch* | The row card counts rows; `alert()` replaced by a toast plus a log entry; a test step reports what it returned; both Clear buttons confirm first |
 
 **Still open:** C-09, C-10, C-12; B-10 through B-12, B-14, B-16 through B-18,
-B-22 through B-25, B-28 onward; D-02, D-07, D-09 through D-13; E-04 onward;
-G-05 through G-09; I-02, I-04.
+B-22 through B-25, B-28 onward; D-02, D-07, D-09 through D-13; E-05, E-08
+onward except E-14; G-05 through G-09; I-02, I-04.
 
 **E-01 was worse than recorded, and partly my doing.** The finding says the
 backend was fully wired and only the button was missing. By the time it was

@@ -1,7 +1,12 @@
 // === sidepanel/pipeline-builder.js ===
 "use strict";
 
-import { STEP_TYPES, USER_STEP_TYPES, defaultConfig } from "../utils/step-types.js";
+import {
+  STEP_TYPES,
+  USER_STEP_TYPES,
+  defaultConfig,
+  isKnownStepType,
+} from "../utils/step-types.js";
 import { formatRows, formatMeta, ROW_FORMATS } from "../exporters/row-formatters.js";
 
 const MSG = {
@@ -677,7 +682,12 @@ function bindGlobalControls() {
     ?.addEventListener("click", async () => {
       if (!_pipeline.steps.length)
         return logToMonitor("warn-log", "Pipeline is empty.");
-      const format = "python"; // prompt() is blocked in sidepanel, defaulting to python
+      // prompt() is blocked in the side panel, which is why this was hardcoded
+      // to python and the Node emitter was unreachable (B-12). A select is not.
+      const format =
+        document.getElementById("sel-export-format")?.value === "node"
+          ? "node"
+          : "python";
       const res = await chrome.runtime.sendMessage({
         type: "script:export",
         payload: { pipeline: _pipeline, format },
@@ -688,6 +698,28 @@ function bindGlobalControls() {
           logToMonitor(
             "warn-log",
             `Not exported: ${step.type} — ${step.reason}. The script will throw if it reaches that step.`,
+          );
+        }
+
+        // Templates are a runtime feature of the executor. A standalone script
+        // has nothing to resolve them with, so it would request a URL with
+        // braces in it (B-16).
+        for (const t of res.result.templates ?? []) {
+          logToMonitor(
+            "warn-log",
+            `Unresolved template in ${t.type} ${t.where}: ${t.template} — the script uses it literally.`,
+          );
+        }
+
+        // Credentials are replaced with environment lookups (B-14), which the
+        // user has to set before the script will work.
+        const secrets = res.result.secrets ?? [];
+        if (secrets.length) {
+          logToMonitor(
+            "info-log",
+            `${secrets.length} credential(s) replaced with environment variables: ${secrets
+              .map((x) => x.env)
+              .join(", ")}. Set them before running the script.`,
           );
         }
 
@@ -1241,6 +1273,19 @@ function _normalizeImportedStep(step, where, seenIds) {
   if (!type) {
     throw new Error(`${where} is missing a step type.`);
   }
+  // Any uppercase string used to be accepted. It rendered with a "?" icon and
+  // an undefined CSS colour, then failed at run time with "Unknown step type"
+  // — long after the import said it had worked (D-09).
+  if (!isKnownStepType(type)) {
+    throw new Error(
+      `${where} has an unknown step type "${type}". Known types: ${USER_STEP_TYPES.join(", ")}.`,
+    );
+  }
+  if (STEP_TYPES[type].internal) {
+    throw new Error(
+      `${where} uses "${type}", which the executor dispatches internally and cannot be placed in a pipeline.`,
+    );
+  }
 
   let id = typeof step.id === "string" && step.id.trim() ? step.id.trim() : "";
   if (!id || seenIds.has(id)) {
@@ -1248,13 +1293,18 @@ function _normalizeImportedStep(step, where, seenIds) {
   }
   seenIds.add(id);
 
+  // Registry defaults first, then whatever the file supplied. An imported step
+  // missing keys used to render a half-empty config form and hit undefined at
+  // run time; now it looks exactly like one built in the palette (D-09).
   const normalized = {
     id,
     type,
-    config:
-      step.config && typeof step.config === "object"
+    config: {
+      ...defaultConfig(type),
+      ...(step.config && typeof step.config === "object"
         ? JSON.parse(JSON.stringify(step.config))
-        : {},
+        : {}),
+    },
   };
 
   if (Array.isArray(step.children) || type === "LOOP") {

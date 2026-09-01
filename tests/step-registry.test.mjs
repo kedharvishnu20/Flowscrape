@@ -79,7 +79,7 @@ test("FORM_FILL is not advertised as a step type", () => {
 test("the side panel builds its palette from the registry", () => {
   assert.match(
     panelSrc,
-    /import \{ STEP_TYPES, USER_STEP_TYPES, defaultConfig \} from "\.\.\/utils\/step-types\.js"/,
+    /import \{[\s\S]*?STEP_TYPES,[\s\S]*?USER_STEP_TYPES,[\s\S]*?defaultConfig,?[\s\S]*?\} from "\.\.\/utils\/step-types\.js"/,
   );
   assert.ok(
     !/const STEP_REGISTRY = \{\n\s+WEBSITE:/.test(panelSrc),

@@ -3,7 +3,8 @@
  * @module python-emitter
  * @description Converts a pipeline JSON AST to Python 3.11 script
  *   using playwright (browser automation) + requests (HTTP).
- *   Secrets are always redacted in output — replaced with environment variable references.
+ *   Credentials detected by pipeline-compiler.js are replaced with __FS_ENV__NAME__
+ *   markers and resolved from the environment at run time by fs_env().
  *
  *   Design decision: We emit Python rather than Playwright-specific code because
  *   Python is the most common scripting language for automation. The output is
@@ -40,9 +41,21 @@ export function emitPython(pipeline) {
     `# Pipeline: ${_escStr(pipeline.name ?? "Untitled")}`,
     `# Generated: ${new Date().toISOString()}`,
     "",
-    "import asyncio, os, json, csv, time, random",
+    "import asyncio, os, re, json, csv, time, random",
     "from playwright.async_api import async_playwright",
     "import requests",
+    "",
+    "",
+    "def fs_env(s):",
+    '    """Resolve credential markers left by FlowScrape against the environment.',
+    "",
+    "    Credentials are not written into this script. Each one appears as",
+    "    __FS_ENV__NAME__ and is read from the environment variable NAME when the",
+    "    script runs; a name that is not set resolves to an empty string.",
+    '    """',
+    "    if not isinstance(s, str):",
+    "        return s",
+    '    return re.sub(r"__FS_ENV__([A-Z0-9_]+)__", lambda m: os.environ.get(m.group(1), ""), s)',
     "",
     "# ── Config ────────────────────────────────────────────────────",
     `TARGET_ORIGIN = "${pipeline.targetOrigin ?? ""}"`,
@@ -263,7 +276,7 @@ function _emitFill(config) {
   for (const field of fields) {
     if (!field?.selector) continue;
     lines.push(
-      `await page.fill("${_escStr(field.selector)}", "${_escStr(field.value ?? "")}")`,
+      `await page.fill("${_escStr(field.selector)}", fs_env("${_escStr(field.value ?? "")}"))`,
     );
   }
   if (config.submitSelector) {
@@ -349,14 +362,14 @@ function _emitApi(config) {
     "# API",
     `api_headers = {}`,
     `try:`,
-    `    api_headers = json.loads("""${headers}""") if """${headers}""".strip() else {}`,
+    `    api_headers = json.loads(fs_env("""${headers}""")) if """${headers}""".strip() else {}`,
     `except Exception:`,
     `    api_headers = {}`,
     `api_resp = requests.request(`,
     `    method="${method}",`,
     `    url="${url}",`,
     `    headers=api_headers,`,
-    `    data="""${body}""" if """${body}""" else None,`,
+    `    data=fs_env("""${body}""") if """${body}""" else None,`,
     `    timeout=${timeoutSec},`,
     `)`,
   ];

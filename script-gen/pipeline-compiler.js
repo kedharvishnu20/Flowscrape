@@ -123,4 +123,147 @@ export function findUnexportableSteps(ast) {
   return found;
 }
 
+/**
+ * Config keys whose value is a credential by name.
+ * The same list drives serializePipeline's redaction.
+ */
+const SECRET_KEY = /pass(word)?|secret|token|api[-_]?key|\bkey\b|cred|auth|bearer/i;
+
+/** Selectors that say "this is a password field" without needing the value. */
+const PASSWORD_SELECTOR = /type\s*=\s*["']?password|#pass|\bpassword\b|\bpwd\b/i;
+
+/** Header names that carry a credential. */
+const SECRET_HEADER = /^(authorization|proxy-authorization|x-api-key|api-key|x-auth-token|cookie)$/i;
+
+const ENV_MARKER = (name) => `__FS_ENV__${name}__`;
+
+/**
+ * Replace credentials in a compiled AST with environment-variable markers.
+ *
+ * The emitters only ever replaced *proxy* credentials, while the README said
+ * "credentials are always redacted" — so a FILL step holding a password, or an
+ * API step with an Authorization header, was written into the downloaded script
+ * in plaintext (B-14). Both emitters resolve these markers at runtime through a
+ * small helper, so this runs once here rather than at every emit site.
+ *
+ * Detection is by key name, by header name, and by password-shaped selectors.
+ * A password typed into a field this cannot recognise is still emitted as
+ * written — there is nothing in the config that distinguishes it from any other
+ * text — so the return value lists what was replaced and callers report it.
+ *
+ * @param {object} ast - compiled pipeline; mutated in place
+ * @returns {Array<{ env: string, stepId: string|null, type: string, where: string }>}
+ */
+export function redactSecrets(ast) {
+  const found = [];
+  let n = 0;
+
+  const claim = (stepId, type, where) => {
+    const env = `FS_SECRET_${++n}`;
+    found.push({ env, stepId: stepId ?? null, type, where });
+    return ENV_MARKER(env);
+  };
+
+  const redactHeaders = (raw, step) => {
+    if (typeof raw !== 'string' || !raw.includes(':')) return raw;
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return raw; // not JSON we can reason about; left alone and reported below
+    }
+    if (!parsed || typeof parsed !== 'object') return raw;
+    let changed = false;
+    for (const k of Object.keys(parsed)) {
+      if (SECRET_HEADER.test(k) && typeof parsed[k] === 'string' && parsed[k]) {
+        parsed[k] = claim(step.id, step.type, `headers.${k}`);
+        changed = true;
+      }
+    }
+    return changed ? JSON.stringify(parsed) : raw;
+  };
+
+  const walkConfig = (cfg, step, path = 'config') => {
+    if (!cfg || typeof cfg !== 'object') return;
+    for (const [k, v] of Object.entries(cfg)) {
+      if (v && typeof v === 'object') {
+        walkConfig(v, step, `${path}.${k}`);
+      } else if (typeof v === 'string' && v && SECRET_KEY.test(k)) {
+        cfg[k] = claim(step.id, step.type, `${path}.${k}`);
+      }
+    }
+  };
+
+  const walk = (steps) => {
+    for (const step of Array.isArray(steps) ? steps : []) {
+      const cfg = step.config;
+      if (cfg && typeof cfg === 'object') {
+        if (step.type === 'API') {
+          cfg.headers = redactHeaders(cfg.headers, step);
+        }
+        if (step.type === 'FILL' || step.type === 'TYPE') {
+          if (cfg.text && PASSWORD_SELECTOR.test(String(cfg.selector ?? ''))) {
+            cfg.text = claim(step.id, step.type, 'config.text');
+          }
+          for (const f of Array.isArray(cfg.fields) ? cfg.fields : []) {
+            if (f?.value && PASSWORD_SELECTOR.test(String(f.selector ?? ''))) {
+              f.value = claim(step.id, step.type, `fields[${f.selector}]`);
+            }
+          }
+        }
+        walkConfig(cfg, step);
+      }
+      walk(step.children);
+      walk(step.ifBranch);
+      walk(step.elseBranch);
+    }
+  };
+
+  walk(ast?.steps);
+  return found;
+}
+
+/**
+ * Templates left in a compiled AST.
+ *
+ * `{{loop.index}}` and friends are resolved by the extension's executor at run
+ * time. The emitters copy config strings verbatim, so a template appears
+ * literally in the generated script and the script requests a URL with braces
+ * in it (B-16). Nothing can resolve them standalone, so the honest thing is to
+ * name them before the download rather than ship a script that looks fine.
+ *
+ * @param {object} ast
+ * @returns {Array<{ stepId: string|null, type: string, where: string, template: string }>}
+ */
+export function findUnresolvedTemplates(ast) {
+  const found = [];
+
+  const scan = (value, step, path) => {
+    if (typeof value === 'string') {
+      for (const m of value.matchAll(/\{\{([^}]+)\}\}/g)) {
+        found.push({
+          stepId: step.id ?? null,
+          type: step.type,
+          where: path,
+          template: m[0],
+        });
+      }
+    } else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) scan(v, step, `${path}.${k}`);
+    }
+  };
+
+  const walk = (steps) => {
+    for (const step of Array.isArray(steps) ? steps : []) {
+      scan(step.config, step, 'config');
+      walk(step.children);
+      walk(step.ifBranch);
+      walk(step.elseBranch);
+    }
+  };
+
+  walk(ast?.steps);
+  return found;
+}
+
 // === END pipeline-compiler.js ===

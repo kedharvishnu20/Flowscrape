@@ -27,6 +27,13 @@ export function emitNode(pipeline) {
     `  password: process.env.FS_PROXY_PASS ?? '',`,
     `} : undefined;`,
     "",
+    `// Credentials are not written into this script. Each one appears as`,
+    `// __FS_ENV__NAME__ and is read from the environment variable NAME at run`,
+    `// time; a name that is not set resolves to an empty string.`,
+    `const fsEnv = s => typeof s === 'string'`,
+    `  ? s.replace(/__FS_ENV__([A-Z0-9_]+)__/g, (_, n) => process.env[n] ?? '')`,
+    `  : s;`,
+    "",
     `const sleep = ms => new Promise(r => setTimeout(r, ms));`,
     `const jitter = (min, max) => min + Math.random() * (max - min);`,
     "",
@@ -197,7 +204,9 @@ function _emitNodeFill(config, esc) {
 
   for (const field of fields) {
     if (!field?.selector) continue;
-    lines.push(`await page.fill('${esc(field.selector)}', '${esc(field.value ?? "")}');`);
+    lines.push(
+      `await page.fill('${esc(field.selector)}', fsEnv('${esc(field.value ?? "")}'));`,
+    );
   }
   if (config.submitSelector) {
     lines.push(`await page.click('${esc(config.submitSelector)}');`);
@@ -253,11 +262,11 @@ function _apiNode(config) {
     `const apiController = new AbortController();`,
     `const apiTimer = setTimeout(() => apiController.abort(), ${timeout});`,
     `let apiHeaders = {};`,
-    `try { apiHeaders = JSON.parse('${esc(headers)}'); } catch { apiHeaders = {}; }`,
+    `try { apiHeaders = JSON.parse(fsEnv('${esc(headers)}')); } catch { apiHeaders = {}; }`,
     `const apiResp = await fetch('${esc(config.url ?? "")}', {`,
     `  method: '${esc(method)}',`,
     `  headers: apiHeaders,`,
-    `  body: '${esc(body)}' ? '${esc(body)}' : undefined,`,
+    `  body: '${esc(body)}' ? fsEnv('${esc(body)}') : undefined,`,
     `  signal: apiController.signal,`,
     `});`,
     `clearTimeout(apiTimer);`,

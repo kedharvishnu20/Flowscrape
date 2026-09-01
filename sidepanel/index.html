@@ -1537,6 +1537,13 @@
         <div id="board-toolbar">
           <div class="flex gap-2">
             <button class="btn" id="btn-export-script">📜 Export Script</button>
+            <!-- The Node emitter existed from the start but nothing could reach
+                 it: the format was hardcoded to python (B-12). -->
+            <select class="btn" id="sel-export-format" title="Script language"
+              style="padding: 6px 8px;">
+              <option value="python">Python</option>
+              <option value="node">Node</option>
+            </select>
             <button class="btn" id="btn-upload-pipeline">📂 Upload Pipeline</button>
             <button class="btn" id="btn-download-pipeline">⬇ Pipeline JSON</button>
             <input id="input-upload-pipeline" type="file" accept=".json,application/json" hidden />

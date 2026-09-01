@@ -27,7 +27,7 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 308 tests, ~9s, no browser needed
+npm test        # 326 tests, ~9s, no browser needed
 npm run check   # parses every source file as an ES module
 ```
 
@@ -133,7 +133,7 @@ data-sources/
   json-parser.js               (unreachable)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         308 tests; node:test, jsdom, fake-indexeddb
+tests/                         326 tests; node:test, jsdom, fake-indexeddb
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, manual, template guide, limitations
 ```
@@ -256,13 +256,20 @@ Those emit an explicit `raise NotImplementedError` / `throw`, and are listed in
 the run log before the download. They used to become a `# TODO` comment, so the
 script ran and quietly did less than the pipeline.
 
-Two caveats that still apply:
+Python or Node — pick the language in the toolbar next to the button.
 
-- **Templates are not resolved.** `{{loop.index}}` is a runtime feature of the
-  executor; the emitters copy config strings verbatim, so a template appears
-  literally in the generated script (audit B-16).
-- **Only proxy credentials are replaced with environment lookups.** Anything
-  typed into a `FILL` step is emitted as written (audit B-14).
+**Credentials** are replaced with `__FS_ENV__NAME__` markers that both generated
+scripts resolve from the environment at run time, so nothing is written into the
+file. Detection is by config key name, by HTTP header name (`Authorization`,
+`X-API-Key`, `Cookie`…), and by password-shaped selectors. A password typed into
+a field none of those recognise is still emitted as written — nothing in the
+config distinguishes it from any other text — so the run log lists every
+credential it replaced, and what it did not find is visible by omission.
+
+**Templates are not resolved.** `{{loop.index}}` is a runtime feature of the
+executor; a standalone script has nothing to resolve it with. Any template left
+in the pipeline is named in the run log before the download, rather than shipped
+as literal braces in a URL (audit B-16).
 
 ---
 

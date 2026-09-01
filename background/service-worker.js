@@ -64,6 +64,8 @@ import {
 import {
   compilePipeline,
   findUnexportableSteps,
+  findUnresolvedTemplates,
+  redactSecrets,
 } from "../script-gen/pipeline-compiler.js";
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
@@ -1940,9 +1942,21 @@ _registerHandler("script:export", async (payload) => {
     // used to become a `# TODO` comment, so the exported script looked
     // complete, ran, and silently did less than the pipeline.
     const unexportable = findUnexportableSteps(ast);
-    const code = payload.format === "python" ? emitPython(ast) : emitNode(ast);
 
-    return { code, unexportable };
+    // Templates are resolved by this executor at run time; a standalone script
+    // has nothing to resolve them with, so they are named before download
+    // rather than shipped as literal braces in a URL (B-16).
+    const templates = findUnresolvedTemplates(ast);
+
+    // Credentials become __FS_ENV__NAME__ markers that both emitters resolve
+    // from the environment. Only proxy credentials were handled before, so a
+    // password or an Authorization header went into the file in plaintext
+    // (B-14). Must run after the two scans, which read the original values.
+    const secrets = redactSecrets(ast);
+
+    const code = payload.format === "node" ? emitNode(ast) : emitPython(ast);
+
+    return { code, unexportable, templates, secrets };
   } catch (err) {
     throw new Error(`Script export failed: ${err.message}`);
   }

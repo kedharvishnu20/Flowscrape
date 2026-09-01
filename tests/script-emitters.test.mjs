@@ -29,8 +29,10 @@ test("FILL is emitted, in both languages", () => {
   const { py, js } = emit([
     step("FILL", { selector: "#email", text: "a@b.test" }),
   ]);
-  assert.match(py, /await page\.fill\("#email", "a@b\.test"\)/);
-  assert.match(js, /await page\.fill\('#email', 'a@b\.test'\)/);
+  // Values pass through fs_env/fsEnv so a credential marker (B-14) resolves at
+  // run time; an ordinary value comes back from it unchanged.
+  assert.match(py, /await page\.fill\("#email", fs_env\("a@b\.test"\)\)/);
+  assert.match(js, /await page\.fill\('#email', fsEnv\('a@b\.test'\)\)/);
 });
 
 test("multi-field FILL emits every field and the submit click", () => {
@@ -44,8 +46,8 @@ test("multi-field FILL emits every field and the submit click", () => {
       submitSelector: "#go",
     }),
   ]);
-  assert.match(py, /page\.fill\("#first", "Ada"\)/);
-  assert.match(py, /page\.fill\("#last", "Lovelace"\)/);
+  assert.match(py, /page\.fill\("#first", fs_env\("Ada"\)\)/);
+  assert.match(py, /page\.fill\("#last", fs_env\("Lovelace"\)\)/);
   assert.match(py, /page\.click\("#go"\)/);
 });
 

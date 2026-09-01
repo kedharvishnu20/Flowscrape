@@ -91,10 +91,12 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 
 | B-11, B-22 | `7b7d669` | Templates resolve at any depth; LOOP rejects a zero count instead of running nothing, and a failed element query skips rather than looping blind |
 
-| D-02, D-07, D-10, D-11 | *this batch* | A real keep-alive replaces the clamped alarm; capture buffers are bounded and say when they fill; export dedup no longer depends on key order |
+| D-02, D-07, D-10, D-11 | `e216049` | A real keep-alive replaces the clamped alarm; capture buffers are bounded and say when they fill; export dedup no longer depends on key order |
 
-**Still open:** C-09, C-10, C-12; B-12,
-B-14 through B-16, B-22 through B-25, B-28 onward; D-09, D-12, D-13; E-05, E-08
+| B-12, B-14, B-16, D-09 | *this batch* | Node emitter reachable; credentials become env markers both scripts resolve; templates named before download; imports validated against the registry and filled from its defaults |
+
+**Still open:** C-09, C-10, C-12;
+B-15, B-22 through B-25, B-28 onward; D-12, D-13; E-05, E-08
 onward except E-14; G-05 through G-09; I-02, I-04.
 
 **E-01 was worse than recorded, and partly my doing.** The finding says the
@@ -244,6 +246,7 @@ Labelled "Min. confidence to accept (0–100)". It is actually the **LLM escalat
 Both emitters cover only `WEBSITE/NAVIGATE, API, CLICK, WAIT, EXTRACT, FORM_FILL, EXPORT, SCROLL, LOOP, IF_ELSE`. Everything else hits `default:` and emits `# TODO: implement step type "X"` (`python-emitter.js:172`, `node-emitter.js:122`). That silently drops **FILL, HOVER, SELECT, KEYBOARD, DRAG_DROP, UPLOAD_ACTIVITY, SCREENSHOT, PAGINATE, API_SNIFFER, PDF_EXTRACTION, AUTO_EXTRACT** — 11 of 21 step types. The exported script looks complete and runs, but does less than the pipeline.
 
 ### B-14 · HIGH · The "credentials are always redacted" claim is false for emitted scripts
+**Fixed, with a limit worth stating.** Detection is by config key name, by HTTP header name, and by password-shaped selectors. A password typed into a field none of those recognise is still emitted as written — nothing in the config distinguishes it from any other text. The export reports every credential it replaced, so what it did *not* find is visible by omission.
 `README.md` §Script Export: *"Credentials are always redacted — replaced with `os.environ.get(...)`."* The emitters only emit env-var lookups for the **proxy**. `serializePipeline()` has a `REDACT` regex but the emitters never call it. A `FILL` step containing a password or an `API` step with an `Authorization` header is emitted in plaintext.
 
 ### B-15 · MEDIUM · SCROLL emitters read the wrong config key

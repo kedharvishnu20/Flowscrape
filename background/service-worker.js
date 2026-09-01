@@ -305,17 +305,119 @@ self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
-// ── Heartbeat alarm (keeps SW alive) ──────────────────────────────────────────
+// ── Keeping the worker alive during a run ─────────────────────────────────────
+/**
+ * MV3 shuts an idle service worker down after 30 seconds, and an `await` on a
+ * timer does not count as activity. This mattered: a run doing anything slower
+ * than 30s between extension events simply vanished mid-pipeline.
+ *
+ * The old approach was an alarm at `periodInMinutes: 0.33`, described in the
+ * code as "~20s". Chrome clamps any period below 1 to one minute in a packed
+ * extension (30s unpacked), so the alarm fired *after* the worker it was meant
+ * to keep alive had already been torn down (D-02). It was also armed only from
+ * the `activate` event, so it never came back after a restart, and cleared
+ * whenever the last run ended.
+ *
+ * What actually resets the idle timer is calling an extension API. So the
+ * keep-alive is an interval that makes a cheap call, and the alarm stays as the
+ * backstop that can restart a worker Chrome killed anyway — at a period Chrome
+ * will honour, and no longer claiming to be a 20-second heartbeat.
+ */
+const KEEPALIVE_MS = 20000;
+let _keepaliveTimer = null;
+
 function _startHeartbeat() {
-  chrome.alarms.create("fs_sw_heartbeat", { periodInMinutes: 0.33 }); // ~20s
+  chrome.alarms.create("fs_sw_heartbeat", { periodInMinutes: 1 });
+  if (_keepaliveTimer) return;
+  _keepaliveTimer = setInterval(() => {
+    if (_runStates.size === 0) {
+      _stopHeartbeat();
+      return;
+    }
+    // Any extension API call resets the 30s idle timer. getPlatformInfo is the
+    // cheapest one that touches no state.
+    chrome.runtime.getPlatformInfo?.().catch(() => {});
+  }, KEEPALIVE_MS);
+}
+
+function _stopHeartbeat() {
+  if (_keepaliveTimer) {
+    clearInterval(_keepaliveTimer);
+    _keepaliveTimer = null;
+  }
+  chrome.alarms.clear("fs_sw_heartbeat").catch(() => {});
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "fs_sw_heartbeat") {
-    // Just touching this listener keeps the SW alive
     logger.debug(MODULE, "heartbeat", { active: _runStates.size > 0 });
+    // The worker may have been restarted by this very alarm, in which case the
+    // interval is gone. Re-arm it if a run is still supposed to be in flight.
+    if (_runStates.size > 0) _startHeartbeat();
+    else _stopHeartbeat();
   }
 });
+
+// ── Capture limits ────────────────────────────────────────────────────────────
+/**
+ * Screenshots and sniffed requests live in the worker's heap until export, and
+ * nothing bounded either of them. A 200-iteration loop with a screenshot step
+ * exhausted memory long before the export it was collecting for (D-10), and a
+ * sniffer run on a chatty page did the same at up to 550 KB per request (D-11).
+ *
+ * These are ceilings, not a fix for the design: the right answer is to stream
+ * captures to IndexedDB the way rows already are. Until then a run stops
+ * retaining rather than dying, and says so once so the export is not silently
+ * short.
+ */
+const CAPTURE_LIMITS = Object.freeze({
+  screenshotBytes: 48 * 1024 * 1024,
+  screenshotCount: 500,
+  networkBytes: 32 * 1024 * 1024,
+  networkCount: 5000,
+});
+
+/**
+ * Append to a capture buffer unless it is full.
+ *
+ * @param {object} runState
+ * @param {'screenshots'|'networks'} key
+ * @param {object} entry
+ * @param {number} bytes - approximate size of this entry
+ * @param {number} maxBytes
+ * @param {number} maxCount
+ * @param {string} runId
+ * @returns {boolean} false when the entry was dropped
+ */
+function _pushCapture(runState, key, entry, bytes, maxBytes, maxCount, runId) {
+  if (!Array.isArray(runState[key])) runState[key] = [];
+  const sizeKey = `${key}Bytes`;
+  const dropKey = `${key}Dropped`;
+  runState[sizeKey] = runState[sizeKey] || 0;
+  runState[dropKey] = runState[dropKey] || 0;
+
+  if (
+    runState[key].length >= maxCount ||
+    runState[sizeKey] + bytes > maxBytes
+  ) {
+    runState[dropKey]++;
+    // One warning per run, not one per dropped item.
+    if (runState[dropKey] === 1) {
+      _broadcastLog(
+        "warn-log",
+        `${key === "screenshots" ? "Screenshot" : "Network capture"} buffer is full ` +
+          `(${runState[key].length} kept, ~${Math.round(runState[sizeKey] / 1048576)} MB). ` +
+          `Further captures in this run are dropped; the export will say how many.`,
+        runId,
+      );
+    }
+    return false;
+  }
+
+  runState[key].push(entry);
+  runState[sizeKey] += bytes;
+  return true;
+}
 
 // ── Message bus ───────────────────────────────────────────────────────────────
 /** @type {Map<string, (payload: any, sender: chrome.runtime.MessageSender) => Promise<any>>} */
@@ -488,8 +590,7 @@ _registerHandler("network:sniff", async (payload, sender) => {
   if (!tabId) return { ok: false };
   for (const [runId, rs] of _runStates.entries()) {
     if (rs.tabId === tabId && rs.active && rs.enableSniffer) {
-      if (!Array.isArray(rs.networks)) rs.networks = [];
-      rs.networks.push({
+      const entry = {
         timestamp: Date.now(),
         method: payload.method,
         url: payload.url,
@@ -497,7 +598,18 @@ _registerHandler("network:sniff", async (payload, sender) => {
         requestBody: payload.reqBody || "",
         responseBody: payload.resBody || "",
         type: payload.apiType,
-      });
+      };
+      _pushCapture(
+        rs,
+        "networks",
+        entry,
+        (entry.url?.length || 0) +
+          entry.requestBody.length +
+          entry.responseBody.length,
+        CAPTURE_LIMITS.networkBytes,
+        CAPTURE_LIMITS.networkCount,
+        runId,
+      );
       break;
     }
   }
@@ -523,14 +635,23 @@ async function _captureScreenshot(tabId, config = {}, runId) {
       format: "png",
       quality,
     });
-    // Store in memory for ZIP export
-    if (!Array.isArray(runState.screenshots)) runState.screenshots = [];
-    runState.screenshots.push({ dataUrl, ts: Date.now() });
-    _broadcastLog(
-      "info-log",
-      `Screenshot #${runState.screenshots.length} captured.`,
+    // Held in memory until export, so it is bounded (D-10).
+    const kept = _pushCapture(
+      runState,
+      "screenshots",
+      { dataUrl, ts: Date.now() },
+      dataUrl.length,
+      CAPTURE_LIMITS.screenshotBytes,
+      CAPTURE_LIMITS.screenshotCount,
       runId,
     );
+    if (kept) {
+      _broadcastLog(
+        "info-log",
+        `Screenshot #${runState.screenshots.length} captured.`,
+        runId,
+      );
+    }
   } catch (err) {
     throw new Error(`Screenshot failed: ${err.message}`);
   }
@@ -831,15 +952,36 @@ function _dataUrlToBytes(dataUrl) {
   return bytes;
 }
 
+/**
+ * A stable identity for a row, independent of key order.
+ * @param {object} row
+ * @returns {string}
+ */
+function _rowKey(row) {
+  if (!row || typeof row !== "object") return JSON.stringify(row);
+  return JSON.stringify(
+    Object.keys(row)
+      .sort()
+      .map((k) => [k, row[k]]),
+  );
+}
+
 async function _doExport(runId, config) {
   const runState = _runStates.get(runId);
   if (!runState) return;
   const idbRows = await readAllRows(runId).catch(() => []);
   const allRows = [...runState.results];
-  const seen = new Set(allRows.map((r) => JSON.stringify(r)));
+  // Dedup by a key that does not depend on insertion order. JSON.stringify was
+  // used directly, so a row read back from IndexedDB with its properties in a
+  // different order never matched its in-memory twin and every row came out
+  // twice (D-07). Sorting the keys makes the two comparable.
+  const seen = new Set(allRows.map(_rowKey));
   for (const r of idbRows) {
     const { runId: _, ...clean } = r;
-    if (!seen.has(JSON.stringify(clean))) allRows.push(clean);
+    const key = _rowKey(clean);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    allRows.push(clean);
   }
 
   const screenshots = runState.screenshots || [];
@@ -899,9 +1041,14 @@ async function _doExport(runId, config) {
       // lifetime of the worker.
       URL.revokeObjectURL(zipUrl);
     }
+    // A short export is never silent: if the capture buffers filled, the count
+    // that did not make it is part of the result.
+    const dropped =
+      (runState.screenshotsDropped || 0) + (runState.networksDropped || 0);
     _broadcastLog(
-      "info-log",
-      `Exported ZIP: ${allRows.length} rows, ${screenshots.length} screens, ${networks.length} APIs.`,
+      dropped ? "warn-log" : "info-log",
+      `Exported ZIP: ${allRows.length} rows, ${screenshots.length} screens, ${networks.length} APIs` +
+        (dropped ? ` — ${dropped} capture(s) dropped when the buffer filled.` : "."),
       runId,
     );
   } else if (allRows.length > 0) {
@@ -1603,7 +1750,7 @@ async function _executePipeline(runId, pipeline, targetTabId) {
 
   _runStates.delete(runId);
   if (_runStates.size === 0) {
-    await chrome.alarms.clear("fs_sw_heartbeat").catch(() => {});
+    _stopHeartbeat();
   }
 }
 
@@ -1680,7 +1827,7 @@ _registerHandler(MSG.PIPELINE_STOP, async (payload) => {
     rs.paused = false;
     logger.info(MODULE, "pipeline-stopped", { runId: rs.runId });
   }
-  if (_runStates.size === 0) await chrome.alarms.clear("fs_sw_heartbeat");
+  if (_runStates.size === 0) _stopHeartbeat();
   return { ok: true };
 });
 

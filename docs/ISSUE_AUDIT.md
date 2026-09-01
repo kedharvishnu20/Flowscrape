@@ -89,10 +89,12 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 
 | B-10, B-23, B-24, B-25, B-31 | `2331ef5` | FILL writes through the native setter and handles checkbox/radio/select/contenteditable; SELECT matches by label and fails loudly; KEYBOARD emits real `code` values; text conditions normalise whitespace; percent scroll measures the document |
 
-| B-11, B-22 | *this batch* | Templates resolve at any depth; LOOP rejects a zero count instead of running nothing, and a failed element query skips rather than looping blind |
+| B-11, B-22 | `7b7d669` | Templates resolve at any depth; LOOP rejects a zero count instead of running nothing, and a failed element query skips rather than looping blind |
+
+| D-02, D-07, D-10, D-11 | *this batch* | A real keep-alive replaces the clamped alarm; capture buffers are bounded and say when they fill; export dedup no longer depends on key order |
 
 **Still open:** C-09, C-10, C-12; B-12,
-B-14 through B-16, B-22 through B-25, B-28 onward; D-02, D-07, D-09 through D-13; E-05, E-08
+B-14 through B-16, B-22 through B-25, B-28 onward; D-09, D-12, D-13; E-05, E-08
 onward except E-14; G-05 through G-09; I-02, I-04.
 
 **E-01 was worse than recorded, and partly my doing.** The finding says the
@@ -385,6 +387,8 @@ Three content scripts run on every page the user visits, for a tool that operate
 
 ### D-10 · MEDIUM · Screenshots accumulate unboundedly in memory
 `runState.screenshots` holds full PNG data URLs in the SW's heap for the whole run. A 200-iteration loop with a screenshot step will exhaust memory long before export.
+
+**Bounded, not solved.** Captures now stop at 48 MB / 500 screenshots (32 MB / 5000 requests for D-11), warn once, count what was dropped and report it in the export line. The design fix is to stream captures to IndexedDB the way rows already are; that is not attempted here.
 
 ### D-11 · MEDIUM · Sniffed network payloads accumulate unboundedly
 `runState.networks` grows without cap, at up to 550 KB per captured request.

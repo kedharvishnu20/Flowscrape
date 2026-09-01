@@ -153,9 +153,27 @@ window.addEventListener("message", (event) => {
 });
 
 // ── Runtime message bridge (SW → content script) ──────────────────────────────
+
+/**
+ * Message types this listener answers. Anything else must fall through.
+ *
+ * overlay-engine.js registers a second onMessage listener in this same content
+ * script. Chrome runs every listener and delivers the first response, so a
+ * listener that returns `true` for messages it does not understand steals them:
+ * _handleEvent's default branch resolved to null, this listener replied
+ * `{ ok: true, result: null }` first, and the overlay engine's real answer was
+ * discarded. That silently disabled ethics Gate 7 and every overlay:* command.
+ */
+const OWNED_MESSAGE_TYPES = new Set([
+  CE.STEP_EXEC,
+  CE.FORM_FILL_ROW,
+  CE.PICK_SELECTOR,
+  "step:execute",
+]);
+
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
   const { type, payload } = msg ?? {};
-  if (!type) return false;
+  if (!type || !OWNED_MESSAGE_TYPES.has(type)) return false;
 
   _handleEvent(type, payload, null)
     .then((result) => respond({ ok: true, result }))
@@ -180,7 +198,7 @@ async function _handleEvent(type, payload, id) {
       return _executeStep(payload);
 
     default:
-      return null;
+      throw new Error(`Unhandled event type: ${type}`);
   }
 }
 

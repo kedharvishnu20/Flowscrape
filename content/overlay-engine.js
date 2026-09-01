@@ -630,11 +630,21 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       break;
     case "overlay:setMode":
       if (payload.action === "previewAll" && Array.isArray(payload.steps)) {
-        const result = overlayEngine.previewAll
-          ? overlayEngine.previewAll(payload.steps)
-          : { matched: [], unmatched: [] };
-        respond({ ok: true, ...result });
-        break;
+        // previewAll is async — spreading the promise used to send
+        // { ok: true } with no matched/unmatched, so ethics Gate 7 always saw
+        // `undefined` and reported no missing selectors. Await it and keep the
+        // channel open by returning true below.
+        Promise.resolve(
+          overlayEngine.previewAll
+            ? overlayEngine.previewAll(payload.steps)
+            : { matched: [], unmatched: [] },
+        )
+          .then((result) => respond({ ok: true, ...result }))
+          .catch((err) => {
+            logger.error(MODULE, "preview-all-fail", { error: err.message });
+            respond({ ok: false, error: err.message });
+          });
+        return true;
       }
       overlayEngine.setMode(payload.zoneId, payload.mode, payload.message);
       respond({ ok: true });
@@ -659,6 +669,18 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       const zoneId = overlayEngine.register(payload);
       respond({ ok: true, zoneId });
       break;
+    }
+    case "overlay:reloadPrefs": {
+      // Sent by sidepanel/overlay-panel.js when the user changes a preference.
+      // Nothing handled it before, so overlay settings only took effect on the
+      // next page load.
+      // reloadPrefs re-reads chrome.storage.local, which overlay-panel.js has
+      // already written by the time it sends this.
+      overlayEngine
+        .reloadPrefs()
+        .then(() => respond({ ok: true }))
+        .catch((err) => respond({ ok: false, error: err.message }));
+      return true;
     }
     default:
       return false; // not handled here

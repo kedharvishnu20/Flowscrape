@@ -28,14 +28,9 @@
     "type": "module"
   },
 
+  "_comment_content_scripts": "page-sniffer.js is NOT declared here. It wraps fetch/XHR in the page's own world and forwards request and response bodies, so it is registered at runtime via chrome.scripting only while an API_SNIFFER run is active, scoped to that run's origin. See _enableSniffer in background/service-worker.js.",
+
   "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content/page-sniffer.js"],
-      "run_at": "document_start",
-      "world": "MAIN",
-      "all_frames": false
-    },
     {
       "matches": ["<all_urls>"],
       "js": ["content/smart-extractor.js"],

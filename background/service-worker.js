@@ -63,6 +63,99 @@ const RESTRICTED_UPLOAD_SITES = Object.freeze({
   "www.instagram.com": true,
 });
 
+// ── Network sniffer lifecycle ─────────────────────────────────────────────────
+/**
+ * page-sniffer.js wraps window.fetch and XMLHttpRequest and forwards every
+ * request and response body it sees. It used to be declared in the manifest as
+ * a MAIN-world content script on <all_urls> at document_start, so it ran on
+ * every site the user visited — banking, webmail, everything — buffering up to
+ * 500 KB per response and messaging it to this worker, which then discarded it
+ * unless an API_SNIFFER run happened to be active.
+ *
+ * It is now registered only while such a run is in flight, and scoped to the
+ * run's own origin rather than every site.
+ */
+const SNIFFER_SCRIPT_ID = "fs_page_sniffer";
+const SNIFFER_FILE = "content/page-sniffer.js";
+
+/** Runs currently requesting the sniffer; it is unregistered when this empties. */
+const _snifferRuns = new Set();
+
+function _snifferMatches(targetOrigin) {
+  if (typeof targetOrigin === "string" && /^https?:\/\//.test(targetOrigin)) {
+    return [`${targetOrigin}/*`];
+  }
+  // No usable origin (started from a new tab); fall back to all sites for the
+  // duration of the run rather than capturing nothing.
+  return ["<all_urls>"];
+}
+
+async function _enableSniffer(runId, tabId, targetOrigin) {
+  _snifferRuns.add(runId);
+
+  try {
+    const existing = await chrome.scripting
+      .getRegisteredContentScripts({ ids: [SNIFFER_SCRIPT_ID] })
+      .catch(() => []);
+    if (existing.length) {
+      await chrome.scripting.unregisterContentScripts({ ids: [SNIFFER_SCRIPT_ID] });
+    }
+
+    await chrome.scripting.registerContentScripts([
+      {
+        id: SNIFFER_SCRIPT_ID,
+        js: [SNIFFER_FILE],
+        matches: _snifferMatches(targetOrigin),
+        runAt: "document_start",
+        world: "MAIN",
+        allFrames: false,
+        persistAcrossSessions: false,
+      },
+    ]);
+    logger.info(MODULE, "sniffer-registered", { runId });
+  } catch (err) {
+    logger.error(MODULE, "sniffer-register-fail", { error: err.message });
+    _broadcastLog("error-log", `API Sniffer could not start: ${err.message}`, runId);
+    return;
+  }
+
+  // The registration above only takes effect on the next document_start. Inject
+  // into the page that is already open so the run does not have to navigate
+  // first — traffic that happened before this point is necessarily missed.
+  if (tabId) {
+    await chrome.scripting
+      .executeScript({
+        target: { tabId },
+        world: "MAIN",
+        files: [SNIFFER_FILE],
+      })
+      .then(() =>
+        _broadcastLog(
+          "info-log",
+          "API Sniffer active. Requests made before this point are not captured.",
+          runId,
+        ),
+      )
+      .catch((err) =>
+        _broadcastLog(
+          "warn-log",
+          `API Sniffer could not hook the current page (${err.message}). It will start on the next navigation.`,
+          runId,
+        ),
+      );
+  }
+}
+
+async function _disableSniffer(runId) {
+  if (!_snifferRuns.delete(runId)) return;
+  if (_snifferRuns.size > 0) return; // another run still wants it
+
+  await chrome.scripting
+    .unregisterContentScripts({ ids: [SNIFFER_SCRIPT_ID] })
+    .then(() => logger.info(MODULE, "sniffer-unregistered", { runId }))
+    .catch((err) => logger.warn(MODULE, "sniffer-unregister-fail", { error: err.message }));
+}
+
 // ── Utility helpers ────────────────────────────────────────────────────────────
 const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -264,6 +357,10 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
   _runStates.set(runId, runState);
   _startHeartbeat(); // only needed while a run is in flight
 
+  if (enableSniffer) {
+    await _enableSniffer(runId, runState.tabId, payload.targetOrigin);
+  }
+
   // Persist state before any await
   await chrome.storage.local.set({
     fs_run_log: { runId, startedAt: Date.now(), status: "running" },
@@ -276,6 +373,7 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
   // If ethics gates hard-blocked, abort the run
   if (ethicsResult.blocked) {
     _runStates.delete(runId);
+    await _disableSniffer(runId);
     throw new EthicsBlock(
       ethicsResult.blocker.code,
       ethicsResult.blocker.message,
@@ -1379,6 +1477,7 @@ async function _executePipeline(runId, pipeline, targetTabId) {
   }
 
   await finalizeBuffer(runId).catch(() => {});
+  await _disableSniffer(runId);
   const endRunState = _runStates.get(runId);
   const stateStr = endRunState?.active ? "completed" : "stopped";
   chrome.runtime

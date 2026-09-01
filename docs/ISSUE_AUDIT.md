@@ -267,7 +267,7 @@ Three content scripts run on every page the user visits, for a tool that operate
 `README.md` advertises six formats. The EXPORT step's dropdown offers four (csv/json/jsonl/tsv) and `_doExport` implements four. `exportXML()` and `exportMarkdown()` exist in `exporters/text-exporters.js` and are unreachable.
 
 ### D-05 · MEDIUM · The BOM is embedded raw into a `data:` URL
-`service-worker.js:668`: `` `data:${mime};charset=utf-8,\uFEFF${encodeURIComponent(dataContent)}` ``. The BOM is outside the `encodeURIComponent` call, so it is not percent-encoded and will be mangled by URL parsing. The ZIP branch does it correctly (`enc.encode("\uFEFF" + content)`).
+`service-worker.js:668` builds the download URL as a template literal `data:<mime>;charset=utf-8,\uFEFF<encodeURIComponent(dataContent)>`. The BOM is outside the `encodeURIComponent` call, so it is not percent-encoded and will be mangled by URL parsing. The ZIP branch does it correctly (`enc.encode("\uFEFF" + content)`).
 
 ### D-06 · MEDIUM · Blob URLs are never revoked in the service worker
 `_doExport` creates `URL.createObjectURL(blob)` for the ZIP path and never calls `revokeObjectURL`. Every export leaks the full payload for the lifetime of the SW.

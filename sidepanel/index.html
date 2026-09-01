@@ -58,26 +58,31 @@
       --yellow: #EAB308;
 
       /* Step Type Colors */
+      /* One token per palette step type; a test in tests/step-registry.test.mjs
+         keeps this in step with utils/step-types.js. The palette uses
+         var(--step-X) with no fallback, so a missing token renders as no
+         background at all. */
+      --step-WEBSITE: #38BDF8;
       --step-NAVIGATE: #3B82F6;
       --step-CLICK: #8B5CF6;
-      --step-TYPE: #06B6D4;
+      --step-FILL: #06B6D4;
       --step-HOVER: #A78BFA;
       --step-SELECT: #14B8A6;
       --step-SCROLL: #64748B;
-      --step-WAIT: #F59E0B;
-      --step-EXTRACT: #10B981;
-      --step-SCREENSHOT: #EC4899;
-      --step-FORM_FILL: #F97316;
-      --step-LOOP: #6366F1;
-      --step-IF_ELSE: #EAB308;
-      --step-PAGINATE: #0EA5E9;
       --step-KEYBOARD: #78716C;
       --step-DRAG_DROP: #D946EF;
       --step-UPLOAD_ACTIVITY: #0D9488;
+      --step-WAIT: #F59E0B;
+      --step-IF_ELSE: #EAB308;
+      --step-LOOP: #6366F1;
+      --step-PAGINATE: #0EA5E9;
+      --step-EXTRACT: #10B981;
+      --step-SCREENSHOT: #EC4899;
       --step-EXPORT: #22C55E;
-      --step-WEBSITE: #38BDF8;
-      --step-API: #06B6D4;
-      --step-API_SNIFFER: #8b5cf6;
+      --step-API: #0891B2;
+      --step-API_SNIFFER: #A855F7;
+      --step-PDF_EXTRACTION: #F97316;
+      --step-AUTO_EXTRACT: #F43F5E;
 
       --radius: 8px;
       --radius-sm: 4px;

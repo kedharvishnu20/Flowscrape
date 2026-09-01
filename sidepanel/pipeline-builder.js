@@ -1,6 +1,8 @@
 // === sidepanel/pipeline-builder.js ===
 "use strict";
 
+import { STEP_TYPES, USER_STEP_TYPES, defaultConfig } from "../utils/step-types.js";
+
 const MSG = {
   PIPELINE_START: "pipeline:start",
   PIPELINE_STOP: "pipeline:stop",
@@ -12,162 +14,12 @@ SK.UPLOAD_ACTIVITIES = "fs_upload_activities_v1";
 let _tabId = null;
 
 // ── Step Registry ─────────────────────────────────────────────────────────────
-const STEP_REGISTRY = {
-  WEBSITE: {
-    icon: "🕸️",
-    cat: "Action",
-    desc: "Open website",
-    def: { url: "https://", wait: true },
-  },
-  NAVIGATE: {
-    icon: "🌐",
-    cat: "Action",
-    desc: "Go to URL",
-    def: { url: "https://", wait: true },
-  },
-  CLICK: {
-    icon: "🖱️",
-    cat: "Action",
-    desc: "Click element",
-    def: { selector: "", all: false, fallbackToLoopItem: false },
-  },
-  FILL: {
-    icon: "✏️",
-    cat: "Action",
-    desc: "Fill input / form",
-    def: {
-      mode: "single",
-      selector: "",
-      text: "",
-      delayMs: 50,
-      append: false,
-      fields: [],
-      submitSelector: "",
-    },
-  },
-  HOVER: {
-    icon: "👆",
-    cat: "Action",
-    desc: "Hover element",
-    def: { selector: "" },
-  },
-  SELECT: {
-    icon: "📑",
-    cat: "Action",
-    desc: "Dropdown select",
-    def: { selector: "", value: "" },
-  },
-  SCROLL: {
-    icon: "↕️",
-    cat: "Action",
-    desc: "Scroll page",
-    def: { mode: "pixel", amount: 500 },
-  },
-  KEYBOARD: {
-    icon: "⌨",
-    cat: "Action",
-    desc: "Press key",
-    def: { key: "Enter" },
-  },
-  DRAG_DROP: {
-    icon: "✋",
-    cat: "Action",
-    desc: "Drag & Drop",
-    def: { source: "", target: "" },
-  },
-  UPLOAD_ACTIVITY: {
-    icon: "🛰",
-    cat: "Action",
-    desc: "Upload from Storage",
-    def: { selector: "input[type=file]", fileIds: [], optional: false },
-  },
-
-  WAIT: { icon: "⏳", cat: "Flow", desc: "Wait (ms)", def: { ms: 1000 } },
-  IF_ELSE: {
-    icon: "🔀",
-    cat: "Flow",
-    desc: "Conditional branch",
-    def: { condition: "exists", selector: "", value: "", attr: "" },
-  },
-  LOOP: {
-    icon: "🔁",
-    cat: "Flow",
-    desc: "Loop / repeat",
-    def: { type: "elements", selector: "", max: 10, onFail: "skip" },
-  },
-  PAGINATE: {
-    icon: "📄",
-    cat: "Flow",
-    desc: "Pagination click",
-    def: { selector: "" },
-  },
-
-  EXTRACT: {
-    icon: "📤",
-    cat: "Data",
-    desc: "Extract data",
-    def: { fields: [] },
-  },
-  SCREENSHOT: {
-    icon: "📸",
-    cat: "Data",
-    desc: "Capture screenshot",
-    def: { quality: 100 },
-  },
-  EXPORT: {
-    icon: "💾",
-    cat: "Data",
-    desc: "Export results",
-    def: { format: "csv" },
-  },
-  API: {
-    icon: "🧩",
-    cat: "Data",
-    desc: "Call API endpoint",
-    def: {
-      url: "https://api.example.com/resource",
-      method: "GET",
-      headers: '{"Accept":"application/json"}',
-      body: "",
-      timeoutMs: 15000,
-      responseType: "auto",
-      storeAs: "api",
-      failOnHttpError: true,
-      exposeBodyAsExtracted: false,
-    },
-  },
-  API_SNIFFER: {
-    icon: "🕵️",
-    cat: "Data",
-    desc: "API Sniffer",
-    def: {
-      enabled: true,
-    },
-  },
-  PDF_EXTRACTION: {
-    icon: "📕",
-    cat: "Data",
-    desc: "Extract PDF text",
-    def: {
-      source: "url",
-      url: "",
-      fileId: "",
-      maxPages: 50,
-      storeAs: "pdf_text",
-    },
-  },
-  AUTO_EXTRACT: {
-    icon: "🤖",
-    cat: "Data",
-    desc: "Smart product auto-extract",
-    def: {
-      // smart-extractor.js implements product extraction only; there is no
-      // article or listing extractor behind the old extractType dropdown.
-      confidenceThreshold: 70,
-      useLlm: true,
-    },
-  },
-};
+// The vocabulary lives in utils/step-types.js so the panel, the script emitters
+// and the MCP server cannot drift apart again. Only user-selectable steps
+// appear in the palette.
+const STEP_REGISTRY = Object.fromEntries(
+  USER_STEP_TYPES.map((type) => [type, STEP_TYPES[type]]),
+);
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _pipeline = { steps: [] };
@@ -1298,11 +1150,10 @@ function _normalizeImportedStep(step, where, seenIds) {
 
 // ── Add / remove / open palette ───────────────────────────────────────────────
 function _addStep(type) {
-  const reg = STEP_REGISTRY[type];
   const newStep = {
     id: "s_" + Date.now() + Math.floor(Math.random() * 1000),
     type,
-    config: { ...JSON.parse(JSON.stringify(reg.def)), optional: false },
+    config: { ...defaultConfig(type), optional: false },
   };
   if (type === "LOOP") {
     newStep.children = [];

@@ -18,6 +18,7 @@ import {
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { checkRobots } from "../ethics/robots-parser.js";
+import { ALL_STEP_TYPES } from "../utils/step-types.js";
 import {
   scanRows,
   scanText,
@@ -81,19 +82,11 @@ function createServerInstance() {
   return instance;
 }
 
-const supportedStepTypes = new Set([
-  "WEBSITE",
-  "NAVIGATE",
-  "API",
-  "CLICK",
-  "WAIT",
-  "EXTRACT",
-  "FORM_FILL",
-  "EXPORT",
-  "SCROLL",
-  "LOOP",
-  "IF_ELSE",
-]);
+// Derived from the shared vocabulary rather than hand-maintained. The old
+// hardcoded list was missing 11 real step types — pipeline_validate reported
+// FILL and AUTO_EXTRACT as "unsupported" for pipelines the UI had just built —
+// and listed FORM_FILL, which is not a step type at all.
+const supportedStepTypes = new Set(ALL_STEP_TYPES);
 
 server.tool(
   "repo_list_files",

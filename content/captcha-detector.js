@@ -11,6 +11,11 @@
  *   philosophy: no blind scraping of any kind.
  *
  * @dependencies overlay-engine, logger
+ *
+ * NOT LOADED. This module is not in manifest.json's content_scripts and nothing
+ * imports it, so no captcha is ever detected. Its counterpart, solveCaptcha in
+ * background/api-key-manager.js, is exposed via the captcha:solve message that
+ * nothing sends. See docs/ISSUE_AUDIT.md A-06.
  */
 
 'use strict';

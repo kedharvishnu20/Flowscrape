@@ -11,6 +11,10 @@
  *   mappings on the actual page, not just in the mapping table.
  *
  * @dependencies overlay-engine, color-utils, logger
+ *
+ * NOT REACHABLE. Nothing imports this module. It exists to support the
+ * FORM_FILL flow described in docs/ISSUE_AUDIT.md A-07, which has no entry
+ * point.
  */
 
 "use strict";

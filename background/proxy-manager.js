@@ -15,6 +15,14 @@
  *   port, type, country, alive, latencyMs, failCount) goes to chrome.storage.local.
  *
  * @dependencies logger, strings
+ *
+ * NOT CURRENTLY REACHED BY A PIPELINE RUN. selectProxy, rotateProxy and
+ * _applyProxy are exposed only through the proxy:select / proxy:rotate /
+ * proxy:test messages, and nothing sends them — _executePipeline never touches
+ * this module. The Settings tab's "Update Pool" button parses and stores a
+ * pool that is then never applied. See docs/ISSUE_AUDIT.md A-05: whether to
+ * wire this up or remove it is an open product decision, so treat everything
+ * here as untested against real traffic.
  */
 
 import { logger } from '../utils/logger.js';
@@ -125,12 +133,13 @@ function _parseLine(line, index) {
     }
 
     // ── Formats with protocol prefix (socks5://, http://, etc.) ──────────
-    if (/^[a-z]+:\/\//i.test(line)) {
-      // Use URL parser; don't let it throw on bad input
-      let urlStr = line;
-      // Ensure double-slash for URL parser
-      if (!/^[a-z]+:\/\//i.test(urlStr)) urlStr = 'http://' + urlStr;
-      const url = new URL(urlStr);
+    // The scheme pattern must allow digits after the first letter. `[a-z]+:`
+    // cannot match "socks5:" — it stops at the 5 — so socks4:// and socks5://
+    // URLs, both documented in the README, fell through to the plain
+    // host:port branch and parsed as host "socks5" with a NaN port. With
+    // _makeEntry accepting anything, that entry went into the pool.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(line)) {
+      const url = new URL(line);
       const proto = _normalizeProtocol(url.protocol.replace(':', ''));
       const host  = url.hostname;
       const port  = parseInt(url.port || (proto === 'socks5' ? '1080' : '3128'), 10);
@@ -170,6 +179,20 @@ function _parseLine(line, index) {
  * @returns {ProxyEntry}
  */
 function _makeEntry({ host, port, user, pass, type, country }) {
+  // This used to accept anything, so the try/catch skip paths in
+  // parseProxyJSON and parseProxyCSV were dead and entries with port: NaN
+  // entered the pool.
+  const cleanHost = String(host ?? '').trim();
+  if (!cleanHost) throw new Error('Missing host');
+
+  const cleanPort = Number(port);
+  if (!Number.isInteger(cleanPort) || cleanPort < 1 || cleanPort > 65535) {
+    throw new Error(`Invalid port: ${port}`);
+  }
+
+  host = cleanHost;
+  port = cleanPort;
+
   return {
     host,
     port,
@@ -210,7 +233,18 @@ function _deduplicate(entries) {
  * @returns {ProxyEntry[]}
  */
 export function parseProxyText(text) {
-  const lines   = text.split(/\r?\n/);
+  const raw = String(text ?? '');
+
+  // README lists "CSV with header: host,port,username,password,type" as a
+  // supported paste format, but this function only ever tried the line
+  // formats — so a pasted CSV had every row rejected. parseProxyCSV existed
+  // and was never called from anywhere.
+  const firstLine = raw.split(/\r?\n/).find((l) => l.trim()) ?? '';
+  if (/^\s*host\s*,/i.test(firstLine)) {
+    return parseProxyCSV(raw);
+  }
+
+  const lines   = raw.split(/\r?\n/);
   const entries = lines.map(_parseLine).filter(Boolean);
   return _deduplicate(entries);
 }
@@ -493,10 +527,13 @@ export async function testProxy(entry, retryCount = 3) {
   }
 
   const start = Date.now();
-  // We cannot change actual networking in a content script from here.
-  // This health check is run from the service worker using the Chromium proxy
-  // API; we temporarily apply this proxy, make the fetch, then record result.
-  // For the health check we rely on network fetch (SW context only).
+
+  // _applyProxy sets a browser-wide PAC script, so a health check hijacks every
+  // tab's traffic for its duration. Nothing used to put it back: after checking
+  // a pool the user's whole browser stayed routed through whichever proxy was
+  // tested last. Snapshot the current settings and restore them in `finally`.
+  const previous = await _snapshotProxySettings();
+
   try {
     await _applyProxy(entry);
     const controller = new AbortController();
@@ -529,9 +566,53 @@ export async function testProxy(entry, retryCount = 3) {
       poolEntry.alive = false;
       logger.info(MODULE, 'proxy-marked-dead', { host: entry.host, port: entry.port, failCount: poolEntry.failCount });
     }
+  } finally {
+    await _restoreProxySettings(previous);
   }
 
   return poolEntry;
+}
+
+/**
+ * Read the current browser proxy configuration so a health check can put it
+ * back. Returns null when it cannot be read, in which case the restore clears
+ * to direct rather than leaving a test proxy in place.
+ * @returns {Promise<object|null>}
+ */
+async function _snapshotProxySettings() {
+  try {
+    return await new Promise((resolve, reject) => {
+      chrome.proxy.settings.get({ incognito: false }, (details) => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve(details?.value ?? null);
+      });
+    });
+  } catch (err) {
+    logger.warn(MODULE, 'proxy-snapshot-fail', { error: err.message });
+    return null;
+  }
+}
+
+/**
+ * Put back what _snapshotProxySettings read. Clears to a direct connection if
+ * there was nothing to restore — never leaves a tested proxy applied.
+ * @param {object|null} previous
+ */
+async function _restoreProxySettings(previous) {
+  try {
+    if (!previous || previous.mode === 'system' || previous.mode === 'direct') {
+      await clearProxy();
+      return;
+    }
+    await new Promise((resolve, reject) => {
+      chrome.proxy.settings.set({ value: previous, scope: 'regular' }, () => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve();
+      });
+    });
+  } catch (err) {
+    logger.error(MODULE, 'proxy-restore-fail', { error: err.message });
+  }
 }
 
 /**
@@ -543,7 +624,16 @@ export async function testProxy(entry, retryCount = 3) {
  */
 export async function testAllProxies({ autoRemoveDead = false, retryCount = 3 } = {}) {
   logger.info(MODULE, 'health-check-start', { count: _pool.length });
-  await Promise.allSettled(_pool.map(entry => testProxy(entry, retryCount)));
+
+  // Sequential, not Promise.allSettled: every testProxy call swaps a global,
+  // browser-wide PAC script, so running them concurrently meant N tests
+  // fighting over one setting and measuring each other's proxies. The latency
+  // and alive/dead results this produced were meaningless.
+  for (const entry of [..._pool]) {
+    await testProxy(entry, retryCount).catch((err) =>
+      logger.warn(MODULE, 'proxy-test-threw', { error: err.message }),
+    );
+  }
 
   if (autoRemoveDead) {
     const before = _pool.length;

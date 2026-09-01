@@ -12,6 +12,11 @@
  *   checking if the element's value updated correctly.
  *
  * @dependencies overlay-engine, logger, pii-detector
+ *
+ * NOT REACHABLE. executeRow is called only from _formFillRow in injector.js,
+ * which fires on an FS_FORM_FILL_ROW event that nothing dispatches. FORM_FILL
+ * is not a step type: it has ethics gates and emitter cases but no registry
+ * entry and no executor. See docs/ISSUE_AUDIT.md A-07.
  */
 
 'use strict';

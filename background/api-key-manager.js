@@ -381,6 +381,10 @@ export function checkCaptchaGates(flags) {
 }
 
 // ── Captcha dispatcher ────────────────────────────────────────────────────────
+//
+// NOT REACHABLE. solveCaptcha is exposed through the captcha:solve message and
+// nothing sends it; content/captcha-detector.js, which would find a captcha to
+// solve, is not loaded at all. See docs/ISSUE_AUDIT.md A-06.
 
 /**
  * Dispatch a captcha solve request to the configured provider.

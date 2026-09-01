@@ -85,9 +85,11 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 
 | E-04, E-06, E-07, E-14 | `1a35b1c` | The row card counts rows; `alert()` replaced by a toast plus a log entry; a test step reports what it returned; both Clear buttons confirm first |
 
-| B-17, B-18 | *this batch* | Empty `Disallow:` no longer blocks the site; `$` is escaped and anchors deliberately; group merging and Allow tie-breaks now follow RFC 9309; any 4xx counts as no-robots |
+| B-17, B-18 | `3e19288` | Empty `Disallow:` no longer blocks the site; `$` is escaped and anchors deliberately; group merging and Allow tie-breaks now follow RFC 9309; any 4xx counts as no-robots |
 
-**Still open:** C-09, C-10, C-12; B-10 through B-12,
+| B-10, B-23, B-24, B-25, B-31 | *this batch* | FILL writes through the native setter and handles checkbox/radio/select/contenteditable; SELECT matches by label and fails loudly; KEYBOARD emits real `code` values; text conditions normalise whitespace; percent scroll measures the document |
+
+**Still open:** C-09, C-10, C-12; B-11, B-12,
 B-14 through B-16, B-22 through B-25, B-28 onward; D-02, D-07, D-09 through D-13; E-05, E-08
 onward except E-14; G-05 through G-09; I-02, I-04.
 
@@ -272,6 +274,8 @@ The UI labels the elements-mode field "Safety max (0 = unlimited)" and `_execute
 
 ### B-25 · MEDIUM · `IF_ELSE` text comparisons do not trim or normalise
 `injector.js:1133-1137` compares raw `el.textContent` — untrimmed and case-sensitive — so `text-equals` almost never matches real markup with surrounding whitespace. There are no numeric or regex conditions.
+
+**Correction, made when fixing it.** `text-equals` *did* call `.trim()`; only `text-contains` and `attr-equals` compared raw. Trimming is not the problem in any case — real markup indents its text, so the whitespace is *inside* the string (`"\n      Add to cart\n    "`) where trim cannot reach. All four conditions now collapse internal whitespace runs before comparing. Numeric and regex conditions are still absent; adding them needs UI work and is not done here.
 
 ### B-26 · MEDIUM · `markRunCompleted()` is never called
 `checkpoint/resume-manager.js:44` exports it; nothing imports it. `_executePipeline` never deletes the run's cursor. Once A-03 is fixed, every finished run stays flagged "incomplete" forever and cursors accumulate without bound.

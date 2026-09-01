@@ -18,6 +18,10 @@ const EXPOSED = [
   "_stepIfElse",
   "_queryScoped",
   "_activateSelectorPicker",
+  "_stepFill",
+  "_stepSelect",
+  "_stepKeyboard",
+  "_stepScroll",
 ];
 
 /**

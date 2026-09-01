@@ -653,8 +653,15 @@ async function _stepScroll(
     const el = _queryScoped(selector, context, false)[0];
     if (el) el.scrollIntoView({ behavior: scrollBehavior, block: "center" });
   } else if (mode === "percent") {
+    // documentElement, not body: with `body { height: 100% }` — or any layout
+    // where the scroll container is the html element — body.scrollHeight is the
+    // viewport height, so "scroll to 100%" moved one screen (B-31).
+    const docHeight = Math.max(
+      document.documentElement?.scrollHeight ?? 0,
+      document.body?.scrollHeight ?? 0,
+    );
     window.scrollTo({
-      top: (document.body.scrollHeight * scrollAmount) / 100,
+      top: (docHeight * scrollAmount) / 100,
       behavior: scrollBehavior,
     });
   } else {
@@ -1026,6 +1033,77 @@ async function _stepUploadActivity(
 }
 
 // ── FILL (was TYPE): single or multi-field input ─────────────────────────────
+
+/**
+ * Write a value the way a real keystroke would.
+ *
+ * `el.value = x` assigns to the property, and React (and Vue's v-model, and
+ * Angular's ControlValueAccessor) install their own accessor on the instance
+ * and cache the last value they saw in `_valueTracker`. So the assignment is
+ * either swallowed or reverted on the next render, and the field snaps back to
+ * empty — the single most common way FILL silently did nothing (B-10).
+ *
+ * Calling the *prototype's* native setter writes past the framework's accessor,
+ * and clearing the tracker makes React believe the value changed so it runs its
+ * onChange. This is the technique that has been sitting unused in the dead
+ * content/form-filler.js all along.
+ *
+ * @param {HTMLElement} el
+ * @param {string} value
+ */
+function _setNativeValue(el, value) {
+  const proto = Object.getPrototypeOf(el);
+  const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+  const tracker = el._valueTracker;
+  // Setting the tracker to something other than the incoming value is what
+  // makes React's change detection fire; clearing it outright is enough.
+  if (tracker) tracker.setValue(`${value}_`);
+  if (setter) setter.call(el, value);
+  else el.value = value;
+}
+
+/** An `input` event frameworks recognise. A plain Event is not an InputEvent. */
+function _fireInput(el) {
+  el.dispatchEvent(
+    new InputEvent("input", { bubbles: true, cancelable: true, composed: true }),
+  );
+}
+
+function _fireChange(el) {
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+/**
+ * What kind of thing are we filling? FILL used to assume "something with a
+ * .value you can append characters to", so a checkbox, a radio, a <select> and
+ * a contenteditable div all silently did nothing (B-10).
+ *
+ * @param {Element} el
+ * @returns {'checkbox'|'select'|'contenteditable'|'file'|'text'|null}
+ */
+function _fillKind(el) {
+  if (!el) return null;
+  const tag = el.tagName;
+  if (tag === "SELECT") return "select";
+  if (tag === "INPUT") {
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    if (type === "checkbox" || type === "radio") return "checkbox";
+    if (type === "file") return "file";
+    return "text";
+  }
+  if (tag === "TEXTAREA") return "text";
+  // isContentEditable is false for a detached element and undefined outside a
+  // rendering engine, so fall back to the attribute that drives it.
+  const ce = el.getAttribute?.("contenteditable");
+  if (el.isContentEditable || (ce !== null && ce !== undefined && ce !== "false")) {
+    return "contenteditable";
+  }
+  return null;
+}
+
+/** Values that mean "tick this box". */
+const _TRUTHY_FILL = new Set(["true", "1", "yes", "on", "checked", "check"]);
+
 async function _stepFill(
   {
     mode = "single",
@@ -1039,45 +1117,113 @@ async function _stepFill(
   context = {},
 ) {
   async function _typeInto(el, value, delay, shouldAppend) {
+    const kind = _fillKind(el);
+    if (!kind) {
+      throw new Error(
+        `Fill target is not an input, textarea, select or contenteditable: <${el.tagName.toLowerCase()}>`,
+      );
+    }
+    if (kind === "file") {
+      throw new Error(
+        "Fill cannot set a file input for security reasons — use an Upload from Storage step.",
+      );
+    }
+
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     await _sleep(100);
     el.focus();
-    if (!shouldAppend) {
-      el.value = "";
-      el.dispatchEvent(new Event("input", { bubbles: true }));
+
+    const valStr = String(value ?? "");
+
+    if (kind === "checkbox") {
+      const want = _TRUTHY_FILL.has(valStr.trim().toLowerCase());
+      // A radio can only be set, never cleared, by clicking it.
+      if (el.checked !== want) {
+        el.checked = want;
+        _fireInput(el);
+        _fireChange(el);
+      }
+      return { kind, checked: el.checked };
     }
-    for (const ch of String(value)) {
-      el.value += ch;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
+
+    if (kind === "select") {
+      return _setSelectValue(el, valStr);
+    }
+
+    if (kind === "contenteditable") {
+      if (!shouldAppend) el.textContent = "";
+      for (const ch of valStr) {
+        el.textContent += ch;
+        _fireInput(el);
+        await _sleep(delay || 50);
+      }
+      _fireChange(el);
+      return { kind, length: el.textContent.length };
+    }
+
+    // Text-like. Typed a character at a time so per-keystroke handlers
+    // (autocomplete, validation, search-as-you-type) see the same sequence a
+    // person would produce.
+    let typed = shouldAppend ? String(el.value ?? "") : "";
+    if (!shouldAppend) {
+      _setNativeValue(el, "");
+      _fireInput(el);
+    }
+    for (const ch of valStr) {
+      typed += ch;
+      _setNativeValue(el, typed);
+      _fireInput(el);
       await _sleep(delay || 50);
     }
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+    _fireChange(el);
+
+    // Verify it stuck. A framework that reverts the value is the whole point of
+    // _setNativeValue, and reporting success while the field is empty is what
+    // made this so hard to see. maxlength and input masks legitimately shorten
+    // what lands, so a truncation to the field's limit counts as accepted.
+    const max = el.maxLength;
+    const truncated = max >= 0 ? typed.slice(0, max) : null;
+    if (el.value !== typed && el.value !== truncated) {
+      throw new Error(
+        `Fill did not stick: typed ${JSON.stringify(typed)}, field holds ${JSON.stringify(el.value)}. The page may be controlling this input.`,
+      );
+    }
+    return { kind, typed: el.value };
   }
 
   if (mode === "multi" && fields.length > 0) {
+    const results = [];
+    const missing = [];
     for (const f of fields) {
       const el = _queryScoped(f.selector, context, false)[0];
-      if (!el) continue;
-      await _typeInto(el, f.value || "", delayMs, f.append || false);
+      if (!el) {
+        // Skipping silently meant a half-filled form was reported as a full
+        // success, and the submit click went through anyway.
+        missing.push(f.selector);
+        continue;
+      }
+      results.push(await _typeInto(el, f.value ?? "", delayMs, f.append || false));
       await _sleep(120);
+    }
+    if (missing.length) {
+      throw new Error(`Fill target not found: ${missing.join(", ")}`);
     }
     if (submitSelector) {
       const btn = _queryScoped(submitSelector, context, false)[0];
-      if (btn) {
-        btn.scrollIntoView();
-        await _sleep(200);
-        btn.click();
-      }
+      if (!btn) throw new Error(`Submit target not found: ${submitSelector}`);
+      btn.scrollIntoView();
+      await _sleep(200);
+      btn.click();
     }
-    return { filled: fields.length };
+    return { filled: results.length, fields: results };
   }
 
-  // single mode
-  const el =
-    _queryScoped(selector, context, false)[0] || _getScopedRoot(context);
+  // single mode. The old code fell back to the scope root when the selector
+  // matched nothing, so a typo typed into whatever container the loop was on.
+  const el = _queryScoped(selector, context, false)[0];
   if (!el) throw new Error(`Fill target not found: ${selector}`);
-  await _typeInto(el, text, delayMs, append);
-  return { typed: true };
+  const result = await _typeInto(el, text, delayMs, append);
+  return { typed: true, ...result };
 }
 
 async function _stepHover({ selector }, context = {}) {
@@ -1104,16 +1250,115 @@ async function _stepHover({ selector }, context = {}) {
   return { hovered: true, x: cx, y: cy };
 }
 
+/**
+ * Choose an option on a <select>.
+ *
+ * `el.value = x` on a select whose options do not contain x sets it to "" —
+ * the select is silently *cleared*, and the old code reported success (B-23).
+ * Matching is tried by value, then by visible label, then case-insensitively,
+ * because the label is what the user sees and therefore what they type into
+ * the step config.
+ *
+ * @param {HTMLSelectElement} el
+ * @param {string} value
+ */
+function _setSelectValue(el, value) {
+  const want = String(value ?? "");
+  const norm = (s) => String(s ?? "").trim().toLowerCase();
+  const options = Array.from(el.options || []);
+
+  const match =
+    options.find((o) => o.value === want) ??
+    options.find((o) => o.text.trim() === want.trim()) ??
+    options.find((o) => norm(o.value) === norm(want)) ??
+    options.find((o) => norm(o.text) === norm(want));
+
+  if (!match) {
+    throw new Error(
+      `Select has no option matching ${JSON.stringify(want)}. Available: ${
+        options.map((o) => o.value || o.text.trim()).join(", ") || "(none)"
+      }`,
+    );
+  }
+
+  if (match.disabled) {
+    throw new Error(`Select option ${JSON.stringify(want)} is disabled.`);
+  }
+
+  el.value = match.value;
+  // A select fires input as well as change when a person picks an option, and
+  // frameworks listen for input. Only change was sent before.
+  _fireInput(el);
+  _fireChange(el);
+  return { kind: "select", selected: match.value, label: match.text.trim() };
+}
+
 async function _stepSelect({ selector, value }, context = {}) {
-  const el =
-    _queryScoped(selector, context, false)[0] || _getScopedRoot(context);
+  const el = _queryScoped(selector, context, false)[0];
   if (!el) throw new Error(`Select target not found: ${selector}`);
+  if (el.tagName !== "SELECT") {
+    throw new Error(
+      `Select target is a <${el.tagName.toLowerCase()}>, not a <select>.`,
+    );
+  }
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   await _sleep(100);
-  el.value = value;
-  el.dispatchEvent(new Event("change", { bubbles: true }));
-  return { selected: true };
+  return { selected: true, ..._setSelectValue(el, value) };
 }
+
+/**
+ * The `code` value a physical key would report.
+ *
+ * The old rule was `"Key" + upper` for any single character, which produced
+ * `Key1` for a digit (it is `Digit1`) and `Key-` for a symbol (`Minus`) —
+ * neither of which is a real code, so any site keyed on `event.code` ignored
+ * the event entirely (B-24).
+ *
+ * @param {string} key
+ * @returns {string}
+ */
+function _keyToCode(key) {
+  if (key.length !== 1) return _NAMED_KEY_CODES[key] ?? key;
+  if (key >= "a" && key <= "z") return `Key${key.toUpperCase()}`;
+  if (key >= "A" && key <= "Z") return `Key${key}`;
+  if (key >= "0" && key <= "9") return `Digit${key}`;
+  return _SYMBOL_KEY_CODES[key] ?? "";
+}
+
+/** US-layout codes for the punctuation reachable without a modifier. */
+const _SYMBOL_KEY_CODES = Object.freeze({
+  " ": "Space",
+  "-": "Minus",
+  "=": "Equal",
+  "[": "BracketLeft",
+  "]": "BracketRight",
+  "\\": "Backslash",
+  ";": "Semicolon",
+  "'": "Quote",
+  "`": "Backquote",
+  ",": "Comma",
+  ".": "Period",
+  "/": "Slash",
+});
+
+/** Named keys whose code differs from their key value. */
+const _NAMED_KEY_CODES = Object.freeze({
+  Escape: "Escape",
+  Enter: "Enter",
+  Tab: "Tab",
+  Backspace: "Backspace",
+  Delete: "Delete",
+  " ": "Space",
+  Space: "Space",
+  ArrowUp: "ArrowUp",
+  ArrowDown: "ArrowDown",
+  ArrowLeft: "ArrowLeft",
+  ArrowRight: "ArrowRight",
+  Home: "Home",
+  End: "End",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
+});
 
 async function _stepKeyboard({ key }, context = {}) {
   // key may be a combo like "Ctrl+Enter" or "Shift+Alt+Delete"
@@ -1125,7 +1370,7 @@ async function _stepKeyboard({ key }, context = {}) {
   const metaKey = parts.includes("Meta");
 
   const active = document.activeElement || document.body;
-  const code = mainKey.length === 1 ? `Key${mainKey.toUpperCase()}` : mainKey;
+  const code = _keyToCode(mainKey);
   const which = mainKey.length === 1 ? mainKey.charCodeAt(0) : 0;
   const evInit = {
     key: mainKey,
@@ -1206,6 +1451,11 @@ async function _stepLoop({ type, selector, max }) {
   return { loopInfo: { type, selector, max } };
 }
 
+/** Collapse every run of whitespace to one space, and trim. */
+function _normText(v) {
+  return String(v ?? "").replace(/\s+/g, " ").trim();
+}
+
 async function _stepIfElse(
   { condition, selector, value = "", attr = "" },
   context = {},
@@ -1221,14 +1471,19 @@ async function _stepIfElse(
     case "not-exists":
       conditionMet = !exists;
       break;
+    // Real markup indents its text, so an element rendered as "Add to cart"
+    // has a textContent of "\n      Add to cart\n    ". trim() alone does not
+    // help when the whitespace is *inside* the string, which is why
+    // text-equals almost never matched anything (B-25).
     case "text-equals":
-      conditionMet = exists && el.textContent.trim() === value;
+      conditionMet = exists && _normText(el.textContent) === _normText(value);
       break;
     case "text-contains":
-      conditionMet = exists && el.textContent.includes(value);
+      conditionMet =
+        exists && _normText(el.textContent).includes(_normText(value));
       break;
     case "attr-equals":
-      conditionMet = exists && el.getAttribute(attr) === value;
+      conditionMet = exists && (el.getAttribute(attr) ?? "").trim() === String(value).trim();
       break;
     case "attr-contains":
       conditionMet = exists && (el.getAttribute(attr) || "").includes(value);

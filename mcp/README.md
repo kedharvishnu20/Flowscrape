@@ -30,14 +30,26 @@ npm install
 Local stdio mode:
 
 ```bash
-npm start -- --root "c:\MY SPACE\MY LAPTOP\project works\fully automated web scraper\flowscrape-v3"
+npm start -- --root /path/to/flowscrape
 ```
+
+Both `--root /path` and `--root=/path` work. Omit it to root the server at the
+repository folder.
 
 HTTP mode for broader MCP clients:
 
 ```bash
-npm run start:http -- --root "c:\MY SPACE\MY LAPTOP\project works\fully automated web scraper\flowscrape-v3" --port 3000
+npm run start:http -- --root /path/to/flowscrape --port 3000
 ```
+
+HTTP mode binds `127.0.0.1` by default and the SDK applies DNS-rebinding
+protection for loopback hosts. `--host` overrides the bind address; anything
+beyond loopback has **no authentication** and loses that protection, so the
+server warns when you do it.
+
+Workspace writes (`repo_write_file`, `pipeline_save`) are refused over HTTP
+unless you pass `--allow-write`. Over stdio the client is a process you started,
+so they are allowed.
 
 If your MCP client accepts a command directly, point it at `node server.mjs` inside this folder.
 
@@ -47,5 +59,10 @@ If your client supports MCP over HTTP, connect it to `http://localhost:3000/mcp`
 
 - The server is rooted at the repository folder by default.
 - File tools refuse paths that escape the workspace root.
-- The generated scripts are based on the existing `script-gen/` modules in this repo.
-- Saved pipelines live in the `pipelines/` folder and can be reloaded later.
+- The generated scripts come from the repo's `script-gen/` modules, and cover
+  11 of the 21 step types — see the Script export section of the root README.
+- Step validation and row formatting are shared with the extension
+  (`utils/step-types.js`, `exporters/row-formatters.js`), so `pipeline_validate`
+  and `rows_to_text` agree with what the extension does.
+- Saved pipelines live in `pipelines/`, which is created on first save. Listing
+  an absent folder returns an empty list rather than an error.

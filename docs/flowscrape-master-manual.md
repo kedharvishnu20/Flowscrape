@@ -1,4 +1,9 @@
-# FlowScrape v3 Master Manual
+# FlowScrape Master Manual
+
+> **Partly stale.** Written against commit b2baae8 and not fully updated since.
+> Where it disagrees with the code, the code is right; where it disagrees with
+> [ISSUE_AUDIT.md](ISSUE_AUDIT.md), the audit is right. Sections 5, 7 and 8
+> describe functions that have since changed.
 
 This is the single authoritative document for FlowScrape v3.
 
@@ -274,6 +279,11 @@ Import normalization rules:
 - error logs increment the error counter.
 
 ## 6. Step Registry and Supported Actions
+
+> **Note.** The authoritative list is [`utils/step-types.js`](../utils/step-types.js),
+> which the side panel, the script emitters and the MCP server all read. The
+> list below is a snapshot and was missing `UPLOAD_ACTIVITY`, `PDF_EXTRACTION`
+> and `AUTO_EXTRACT`; a test now keeps the code in step, but not this file.
 
 The side panel step registry includes:
 

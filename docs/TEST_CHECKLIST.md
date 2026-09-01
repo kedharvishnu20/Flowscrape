@@ -1,4 +1,18 @@
-# FlowScrape v3 — Test Checklist
+# FlowScrape — Manual Test Checklist
+
+> **Read this first.** `npm test` now covers 137 automated cases; this file is
+> only for what needs a real browser. Roughly half of the cases below exercise
+> code that is not reachable from the UI and cannot currently be performed at
+> all:
+>
+> | Cases | Subsystem | Audit |
+> |---|---|---|
+> | TC-01 → TC-07 | Proxy rotation | A-05 |
+> | TC-08 → TC-14 | Form fill caps and ethics | A-07 |
+> | TC-34 → TC-35 | Captcha gate | A-06 |
+>
+> TC-19 → TC-22 (checkpoint and resume) were unperformable until the IndexedDB
+> schema collision was fixed (A-03) and are now worth running.
 
 > 35 test cases. Mark each ✅ when passed, ❌ with fail notes.
 

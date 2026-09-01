@@ -1,185 +1,278 @@
-# FlowScrape v3
+# FlowScrape
 
+A Chrome MV3 extension for visual web automation and data extraction. You build
+a pipeline of steps on a node board in the side panel, run it against the active
+tab, and export the results.
 
-## 🚀 Quick Start (under 5 minutes)
+No build step. No bundler. Plain ES modules, loaded directly by Chrome.
 
-1. **Clone / download** this folder
-2. Open Chrome → `chrome://extensions/`
-3. Enable **Developer mode** (top-right)
-4. Click **Load unpacked** → select the `flowscrape-v3/` folder
-5. Click the FlowScrape icon in the toolbar → side panel opens
-
-No `npm install`. No build step. No webpack. Pure ES modules with `type: "module"` in the service worker.
+> **Status.** This is a working tool with known gaps. Several subsystems in the
+> tree are not reachable from the UI and are labelled as such, both here and in
+> the modules themselves. [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) is a full
+> inventory of what works, what does not, and what has been fixed so far. Read
+> it before trusting any claim in this file.
 
 ---
 
-## 📁 Project Structure
+## Quick start
 
-```
-flowscrape-v3/
-├── manifest.json              MV3 manifest
-├── icons/                     Extension icons (add your 16/32/48/128 PNGs)
-│
-├── background/                Service Worker context
-│   ├── service-worker.js      Pipeline orchestrator + message bus
-│   ├── proxy-manager.js       Proxy pool: parse · test · rotate · apply
-│   ├── api-key-manager.js     AES-GCM key store · captcha dispatch
-│   ├── rate-limiter.js        Token bucket + exponential backoff
-│   └── ethics-engine.js       6-gate pre-run ethics orchestrator
-│
-├── content/                   Content script context
-│   ├── injector.js            Shadow DOM host · step dispatcher
-│   ├── form-filler.js         8 input handlers · React fiber hack
-│   ├── field-auto-mapper.js   Levenshtein + Jaccard auto-mapper
-│   ├── captcha-detector.js    reCAPTCHA v2/v3 · hCaptcha · Turnstile
-│   └── smart-sleep.js         3-tier adaptive wait
-│
-├── sidepanel/
-│   ├── index.html             Premium dark UI · 5 tabs
-│   └── pipeline-builder.js   Tab controller · run control · forms
-│
-├── ethics/
-│   ├── robots-parser.js       RFC 9309 compliant parser
-│   └── pii-detector.js        SSN · CC · email · phone scanner
-│
-├── checkpoint/
-│   ├── cursor-store.js        IDB cursor read/write
-│   ├── row-buffer.js          Ring buffer · flush every 50 rows/30s
-│   └── resume-manager.js      Incomplete run detection
-│
-├── data-sources/
-│   ├── csv-parser.js          Streaming · BOM-safe · auto-delimiter
-│   └── json-parser.js         Streaming JSON array + JSONL
-│
-├── exporters/
-│   ├── text-exporters.js      CSV · JSON · JSONL · TSV · XML · Markdown
-│   └── stream-writer.js       FSA API · Blob fallback · chunked writes
-│
-├── script-gen/
-│   ├── pipeline-compiler.js   Pipeline JSON → AST
-│   ├── python-emitter.js      AST → Python 3.11 (playwright)
-│   └── node-emitter.js        AST → Node 20 (playwright + axios)
-│
-└── utils/
-    ├── logger.js              Structured levelled logger (never logs secrets)
-    ├── strings.js             All UI strings (i18n-ready)
-    ├── levenshtein.js         Levenshtein + Jaccard similarity
-    └── deduplicator.js        djb2 row dedup
+1. Open Chrome → `chrome://extensions/`
+2. Enable **Developer mode**
+3. **Load unpacked** → select this folder
+4. Click the FlowScrape icon; the side panel opens
+
+Chrome 120 or newer.
+
+### Working on it
+
+```bash
+npm install     # jsdom + fake-indexeddb, for the tests only
+npm test        # 137 tests, ~2s, no browser needed
+npm run check   # parses every source file as an ES module
 ```
 
----
-
-## 🔐 Security Model
-
-| Storage Tier | What Goes Here |
-|--------------|---------------|
-| `chrome.storage.session` | Proxy credentials (user/pass) · API key ciphertexts |
-| `chrome.storage.local` | Proxy pool metadata (no creds) · recipes · settings |
-| `IndexedDB` | Data rows · cursors · row buffers |
-| **Module scope only** | AES-GCM session encryption key (never persisted) |
-
-**Key facts:**
-- API keys encrypted with AES-GCM 256-bit before any storage
-- Session key is `crypto.subtle.generateKey()` — never extractable
-- Proxy credentials auto-purged by Chrome on browser close
-- Logger never logs secrets, keys, passwords, or PII values
+The extension itself has no dependencies and nothing to build — `npm install`
+is only for the test suite.
 
 ---
 
-## 🌐 Proxy Pool
-
-**Supported input formats:**
-```
-203.0.113.5:8080
-203.0.113.5:8080:user:pass
-socks5://203.0.113.5:1080
-http://user:pass@203.0.113.5:3128
-[{"host":"…","port":8080,"user":"u","pass":"p","type":"http"}]
-CSV with header: host,port,username,password,type
-```
-
-**Rotation modes:** Round-Robin · Random · Sticky (per-domain) · Geo-Target
-
-**Health check:** `https://httpbin.org/ip` HEAD request, 5s timeout. Async, never blocks pipeline.
-
----
-
-## 📋 Form Fill Ethics Constraints (Hard Blocks)
-
-These are enforced in JavaScript, not just the UI:
-
-| Block | Trigger |
-|-------|---------|
-| `EthicsBlock.PasswordField` | Any `input[type=password]` in field mapping |
-| `EthicsBlock.HiddenField` | Any `input[type=hidden]` in field mapping |
-| `EthicsBlock.SubmitCapExceeded` | Rows > 5000 (500 without explicit confirm) |
-| `EthicsBlock.DelayFloor` | Inter-row delay < 800ms |
-| `EthicsBlock.DomainMismatch` | Submit target ≠ pipeline's declared origin |
-
----
-
-## 🚦 Ethics Gates (Pre-Run, All 6)
+## How a run works
 
 ```
-Gate 1: robots.txt    → warn if Disallow found
-Gate 2: PII scan      → warn if SSN/CC/email/phone in data file
-Gate 3: Rate limit    → warn if > 100 req/hr estimated
-Gate 4: Captcha       → warn if > 50 solves/hr estimated
-Gate 5: Proxy geo     → warn if proxy region ≠ declared region (> 5000km)
-Gate 6: Domain lock   → BLOCK if any step URL ≠ declared targetOrigin
+side panel  ──pipeline:preflight──▶  service worker  ──▶  ethics gates
+    │                                     │                    │
+    │  ◀── warnings, blockers ────────────┘                    │
+    │                                                          │
+    └──pipeline:start──▶  service worker  ─────────────────────┘
+                              │
+                    ┌─────────┴──────────┐
+                    │                    │
+            steps that run in     steps that run in
+            the background        the page
+            (NAVIGATE, API,       (CLICK, FILL, EXTRACT,
+             LOOP, EXPORT…)        SELECT, IF_ELSE…)
+                    │                    │
+                    │            chrome.tabs.sendMessage
+                    │                    ▼
+                    │            content/injector.js
+                    │                    │
+                    └────────▶  rows ────┘
+                                 │
+                       checkpoint/row-buffer.js  ──▶  IndexedDB
+                                 │
+                       exporters/row-formatters.js ──▶ download
 ```
 
----
-
-## 🔑 Supported API Providers
-
-**Captcha:** 2captcha · Anti-Captcha · CapSolver · DeathByCaptcha · NoCaptchaAI
-
-**Enrichment:** Hunter.io · Clearbit · Abstract API · IPinfo · OpenAI · Claude (Anthropic)
-
-**Notifications:** Slack · Discord · Telegram · SMTP
+Which context runs a given step is declared once, in
+[`utils/step-types.js`](utils/step-types.js) — the single source of the step
+vocabulary, read by the side panel, the script emitters and the MCP server.
 
 ---
 
-## 📤 Export Formats
+## Project structure
 
-CSV · JSON · JSONL · TSV · XML · Markdown
+```
+manifest.json                  MV3 manifest
+package.json                   test tooling only; the extension has no deps
 
-All exported via chunked stream-writer (1000 rows/chunk) — no OOM on 10k+ rows.
+background/                    Service worker
+  service-worker.js            Pipeline orchestrator, message bus, export
+  ethics-engine.js             7 pre-run gates
+  llm-extractor.js             AUTO_EXTRACT layer 3 (Gemini Flash)
+  api-key-manager.js           AES-GCM key store; captcha dispatch (unreachable)
+  proxy-manager.js             Proxy pool (unreachable — see A-05)
+  rate-limiter.js              Token bucket (barely used)
+
+content/                       Page context
+  injector.js                  Step dispatcher, selector picker, shadow host
+  smart-extractor.js           AUTO_EXTRACT layers 1 & 2
+  page-sniffer.js              fetch/XHR capture, injected only during a run
+  overlay-engine.js            Scrape-zone overlays
+  overlay-renderer.js          Per-zone overlay elements
+  form-filler.js               (unreachable — see A-07)
+  field-auto-mapper.js         (unreachable — see A-07)
+  captcha-detector.js          (unreachable — see A-06)
+  smart-sleep.js               (unreachable — injector has its own waits)
+
+sidepanel/
+  index.html                   UI and all styles; fonts bundled locally
+  pipeline-builder.js          Board, palette, step config, run control
+  overlay-panel.js             Overlay preferences
+  fonts/                       Inter + JetBrains Mono, latin subset
+
+utils/
+  step-types.js                The step vocabulary — one definition
+  logger.js                    Structured logger; redacts by key name
+  color-utils.js               Zone colours, WCAG contrast
+  strings.js                   UI strings (mostly unused)
+  levenshtein.js               (unreachable)
+  deduplicator.js              (unreachable)
+
+checkpoint/
+  idb-schema.js                Owns the IndexedDB schema
+  row-buffer.js                Buffer rows, flush every 50 rows or 30s
+  cursor-store.js              Run position for resume
+  resume-manager.js            Incomplete-run detection
+
+exporters/
+  row-formatters.js            CSV · JSON · JSONL · TSV · XML · Markdown
+  stream-writer.js             File System Access API, Blob fallback
+  text-exporters.js            Save-dialog wrapper (unreachable)
+
+ethics/
+  robots-parser.js             RFC 9309 parser
+  pii-detector.js              SSN · card · email · phone regexes
+
+script-gen/
+  pipeline-compiler.js         Pipeline JSON → AST
+  python-emitter.js            AST → Python (playwright)
+  node-emitter.js              AST → Node (playwright)
+
+data-sources/
+  csv-parser.js                (unreachable — no data-file input exists)
+  json-parser.js               (unreachable)
+
+mcp/                           Standalone MCP server (see mcp/README.md)
+tests/                         137 tests; node:test, jsdom, fake-indexeddb
+scripts/check-syntax.mjs       Parses every source file
+docs/                          Audit, manual, template guide, limitations
+```
+
+Modules marked unreachable are not dead in the sense of being broken — most
+work — but nothing in the product calls them. Each one says so in its own
+header, with the audit finding that explains why.
 
 ---
 
-## 🖥 Script Export
+## Step types
 
-The pipeline can be exported as a runnable script:
+Twenty-one, defined in [`utils/step-types.js`](utils/step-types.js).
 
-- **Python 3.11** — `playwright` + `requests`
-- **Node 20** — `playwright` + `csv-parse`
+| Category | Steps |
+|---|---|
+| Action | `WEBSITE` `NAVIGATE` `CLICK` `FILL` `HOVER` `SELECT` `SCROLL` `KEYBOARD` `DRAG_DROP` `UPLOAD_ACTIVITY` |
+| Flow | `WAIT` `IF_ELSE` `LOOP` `PAGINATE` |
+| Data | `EXTRACT` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT` |
 
-Credentials are **always redacted** in exported scripts — replaced with `os.environ.get(...)` references.
+`PDF_EXTRACTION` is a stub inside the extension: it logs a message pointing at
+the MCP server's `pdf_extract_text`, which does the real work.
+
+### Templates
+
+String config values support `{{loop.index}}`, `{{item.href}}`,
+`{{extracted.price}}` and array indexing. See
+[`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md). Only top-level
+string values are resolved by the executor; selectors nested in `EXTRACT` fields
+are resolved separately in the page.
+
+### AUTO_EXTRACT
+
+Product pages only. Three layers, each run only if the previous one was not
+confident enough:
+
+1. **Structured data** — JSON-LD `@type Product`, microdata, Open Graph
+2. **Heuristic DOM** — class/id keywords, font size, distance to the add-to-cart
+   button, price regexes
+3. **Gemini Flash** — only below the configured confidence, only if a Gemini key
+   is stored, and only if the step's AI toggle is on
+
+Rows carry `_confidence` and `_extractionMethod`.
 
 ---
 
-## ⚡ Performance Targets
+## Ethics gates
 
-| Metric | Target |
-|--------|--------|
-| `injector.js` size | < 40 KB |
-| Data parsers | Stream chunks; never full-file RAM load |
-| Row buffer flush | Every 50 rows or 30s |
-| Deduplicator | In-flight, djb2 hash |
+Seven gates run before the first step. The side panel runs them as a preflight
+and shows what they found; the service worker runs them again at start, so a
+client that skips the preflight gains nothing.
+
+| Gate | Effect |
+|---|---|
+| 1 robots.txt | Warn if the path is disallowed (override with the bypass checkbox) |
+| 2 PII | Deferred to the content side, which does not implement it — currently a no-op |
+| 3 Rate limit | Warn above ~100 req/hr estimated |
+| 4 Captcha volume | Warn above 50 solves/hr estimated |
+| 5 Proxy geo | Warn if the proxy region differs from the declared one |
+| 6 Domain lock | **Block** if any step's origin differs from the tab's |
+| 7 Overlay readiness | Warn about selectors that match nothing on the page |
+
+Gate 6 is aggressive: it blocks multi-domain pipelines and any `API` step
+pointing at a third-party host. See audit B-03 — whether it should block, warn,
+or exempt API steps is an open question.
 
 ---
 
-## 🔧 Adding Your Icons
+## Storage and secrets
 
-The manifest references `icons/icon{16,32,48,128}.png`. Add these to the `icons/` folder. You can use any tool to generate them (e.g., GIMP, Inkscape, or an online favicon generator).
+| Where | What |
+|---|---|
+| `chrome.storage.session` | API keys (AES-GCM ciphertext) and the key that encrypts them |
+| `chrome.storage.local` | Pipelines per tab, overlay prefs, proxy pool metadata, the file library |
+| IndexedDB (`flowscrape_v3`) | Result rows, run cursors |
+| Module scope | Nothing that has to survive a worker restart |
+
+API keys live for one browser session and are cleared when Chrome closes.
+
+**On the encryption**: the key sits in the same session-scoped storage as the
+ciphertext it protects. There is no MV3 mechanism for a key that both outlives
+service-worker termination and is never written down, and the previous design —
+key in module scope only — meant keys silently became unreadable about thirty
+seconds after you saved them. This is defence in depth against incidental
+exposure, not protection from anything that can already read extension storage.
+
+The logger redacts by key name and recurses into arrays and objects. It is not a
+guarantee: a secret under an innocuous key still gets logged.
 
 ---
 
-## 📄 License
+## Permissions
 
-MIT — See LICENSE file.
+Seven, each with a call site, enforced by a test:
 
-*FlowScrape v3 · Built complete or not at all.*
+`scripting` · `storage` · `alarms` · `sidePanel` · `proxy` · `tabs` ·
+`downloads`, plus `<all_urls>` host access.
 
+`web_accessible_resources` lists five files — the modules the content script
+dynamically imports — not the whole tree.
+
+---
+
+## Script export
+
+A pipeline can be emitted as a runnable Python or Node script (Playwright).
+**The emitters cover 11 of the 21 step types**; anything else becomes a
+`# TODO: implement step type "X"` comment, so an exported script can silently do
+less than the pipeline it came from. See audit B-13.
+
+Only proxy credentials are replaced with environment lookups. Other config
+values, including anything typed into a `FILL` step, are emitted as written.
+
+---
+
+## MCP server
+
+[`mcp/`](mcp/) is a standalone Model Context Protocol server exposing 18 tools:
+workspace file access, pipeline compile/validate/save/emit, PDF text
+extraction, PII and robots checks, and row formatting. It shares
+`utils/step-types.js` and `exporters/row-formatters.js` with the extension, so
+validation and output match.
+
+See [`mcp/README.md`](mcp/README.md).
+
+---
+
+## Docs
+
+| File | What it is |
+|---|---|
+| [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) | Full issue inventory, with fix status |
+| [`docs/flowscrape-master-manual.md`](docs/flowscrape-master-manual.md) | Per-function reference (partly stale) |
+| [`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md) | Template syntax |
+| [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) | Platform constraints |
+| [`docs/TEST_CHECKLIST.md`](docs/TEST_CHECKLIST.md) | Manual browser checks |
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

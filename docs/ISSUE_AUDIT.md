@@ -56,8 +56,26 @@ code the way the rest of the docs did.
 | C-02 | `84b98ca` | Sniffer registered at runtime, origin-scoped, only during a sniffer run |
 | C-07, C-08 | `1b57423` | 4 unused permissions dropped; WAR cut from 10 wildcards to 5 files |
 
-**Still open:** C-04, C-05, C-06, C-09, C-10, C-12; the dead-code decision in
-section F; and everything in D, E, G, H.
+**Batch 4 — fixed** (remaining security, correctness and documentation):
+
+| Finding | Commit | Notes |
+|---|---|---|
+| C-04, C-05, E-18 | `0b09f04` | Log entries built as nodes; `esc` completed; log pane capped |
+| C-06, G-02, G-03, F-06 | `6fca25a` | MCP binds loopback, writes gated, CLI flags fixed, deps trimmed |
+| G-01, E-08 | `d622e48` | `utils/step-types.js` is now the one definition |
+| B-19, B-20, B-21 | `ce7278a` | Proxy health check restores settings; also fixed a `socks5://` parser bug it exposed |
+| D-03, D-04, D-05, D-06, D-08 | `c7ccc95` | `exporters/row-formatters.js` replaces four implementations |
+| H-01…H-07, H-10, F-05, G-04, I-05 | *docs commit* | README rewritten from the code; LICENSE added; duplicate README removed |
+
+**Not fixed by decision:** A-05, A-06, A-07 (proxy rotation, captcha solving,
+FORM_FILL). All three are unreachable, so they behave identically whether
+removed or kept. Enabling them adds a class of capability that was never asked
+for; deleting them forecloses that. Each module now states plainly that nothing
+calls it, and B-19 — the one dangerous latent bug among them — is fixed.
+
+**Still open:** C-09, C-10, C-12; B-03 (the domain-lock decision), B-10 through
+B-18, B-22 onward; D-01, D-02, D-07, D-09 through D-14; most of E; G-05 through
+G-09; I-02, I-04.
 
 ---
 

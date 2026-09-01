@@ -118,22 +118,90 @@ async function init() {
   populatePalette();
   listenToSystem();
 
-  chrome.runtime
+  await _showResumeBanner();
+}
+
+/**
+ * Offer the rows from runs that never finished.
+ *
+ * The banner used to delegate to the "Download Data" button, which passed
+ * `_runState.runId || "latest"` — and on a fresh panel there is no runId, so
+ * the sentinel matched nothing and the download reported no data. Each run is
+ * now downloaded by its own id.
+ */
+async function _showResumeBanner() {
+  const res = await chrome.runtime
     .sendMessage({ type: "checkpoint:check" })
-    .then((res) => {
-      if (res?.ok && res.result?.hasResumable && res.result.runs?.length > 0) {
-        const banner = document.createElement("div");
-        banner.className = "resume-banner";
-        banner.innerHTML = `<span>⟳ Incomplete run found</span><button class="btn" id="btn-resume-run" style="font-size:11px;">Download Data</button>`;
-        document.getElementById("view-monitor")?.prepend(banner);
-        document
-          .getElementById("btn-resume-run")
-          ?.addEventListener("click", () =>
-            document.getElementById("btn-download-partial")?.click(),
-          );
-      }
-    })
-    .catch(() => {});
+    .catch(() => null);
+
+  const runs = res?.ok ? (res.result?.runs ?? []) : [];
+  if (runs.length === 0) return;
+
+  const view = document.getElementById("view-monitor");
+  if (!view) return;
+
+  document.querySelector(".resume-banner")?.remove();
+
+  const banner = document.createElement("div");
+  banner.className = "resume-banner";
+
+  const label = document.createElement("span");
+  label.textContent =
+    runs.length === 1
+      ? "⟳ A previous run did not finish"
+      : `⟳ ${runs.length} previous runs did not finish`;
+  banner.appendChild(label);
+
+  for (const run of runs) {
+    const btn = document.createElement("button");
+    btn.className = "btn";
+    btn.style.fontSize = "11px";
+    btn.textContent =
+      runs.length === 1 ? "Download data" : `Download ${run.runId.slice(-6)}`;
+    btn.addEventListener("click", () => _downloadRunRows(run.runId));
+    banner.appendChild(btn);
+  }
+
+  view.prepend(banner);
+}
+
+/**
+ * Download every row stored for a run.
+ * @param {string} runId
+ */
+async function _downloadRunRows(runId) {
+  if (!runId) {
+    logToMonitor("warn-log", "No run selected to download.");
+    return;
+  }
+
+  const res = await chrome.runtime
+    .sendMessage({ type: "data:download", payload: { runId } })
+    .catch(() => null);
+
+  if (!res?.ok) {
+    logToMonitor("error-log", `Download failed: ${res?.error ?? "no response"}`);
+    return;
+  }
+
+  const rows = (res.result?.rows ?? []).map(({ runId: _runId, ...rest }) => rest);
+  if (rows.length === 0) {
+    logToMonitor("warn-log", "That run stored no rows.");
+    return;
+  }
+
+  const blob = new Blob(["\uFEFF" + formatRows(rows, "csv")], {
+    type: formatMeta("csv").mime,
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `flowscrape_${runId}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  logToMonitor("info-log", `Downloaded ${rows.length} rows from ${runId}.`);
 }
 
 async function saveState() {
@@ -664,43 +732,51 @@ function bindGlobalControls() {
 
   document
     .getElementById("btn-download-partial")
-    ?.addEventListener("click", async () => {
-      const res = await chrome.runtime.sendMessage({
-        type: "data:download",
-        payload: { runId: _runState.runId || "latest" },
-      });
-      if (res?.ok && res.result?.rows?.length > 0) {
-        const rows = res.result.rows.map((r) => {
-          const { runId, ...c } = r;
-          return c;
-        });
-        // Same formatter as the pipeline's own EXPORT step; this used to be a
-        // separate CSV implementation that quoted every field and turned 0
-        // into an empty cell.
-        const csv = formatRows(rows, "csv");
-        const blob = new Blob(["\uFEFF" + csv], { type: formatMeta("csv").mime });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `flowscrape_partial_${Date.now()}.csv`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        logToMonitor("info-log", `Downloaded ${rows.length} partial rows.`);
-      } else {
-        logToMonitor("warn-log", "No collected data available yet.");
-      }
-    });
+    ?.addEventListener("click", () => _downloadRunRows(_runState.runId));
 }
 
 function startMonitorTimer() {
   if (_runState.timer) clearInterval(_runState.timer);
+
+  let ticks = 0;
   _runState.timer = setInterval(() => {
-    const s = Math.floor((Date.now() - _runState.startTs) / 1000);
+    const elapsed = Math.floor((Date.now() - _runState.startTs) / 1000);
     document.getElementById("mon-time").textContent =
-      `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+      `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
+
+    // Every 5s, check the run still exists. _runStates in the service worker is
+    // in-memory only, so an MV3 termination mid-run leaves this panel showing a
+    // Stop button for a run that no longer exists and will never report
+    // finishing. Polling also wakes the worker, so a run that is merely idle
+    // between steps answers normally.
+    if (++ticks % 5 === 0) _checkRunAlive();
   }, 1000);
+}
+
+/** Notice a run that the service worker has forgotten. */
+async function _checkRunAlive() {
+  if (!_runState.active || !_runState.runId) return;
+
+  const res = await chrome.runtime
+    .sendMessage({ type: "pipeline:status", payload: { runId: _runState.runId } })
+    .catch(() => null);
+
+  // No answer at all: the worker is starting up. Try again on the next tick
+  // rather than declaring the run dead.
+  if (!res?.ok) return;
+  if (res.result?.known) return;
+
+  const lostRunId = _runState.runId;
+  stopRunUI();
+  document.getElementById("mon-state").textContent = "Interrupted";
+  document.getElementById("mon-state").style.color = "var(--red)";
+  logToMonitor(
+    "error-log",
+    "The background worker was shut down mid-run, so the pipeline stopped. " +
+      "Rows collected up to that point are still recoverable.",
+  );
+  await _showResumeBanner();
+  logToMonitor("info-log", `Interrupted run: ${lostRunId}`);
 }
 function stopRunUI() {
   _runState.active = false;

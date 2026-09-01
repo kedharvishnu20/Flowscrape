@@ -2,18 +2,29 @@
 /**
  * @module service-worker
  * @description MV3 Service Worker: pipeline orchestrator, message bus, and
- *   SW lifecycle manager. All state is persisted to storage before every await
- *   to survive SW termination.
+ *   SW lifecycle manager.
+ *
+ *   (This file used to claim all state was persisted before every await to
+ *   survive SW termination. It never was; the lifecycle note below says what is
+ *   actually guaranteed.)
  *
  *   Design decision: The SW uses a message-handler registry pattern (Map of
  *   handlers keyed by message name) instead of a giant switch statement. This
  *   keeps the bus extensible and each handler independently testable.
  *   All inbound message names must match the canonical registry.
  *
- *   SW lifecycle: We keep the SW alive during a pipeline run via chrome.alarms
- *   (heartbeat every 20s). On activation, the session key is re-initialized
- *   because the module scope is fresh. We resume any incomplete runs detected
- *   in storage.
+ *   SW lifecycle: state that must survive worker termination is re-hydrated by
+ *   _bootstrap() at module scope, not from the `activate` event — MV3 does not
+ *   re-fire `activate` when it wakes a terminated worker.
+ *
+ *   What does NOT survive: _runStates. A run in flight when the worker is
+ *   terminated is lost, and the pipeline cannot be resumed from where it
+ *   stopped — that would mean re-entering the step chain with the right
+ *   template context against a tab that may since have navigated. What is
+ *   guaranteed instead is that the loss is visible: rows already collected stay
+ *   in IndexedDB under their run's cursor, the side panel polls pipeline:status
+ *   and reports the interruption rather than showing a Stop button forever, and
+ *   the rows remain downloadable. See docs/ISSUE_AUDIT.md D-01.
  *
  * @dependencies proxy-manager, api-key-manager, rate-limiter, ethics-engine, logger
  */
@@ -46,7 +57,10 @@ import {
   readAllRows,
 } from "../checkpoint/row-buffer.js";
 import { saveCursor } from "../checkpoint/cursor-store.js";
-import { getResumePayload } from "../checkpoint/resume-manager.js";
+import {
+  getResumePayload,
+  markRunCompleted,
+} from "../checkpoint/resume-manager.js";
 import {
   compilePipeline,
   findUnexportableSteps,
@@ -266,6 +280,16 @@ async function _bootstrap() {
   await loadPool().catch((err) =>
     logger.error(MODULE, "pool-load-fail", { error: err.message }),
   );
+  // Runs that were in flight when this worker was terminated. Their rows are
+  // still in IndexedDB; nothing can resume the pipeline itself.
+  const resumable = await getResumePayload().catch(() => null);
+  if (resumable?.hasResumable) {
+    logger.warn(MODULE, "interrupted-runs", {
+      count: resumable.runs.length,
+      runIds: resumable.runs.map((r) => r.runId),
+    });
+  }
+
   logger.info(MODULE, "sw-bootstrapped", {});
 }
 
@@ -1508,6 +1532,14 @@ async function _executePipeline(runId, pipeline, targetTabId) {
     })
     .catch(() => {});
 
+  // A finished run is not resumable. markRunCompleted was exported and called
+  // from nowhere, so cursors accumulated forever and every completed run kept
+  // showing up in the resume banner (audit B-26). A run the user stopped keeps
+  // its cursor, because its rows are still worth recovering.
+  if (stateStr === "completed") {
+    await markRunCompleted(runId).catch(() => {});
+  }
+
   _runStates.delete(runId);
   if (_runStates.size === 0) {
     await chrome.alarms.clear("fs_sw_heartbeat").catch(() => {});
@@ -1581,12 +1613,22 @@ _registerHandler(MSG.PIPELINE_STOP, async (payload) => {
 });
 
 _registerHandler(MSG.PIPELINE_STATUS, async (payload) => {
+  const runState = _runStates.get(payload?.runId);
+
+  // `known` separates "that run finished" from "this worker has no memory of
+  // that run". _runStates is in-memory only, so an MV3 termination mid-run
+  // leaves the side panel showing a Stop button for something that no longer
+  // exists. The panel polls this and can tell the difference.
+  if (!runState) {
+    return { known: false, active: false, paused: false, runId: payload?.runId };
+  }
+
   return {
-    ...(_runStates.get(payload?.runId) || {
-      active: false,
-      paused: false,
-      runId: payload?.runId,
-    }),
+    known: true,
+    active: runState.active,
+    paused: runState.paused,
+    runId: runState.runId,
+    rowCount: runState.results.length,
   };
 });
 
@@ -1694,8 +1736,14 @@ _registerHandler("checkpoint:check", async () => {
 
 // Wire up partial data download
 _registerHandler("data:download", async (payload) => {
-  const rows = await readAllRows(payload?.runId ?? "latest");
-  return { rows };
+  const runId = payload?.runId;
+  if (!runId) {
+    // The caller used to pass the string "latest" as a sentinel, which matched
+    // no index key, so the download reported "no data" rather than an error.
+    throw new Error("data:download requires a runId");
+  }
+  const rows = await readAllRows(runId);
+  return { runId, rows };
 });
 
 // ── Side panel connection ───────────────────────────────────────────────────────

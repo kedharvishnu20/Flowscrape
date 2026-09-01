@@ -79,11 +79,18 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 |---|---|---|
 | B-03 | `d51d72a` | Gate 6 reports authored origins; undeclared ones are blocked at execution, where a templated URL is finally known. Gates 2, 3, 4 and the FORM_FILL constraints now walk nested steps too |
 | B-27 | `f7a742c` | One `_dispatchStep`; first behavioural tests for the executor |
-| B-13, B-15 | *this batch* | 6 more step types emitted; the remaining 4 fail loudly and are reported. SCROLL reads `config.amount` |
+| B-13, B-15 | `27865a4` | 6 more step types emitted; the remaining 4 fail loudly and are reported. SCROLL reads `config.amount` |
+| D-01, B-26, D-14, H-08 | *this batch* | A lost run is detected and reported instead of hanging the UI; completed runs stop being resumable; the `"latest"` sentinel is gone |
 
-**Still open:** C-09, C-10, C-12; B-10 through B-12, B-14, B-16 through
-B-18, B-22 onward; D-01, D-02, D-07, D-09 through D-14; most of E; G-05 through
-G-09; I-02, I-04.
+**Still open:** C-09, C-10, C-12; B-10 through B-12, B-14, B-16 through B-18,
+B-22 through B-25, B-28 onward; D-02, D-07, D-09 through D-13; most of E; G-05
+through G-09; I-02, I-04.
+
+**D-01 is fixed in the sense that matters, not fully.** Resuming a pipeline
+from where a terminated worker left off would mean re-entering the step chain
+with the right template context against a tab that may since have navigated.
+That is not attempted. What is fixed is the silence: the loss is detected,
+reported, and the collected rows stay downloadable.
 
 ---
 

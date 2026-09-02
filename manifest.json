@@ -2,11 +2,8 @@
   "manifest_version": 3,
   "name": "FlowScrape v3",
   "version": "3.0.0",
-  "description": "Production-grade web automation and data extraction with proxy rotation, form filling, and ethical safeguards.",
+  "description": "Visual web automation and data extraction: build a pipeline of steps, run it against a tab, export the results.",
   "minimum_chrome_version": "120",
-
-  "_comment_permissions": "Every entry here must have a caller. Dropped in the C-08 trim: activeTab (redundant beside <all_urls> host access), declarativeNetRequest and webRequest (zero uses), notifications (zero uses; the notification providers the README advertises do not exist).",
-
   "permissions": [
     "scripting",
     "storage",
@@ -16,20 +13,14 @@
     "tabs",
     "downloads"
   ],
-
   "host_permissions": ["<all_urls>"],
-
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"
   },
-
-  "_comment_content_scripts": "There are none, deliberately. content/injector.js and content/smart-extractor.js used to be declared here for <all_urls>, so both ran in every page the user visited — for a tool that acts on one tab at a time (audit C-09). They are injected on demand by _ensureInjected in background/service-worker.js, into the tab a run or a picker is about to touch. page-sniffer.js has always been runtime-registered: it wraps fetch/XHR in the page's own world, so it is scoped to an active API_SNIFFER run's origin. <all_urls> host access is still needed for API steps and robots.txt fetches, which the worker makes, not the page.",
-
   "side_panel": {
     "default_path": "sidepanel/index.html"
   },
-
   "action": {
     "default_title": "FlowScrape v3",
     "default_icon": {
@@ -39,20 +30,15 @@
       "128": "icons/icon128.png"
     }
   },
-
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
   },
-
-  "_comment_web_accessible_resources": "Only modules a content script dynamically imports belong here; anything listed is readable by every page and can be probed to fingerprint the extension. This is the transitive closure of the two import(chrome.runtime.getURL(...)) calls in content/injector.js.",
-
   "web_accessible_resources": [
     {
       "resources": [

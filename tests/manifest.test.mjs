@@ -189,3 +189,74 @@ test("the manifest version matches package.json", async () => {
     "these drifted apart before (I-04)",
   );
 });
+
+// ── keys Chrome recognises ───────────────────────────────────────────────────
+
+test("no key makes Chrome print a warning on load", async () => {
+  // JSON has no comments, so notes were parked in "_comment_*" keys. Chrome
+  // does not ignore unknown keys quietly — it logs
+  // "Unrecognized manifest key '_comment_permissions'." on every load, which is
+  // the first thing a user sees when they load the extension unpacked. The
+  // notes live in docs/MANIFEST.md now.
+  const unknown = Object.keys(manifest).filter((k) => k.startsWith("_"));
+  assert.deepEqual(unknown, [], "these print a warning at load time");
+});
+
+test("every top-level key is one MV3 defines", () => {
+  // Not exhaustive — MV3 has more keys than this — but it covers what a typo or
+  // a stray note would land as.
+  const KNOWN = new Set([
+    "manifest_version",
+    "name",
+    "version",
+    "description",
+    "minimum_chrome_version",
+    "permissions",
+    "optional_permissions",
+    "host_permissions",
+    "optional_host_permissions",
+    "background",
+    "content_scripts",
+    "side_panel",
+    "action",
+    "icons",
+    "content_security_policy",
+    "web_accessible_resources",
+    "options_page",
+    "options_ui",
+    "commands",
+    "declarative_net_request",
+    "default_locale",
+    "devtools_page",
+    "externally_connectable",
+    "homepage_url",
+    "incognito",
+    "key",
+    "omnibox",
+    "short_name",
+    "storage",
+    "update_url",
+  ]);
+  const strays = Object.keys(manifest).filter((k) => !KNOWN.has(k));
+  assert.deepEqual(strays, [], "not keys Chrome reads");
+});
+
+test("the notes those keys held were kept, not dropped", async () => {
+  const doc = await readFile(join(ROOT, "docs/MANIFEST.md"), "utf8");
+  assert.match(doc, /## `permissions`/);
+  assert.match(doc, /## `content_scripts`/);
+  assert.match(doc, /## `web_accessible_resources`/);
+  assert.match(doc, /injected on demand/, "the C-09 reasoning survived");
+});
+
+test("the description does not advertise unreachable subsystems", () => {
+  // It is shown on chrome://extensions. It used to promise "proxy rotation,
+  // form filling" — both unreachable (A-05, A-07).
+  for (const claim of ["proxy rotation", "form filling", "captcha"]) {
+    assert.ok(
+      !manifest.description.toLowerCase().includes(claim),
+      `the description still promises "${claim}"`,
+    );
+  }
+  assert.ok(manifest.description.length > 20, "and still says what it is");
+});

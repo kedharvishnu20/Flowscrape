@@ -45,17 +45,16 @@ const gone = async (path) => {
 
 // ── C-09: nothing runs on every page any more ────────────────────────────────
 
-test("no content script is declared for every page", () => {
+test("no content script is declared for every page", async () => {
   assert.equal(
     manifest.content_scripts,
     undefined,
     "injector and smart-extractor ran in every page the user visited",
   );
-  assert.match(
-    manifest._comment_content_scripts,
-    /injected on demand/,
-    "and the manifest says why there are none",
-  );
+  // The reasoning used to sit in a "_comment_content_scripts" key, which made
+  // Chrome warn on every load. It is in docs/MANIFEST.md now.
+  const doc = await read("docs/MANIFEST.md");
+  assert.match(doc, /injected on demand/, "and it is written down somewhere");
 });
 
 test("host access is kept, because the worker still needs it", () => {

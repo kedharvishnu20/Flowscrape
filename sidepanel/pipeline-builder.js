@@ -770,6 +770,10 @@ function bindGlobalControls() {
       );
     });
   document
+    .getElementById("btn-detect-structure")
+    ?.addEventListener("click", () => _detectStructure());
+
+  document
     .getElementById("btn-export-script")
     ?.addEventListener("click", async () => {
       if (!_pipeline.steps.length)
@@ -1971,7 +1975,7 @@ function generateConfigHtml(step) {
     });
     html += `</div>
     <div class="flex gap-2" style="margin-top:12px;align-items:flex-end;">
-      <div style="flex:1"><label style="margin-top:0;">Field Name</label><input type="text" id="new-ex-name-${step.id}" placeholder="e.g. price"></div>
+      <div style="flex:1"><label style="margin-top:0;">Field Name <span style="color:var(--text-dim);font-weight:400;">(optional)</span></label><input type="text" id="new-ex-name-${step.id}" placeholder="named from the element if blank"></div>
       <button class="btn btn-primary" data-action="add-extract-field" data-id="${step.id}" style="height:28px;">🎯 Pick Element</button>
     </div>`;
     html += toggle(
@@ -2949,31 +2953,266 @@ async function _selectSelectorMode(defaultBulk) {
   });
 }
 
+// ── Detect table ──────────────────────────────────────────────────────────────
+/**
+ * Read the page's repeating structures and offer them as tables.
+ *
+ * The normal way to build a scrape is to know CSS selectors before you start:
+ * name a field, pick it, repeat, hope they line up. This inverts it — the page
+ * is read, and the user picks a table by looking at sample rows.
+ */
+async function _detectStructure() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) return notify("error-log", "No active tab to read.");
+
+  notify("info-log", "Reading the page…");
+  const res = await chrome.runtime
+    .sendMessage({ type: "content:detect", payload: { tabId: tab.id } })
+    .catch(() => null);
+
+  if (!res?.ok) {
+    notify("error-log", res?.error || "Could not read that page.");
+    return;
+  }
+
+  const { candidates = [] } = res.result ?? {};
+  if (!candidates.length) {
+    notify(
+      "warn-log",
+      "No repeating tables found. This page may show a single record, or build its list in a way that has no shared structure — pick fields by hand instead.",
+    );
+    return;
+  }
+
+  const chosen = await _chooseDetectedTable(candidates);
+  if (!chosen) return;
+  _insertDetectedTable(chosen);
+}
+
+/**
+ * Show what was found and let the user pick, by reading rows rather than
+ * selectors.
+ *
+ * @param {object[]} candidates
+ * @returns {Promise<object|null>}
+ */
+function _chooseDetectedTable(candidates) {
+  return new Promise((resolve) => {
+    const modal = document.createElement("div");
+    modal.style.cssText = `
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999; backdrop-filter: blur(4px);
+    `;
+
+    const card = document.createElement("div");
+    card.style.cssText = `
+      background: var(--bg-raised); border: 1px solid var(--bg-border);
+      border-radius: 12px; padding: 20px; width: min(560px, 92vw);
+      max-height: 82vh; overflow-y: auto; box-shadow: var(--shadow-fly);
+    `;
+
+    const h = document.createElement("h2");
+    h.style.cssText = "margin:0 0 4px; font-size:15px;";
+    h.textContent = `Found ${candidates.length} table${candidates.length === 1 ? "" : "s"}`;
+
+    const sub = document.createElement("p");
+    sub.style.cssText =
+      "margin:0 0 14px; color:var(--text-dim); font-size:12px;";
+    sub.textContent =
+      "Pick the one whose rows look right. It becomes a loop with the columns already filled in.";
+    card.append(h, sub);
+
+    const done = (value) => {
+      modal.remove();
+      document.removeEventListener("keydown", onKey, true);
+      resolve(value);
+    };
+    function onKey(e) {
+      if (e.key === "Escape") done(null);
+    }
+
+    for (const c of candidates) {
+      const btn = document.createElement("button");
+      btn.className = "detect-card";
+      btn.type = "button";
+
+      const head = document.createElement("div");
+      head.className = "detect-head";
+      const count = document.createElement("span");
+      count.className = "detect-count";
+      count.textContent = `${c.count} rows × ${c.fields.length} columns`;
+      const sel = document.createElement("code");
+      sel.className = "mono";
+      sel.style.cssText = "font-size:10px; color:var(--text-dim);";
+      sel.textContent = c.selector;
+      head.append(count, sel);
+      btn.appendChild(head);
+
+      // Built as nodes: every value here is page content (C-04).
+      const scroll = document.createElement("div");
+      scroll.className = "detect-scroll";
+      const table = document.createElement("table");
+      table.className = "detect-table";
+
+      const thead = document.createElement("thead");
+      const hrow = document.createElement("tr");
+      for (const f of c.fields) {
+        const th = document.createElement("th");
+        th.textContent = f.name;
+        th.title = `${f.selector} · ${f.coverage}% of rows`;
+        hrow.appendChild(th);
+      }
+      thead.appendChild(hrow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
+      for (const row of c.sampleRows ?? []) {
+        const tr = document.createElement("tr");
+        for (const f of c.fields) {
+          const td = document.createElement("td");
+          const v = String(row[f.name] ?? "");
+          td.textContent = v.length > 40 ? `${v.slice(0, 40)}…` : v;
+          td.title = v;
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      scroll.appendChild(table);
+      btn.appendChild(scroll);
+
+      btn.addEventListener("click", () => done(c));
+      card.appendChild(btn);
+    }
+
+    const cancel = document.createElement("button");
+    cancel.className = "btn";
+    cancel.style.cssText = "width:100%; margin-top:4px;";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => done(null));
+    card.appendChild(cancel);
+
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) done(null);
+    });
+    document.addEventListener("keydown", onKey, true);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    card.querySelector(".detect-card")?.focus();
+  });
+}
+
+/**
+ * Turn a detected table into steps.
+ *
+ * A LOOP over the container with a nested EXTRACT, rather than one EXTRACT with
+ * page-wide selectors. EXTRACT lines its columns up positionally, so a record
+ * missing a rating shifts every later rating up a row. Scoping each iteration
+ * to its own container is what makes a row a row.
+ *
+ * @param {object} table
+ */
+function _insertDetectedTable(table) {
+  const extract = {
+    id: _nextStepId(),
+    type: "EXTRACT",
+    config: {
+      ...defaultConfig("EXTRACT"),
+      fields: table.fields.map((f) => ({
+        name: f.name,
+        selector: f.selector,
+        type: f.kind === "text" ? "text" : "attribute",
+        ...(f.kind === "href" ? { attribute: "href" } : {}),
+        ...(f.kind === "src" ? { attribute: "src" } : {}),
+      })),
+    },
+  };
+
+  const loop = {
+    id: _nextStepId(),
+    type: "LOOP",
+    config: {
+      ...defaultConfig("LOOP"),
+      type: "elements",
+      selector: table.selector,
+      max: 0, // every match; the page decides how many rows there are
+    },
+    children: [extract],
+  };
+
+  _pipeline.steps.push(loop);
+  _expandedNodeId = extract.id;
+  saveState();
+  renderPipeline();
+  notify(
+    "info-log",
+    `Added a loop over ${table.selector} with ${extract.config.fields.length} columns. Check the selectors, then Run.`,
+  );
+}
+
 // ── Extract field management ──────────────────────────────────────────────────
+
+/**
+ * A column name guessed from the selector that produced it.
+ *
+ * Naming a field before you have picked it is backwards — you do not know what
+ * you are about to click. The name box is optional now, and this fills it.
+ *
+ * @param {string} selector
+ * @returns {string}
+ */
+function _fieldNameFromSelector(selector) {
+  const last =
+    String(selector)
+      .split(/[\s>+~]+/)
+      .filter(Boolean)
+      .pop() ?? "";
+  const token =
+    last.match(/\.([A-Za-z][\w-]*)/)?.[1] ??
+    last.match(/#([A-Za-z][\w-]*)/)?.[1] ??
+    last.match(/\[data-[\w-]*=?"?([\w-]+)/)?.[1] ??
+    last.replace(/[^A-Za-z]/g, "");
+  const cleaned = token
+    // Strip the one- or two-letter prefixes design systems put on everything.
+    .replace(/^(s|p|c|js|is|ui|el)[-_]/i, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .trim()
+    .toLowerCase();
+  return cleaned || "field";
+}
+
 async function _addExtractField(stepId) {
   const nameInput = document.getElementById(`new-ex-name-${stepId}`);
-  if (!nameInput?.value.trim())
-    return notify("warn-log", "Enter a field name first.");
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
+
+  // Every other picker asks bulk-or-specific; this one was pinned to bulk, so
+  // an extract field could never be a single named element on the page.
+  // Extract usually wants a column, so bulk stays the default.
+  const bulk = await _selectSelectorMode(true);
+  if (bulk === null) return;
+
   try {
     if (!(await _ensureContentReady(tab.id))) return;
     const resp = await chrome.tabs.sendMessage(tab.id, {
       type: "FS_PICK_SELECTOR",
-      payload: { bulk: true },
+      payload: { bulk },
     });
-    if (resp?.ok && resp.result) {
-      const step = _findStepDeep(_pipeline.steps, stepId);
-      if (step) {
-        step.config.fields.push({
-          name: nameInput.value.trim(),
-          selector: resp.result,
-          type: "text",
-        });
-        saveState();
-        renderPipeline();
-      }
-    }
+    if (!resp?.ok || !resp.result) return;
+
+    const step = _findStepDeep(_pipeline.steps, stepId);
+    if (!step) return;
+    const name = nameInput?.value.trim() || _fieldNameFromSelector(resp.result);
+    step.config.fields.push({ name, selector: resp.result, type: "text" });
+    if (nameInput) nameInput.value = "";
+    saveState();
+    renderPipeline();
+    notify(
+      "info-log",
+      `Added field "${name}" — ${bulk ? "all matches" : "this element"}.`,
+    );
   } catch {
     notify("error-log", "Refresh the target webpage to connect the picker.");
   }

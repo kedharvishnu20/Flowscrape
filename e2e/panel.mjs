@@ -377,3 +377,81 @@ test("the executor paces a run instead of hammering the page", async () => {
     `15 clicks took ${elapsed}ms — the token bucket is not being consulted`,
   );
 });
+
+// ── Detect table, end to end ─────────────────────────────────────────────────
+
+test("the page is read and offered as tables", async () => {
+  const res = await env.send("content:detect", { tabId });
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  const { candidates } = res.result;
+  assert.ok(candidates.length >= 1, "found no tables on a page full of them");
+
+  const top = candidates[0];
+  assert.equal(top.selector, ".row", `picked ${top.selector}`);
+  assert.equal(top.count, 4);
+  assert.ok(top.fields.length >= 2, "a table needs columns");
+
+  const names = top.fields.map((f) => f.name);
+  assert.ok(names.includes("link"), names.join(", "));
+  assert.ok(names.includes("price"), names.join(", "));
+  assert.ok(
+    names.includes("link url"),
+    `the href needs its own column: ${names}`,
+  );
+  assert.equal(new Set(names).size, names.length, `duplicate names: ${names}`);
+
+  // Sample rows are what the user reads to decide.
+  assert.equal(top.sampleRows[0].link, "Alpha");
+  assert.equal(top.sampleRows[1].link, "Beta");
+  assert.equal(top.sampleRows[0]["link url"], "/p/1");
+});
+
+test("a detected table scrapes for real, without a selector being typed", async () => {
+  // The whole point: from "read the page" to rows in IndexedDB, with the user
+  // having chosen a table rather than written a selector.
+  const detected = (await env.send("content:detect", { tabId })).result
+    .candidates[0];
+
+  const extractFields = detected.fields.map((f) => ({
+    name: f.name,
+    selector: f.selector,
+    type: f.kind === "text" ? "text" : "attribute",
+    ...(f.kind === "href" ? { attribute: "href" } : {}),
+    ...(f.kind === "src" ? { attribute: "src" } : {}),
+  }));
+
+  const { rows } = await runPipeline([
+    step(
+      "LOOP",
+      { type: "elements", selector: detected.selector, max: 0 },
+      { children: [step("EXTRACT", { fields: extractFields })] },
+    ),
+  ]);
+
+  assert.equal(rows.length, 4, `got ${rows.length} rows`);
+  const names = rows.map((r) => r.link).sort();
+  assert.deepEqual(names, ["Alpha", "Beta", "Delta", "Gamma"]);
+  const prices = rows.map((r) => r.price).sort();
+  assert.deepEqual(prices, ["$1", "$2", "$3", "$4"]);
+});
+
+test("a page with nothing repeating returns no tables, not a bad guess", async () => {
+  const page = await env.ctx.newPage();
+  await page.setContent(
+    "<main><h1 class='t'>One product</h1><div class='p'>$9.99</div></main>",
+  );
+  const id = await env.panel.evaluate(
+    () =>
+      new Promise((resolve) => {
+        chrome.tabs.query({}, (tabs) =>
+          resolve(tabs.find((t) => t.url === "about:blank")?.id ?? null),
+        );
+      }),
+  );
+  if (id) {
+    const res = await env.send("content:detect", { tabId: id });
+    if (res.ok) assert.equal(res.result.candidates.length, 0);
+  }
+  await page.close();
+});

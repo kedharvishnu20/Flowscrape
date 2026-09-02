@@ -1051,6 +1051,66 @@
         outline-offset: 1px;
       }
 
+      /* Detected-table picker */
+      .detect-card {
+        border: 1px solid var(--bg-border);
+        border-radius: var(--radius);
+        background: var(--bg-raised);
+        padding: 12px;
+        margin-bottom: 10px;
+        cursor: pointer;
+        text-align: left;
+        width: 100%;
+        color: inherit;
+        font: inherit;
+      }
+
+      .detect-card:hover,
+      .detect-card:focus-visible {
+        border-color: var(--accent);
+      }
+
+      .detect-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+
+      .detect-count {
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      .detect-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+        table-layout: fixed;
+      }
+
+      .detect-table th,
+      .detect-table td {
+        text-align: left;
+        padding: 3px 6px;
+        border-bottom: 1px solid var(--bg-border);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 120px;
+      }
+
+      .detect-table th {
+        color: var(--text-dim);
+        font-weight: 600;
+        text-transform: none;
+      }
+
+      .detect-scroll {
+        overflow-x: auto;
+      }
+
       /* Toasts — the replacement for alert() (E-06) */
       #fs-toasts {
         position: fixed;
@@ -1639,6 +1699,12 @@
         <div id="view-pipeline" class="view active">
           <div id="board-toolbar">
             <div class="flex gap-2">
+              <!-- Reads the page and offers its repeating structures as
+                   tables, so a pipeline can be built without knowing a single
+                   CSS selector. -->
+              <button class="btn btn-primary" id="btn-detect-structure">
+                🔍 Detect Table
+              </button>
               <button class="btn" id="btn-export-script">
                 📜 Export Script
               </button>

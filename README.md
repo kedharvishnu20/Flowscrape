@@ -32,8 +32,8 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 451 tests, ~9s, no browser needed
-npm run e2e     # 32 checks in a real Chromium with the extension loaded
+npm test        # 477 tests, ~9s, no browser needed
+npm run e2e     # 35 checks in a real Chromium with the extension loaded
 npm run check   # parses every source file as an ES module
 npm run format  # prettier; `npm run format:check` in CI
 ```
@@ -93,6 +93,7 @@ background/                    Service worker
 content/                       Page context
   injector.js                  Step dispatcher, selector picker, shadow host
   smart-extractor.js           AUTO_EXTRACT layers 1 & 2
+  structure-detector.js        Finds a page's repeating tables, for Detect Table
   page-sniffer.js              fetch/XHR capture, injected only during a run
   overlay-engine.js            Scrape-zone overlays
   overlay-renderer.js          Per-zone overlay elements
@@ -135,8 +136,8 @@ script-gen/
   node-emitter.js              AST → Node (playwright)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         451 tests; node:test, jsdom, fake-indexeddb
-e2e/                           32 checks against a real Chromium
+tests/                         477 tests; node:test, jsdom, fake-indexeddb
+e2e/                           35 checks against a real Chromium
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, architecture, manual, template guide
 examples/                      Pipeline JSON you can import
@@ -167,6 +168,24 @@ FlateDecode content streams, literal and hex strings, and per-font `/ToUnicode`
 CMaps. Encrypted PDFs, scanned pages and CID fonts with no `/ToUnicode` map are
 reported rather than guessed at. The MCP server's `pdf_extract_text` uses pdfjs
 and handles more; the two are independent.
+
+### Detect Table
+
+Building a scrape usually means knowing CSS selectors before you start: name a
+field, pick it, repeat, hope they line up. **🔍 Detect Table** in the board
+toolbar inverts that. It reads the page, works out which groups of elements are
+records, and offers them as tables with sample rows. Pick one and you get a
+`LOOP` over the container with an `EXTRACT` inside, columns already filled and
+named.
+
+It handles what real listings do: a sponsored row with an extra badge stays in
+the group (grouping is by shape _overlap_, not an exact match, so you never
+silently scrape a subset); a price written `<span>$</span><span>10</span>` is
+one column; a list is one column rather than one per item; an anchor's text and
+its `href` are two columns with two names.
+
+A page with nothing repeating — a product detail page — says so instead of
+guessing. The picker is still there for anything detection misses.
 
 ### Templates
 

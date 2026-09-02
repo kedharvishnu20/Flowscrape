@@ -443,7 +443,11 @@ function _pushCapture(runState, key, entry, bytes, maxBytes, maxCount, runId) {
  *
  * Order matters: injector.js expects the smart extractor to be present.
  */
-const CONTENT_FILES = ["content/smart-extractor.js", "content/injector.js"];
+const CONTENT_FILES = [
+  "content/smart-extractor.js",
+  "content/structure-detector.js",
+  "content/injector.js",
+];
 
 /**
  * Make sure the content scripts are live in a tab.
@@ -1965,6 +1969,24 @@ async function _executePipeline(runId, pipeline, targetTabId) {
 
 // The picker is driven straight from the panel with chrome.tabs.sendMessage, so
 // it needs its own way to make sure the page is ready first (C-09).
+/**
+ * Read the repeating structures on a page.
+ *
+ * The panel drives this: rather than the user naming and picking each field,
+ * the page is read and offered as tables to choose from.
+ */
+_registerHandler("content:detect", async (payload, sender) => {
+  const tabId = payload?.tabId ?? sender.tab?.id;
+  if (!tabId) throw new Error("No tab to read");
+  await _ensureInjected(tabId);
+  const resp = await chrome.tabs.sendMessage(tabId, {
+    type: "FS_DETECT_STRUCTURE",
+    payload: {},
+  });
+  if (!resp?.ok) throw new Error(resp?.error || "Could not read the page");
+  return resp.result;
+});
+
 _registerHandler("content:ensure", async (payload, sender) => {
   const tabId = payload?.tabId ?? sender.tab?.id;
   await _ensureInjected(tabId);

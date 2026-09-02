@@ -75,9 +75,13 @@ test("the worker injects on demand, and only once per tab", () => {
     "a second injection would double every reply",
   );
   assert.match(fn, /chrome\.scripting\.executeScript/);
-  assert.match(
-    swSrc,
-    /const CONTENT_FILES = \[\s*\n?\s*"content\/smart-extractor\.js",\s*\n?\s*"content\/injector\.js",?\s*\n?\]/,
+  // Order matters: injector.js dispatches to globals the others define.
+  const files = swSrc.match(/const CONTENT_FILES = \[[\s\S]*?\];/)[0];
+  assert.match(files, /"content\/smart-extractor\.js"/);
+  assert.match(files, /"content\/injector\.js"/);
+  assert.ok(
+    files.lastIndexOf("injector") > files.indexOf("smart-extractor"),
+    "injector must load last",
   );
 });
 

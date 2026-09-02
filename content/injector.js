@@ -210,6 +210,7 @@ const OWNED_MESSAGE_TYPES = new Set([
   // The script is no longer declared for <all_urls> — it is injected on demand
   // (C-09) — so "is it there yet?" became a question that needed an answer.
   "fs:ping",
+  "FS_DETECT_STRUCTURE",
 ]);
 
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
@@ -240,6 +241,17 @@ async function _handleEvent(type, payload, id) {
 
     case "fs:ping":
       return { ready: true };
+
+    // structure-detector.js is injected alongside this file and shares the
+    // isolated world, so it hands its entry point over on a global. A classic
+    // content script cannot import one.
+    case "FS_DETECT_STRUCTURE": {
+      const detect = globalThis.__fsDetectStructure;
+      if (typeof detect !== "function") {
+        throw new Error("Structure detector is not loaded in this page.");
+      }
+      return detect();
+    }
 
     default:
       throw new Error(`Unhandled event type: ${type}`);

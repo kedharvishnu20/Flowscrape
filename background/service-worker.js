@@ -54,6 +54,7 @@ import {
   pushRow,
   flush,
   finalizeBuffer,
+  droppedRowCount,
   readAllRows,
 } from "../checkpoint/row-buffer.js";
 import { saveCursor } from "../checkpoint/cursor-store.js";
@@ -1103,7 +1104,9 @@ async function _doExport(runId, config) {
     // A short export is never silent: if the capture buffers filled, the count
     // that did not make it is part of the result.
     const dropped =
-      (runState.screenshotsDropped || 0) + (runState.networksDropped || 0);
+      (runState.screenshotsDropped || 0) +
+      (runState.networksDropped || 0) +
+      droppedRowCount(runId);
     _broadcastLog(
       dropped ? "warn-log" : "info-log",
       `Exported ZIP: ${allRows.length} rows, ${screenshots.length} screens, ${networks.length} APIs` +

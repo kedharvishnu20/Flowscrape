@@ -164,8 +164,8 @@ test("the resume banner downloads each run by its own id", () => {
   );
   assert.match(
     panelSrc,
-    /_downloadRunRows\(_runState\.runId\)/,
-    "the monitor button passes the live run id rather than a sentinel",
+    /_downloadRunRows\(_runState\.runId \?\? _lastRunId\)/,
+    "the live run id, or the last one — never a sentinel (E-19 clears the live one on stop)",
   );
 
   // Asserting the *absence* of a string in source keeps matching the comment

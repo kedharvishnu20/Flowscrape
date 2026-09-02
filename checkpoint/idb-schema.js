@@ -71,8 +71,20 @@ let _dbPromise = null;
 export function openDB() {
   if (_dbPromise) return _dbPromise;
 
-  _dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+  const attempt = new Promise((resolve, reject) => {
+    let req;
+    try {
+      req = indexedDB.open(DB_NAME, DB_VERSION);
+    } catch (err) {
+      // indexedDB.open can throw synchronously — a browser with storage
+      // disabled, a private window, a worker torn down mid-call. That throw
+      // never reaches req.onerror, so the cache below would keep handing back a
+      // rejected promise for the life of the worker and every later row write,
+      // cursor save and read would fail with the original error. Found while
+      // testing D-12; recorded as A-10.
+      reject(err);
+      return;
+    }
 
     req.onupgradeneeded = (event) => {
       const db = req.result;
@@ -116,13 +128,18 @@ export function openDB() {
     };
 
     req.onerror = () => {
-      _dbPromise = null;
       logger.error(MODULE, "open-fail", { error: req.error?.message });
       reject(req.error);
     };
   });
 
-  return _dbPromise;
+  _dbPromise = attempt;
+  // Any failure, however it arrived, un-caches the attempt so the next caller
+  // opens a fresh connection instead of inheriting this one's error.
+  attempt.catch(() => {
+    if (_dbPromise === attempt) _dbPromise = null;
+  });
+  return attempt;
 }
 
 /**

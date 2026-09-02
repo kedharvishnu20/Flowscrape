@@ -114,9 +114,12 @@ test("both capture paths go through the limiter", () => {
 
 test("a short export says it is short", () => {
   const fn = swSrc.match(/async function _doExport\([\s\S]*?\n\}\n/)[0];
+  assert.match(fn, /runState\.screenshotsDropped \|\| 0/);
+  assert.match(fn, /runState\.networksDropped \|\| 0/);
   assert.match(
     fn,
-    /screenshotsDropped \|\| 0\) \+ \(runState\.networksDropped/,
+    /droppedRowCount\(runId\)/,
+    "rows lost to a dead buffer too",
   );
   assert.match(fn, /capture\(s\) dropped when the buffer filled/);
   assert.match(fn, /dropped \? "warn-log" : "info-log"/);

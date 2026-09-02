@@ -44,6 +44,8 @@ let _runState = {
   startTs: 0,
   runId: null,
 };
+/** The most recent run, kept after it ends so its rows stay downloadable. */
+let _lastRunId = null;
 let _storageFiles = [];
 let _uploadActivities = [];
 let _dragSourceId = null;
@@ -877,7 +879,9 @@ function bindGlobalControls() {
 
   document
     .getElementById("btn-download-partial")
-    ?.addEventListener("click", () => _downloadRunRows(_runState.runId));
+    ?.addEventListener("click", () =>
+      _downloadRunRows(_runState.runId ?? _lastRunId),
+    );
 }
 
 function startMonitorTimer() {
@@ -942,7 +946,14 @@ function _setPausedUI(paused) {
 function stopRunUI() {
   _runState.active = false;
   _runState.paused = false;
+  // The listener filters by runId, so leaving the finished run's id here meant
+  // a late pipeline:log for it was still accepted and appended to a pane that
+  // now describes nothing (E-19). The id is kept separately, because the rows
+  // stay downloadable after the run ends and the button needs to name them.
+  _lastRunId = _runState.runId ?? _lastRunId;
+  _runState.runId = null;
   clearInterval(_runState.timer);
+  _runState.timer = null;
   document.getElementById("btn-master-run").classList.remove("hidden");
   document.getElementById("run-controls")?.classList.add("hidden");
   _setPausedUI(false);

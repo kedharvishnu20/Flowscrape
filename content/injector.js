@@ -243,11 +243,13 @@ async function _handleEvent(type, payload, id) {
 async function _executeStep(step) {
   const { type, config } = step;
   const context = step.__fsContext || {};
+  // WEBSITE, NAVIGATE, SCREENSHOT and LOOP are not here: the service worker
+  // executes those itself and never forwards them. They used to have handlers
+  // here that nothing could reach — _stepNavigate set location.href, which is
+  // not how the executor navigates, and _stepScreenshot and _stepLoop returned
+  // a shape ("screenshotRequested", "loopInfo") no caller ever read (B-32).
+  // Reaching one of them now is a real error rather than a silent no-op.
   switch (type) {
-    case "WEBSITE":
-      return _stepNavigate(config, context);
-    case "NAVIGATE":
-      return _stepNavigate(config, context);
     case "CLICK":
       return _stepClick(config, context);
     case "SCROLL":
@@ -258,8 +260,6 @@ async function _executeStep(step) {
       return _stepExtract(config, context);
     case "AUTO_EXTRACT":
       return _stepAutoExtract(config);
-    case "SCREENSHOT":
-      return _stepScreenshot(config);
     case "FILL":
       return _stepFill(config, context); // renamed from TYPE
     case "TYPE":
@@ -274,8 +274,6 @@ async function _executeStep(step) {
       return _stepDragDrop(config, context);
     case "UPLOAD_ACTIVITY":
       return _stepUploadActivity(config, context);
-    case "LOOP":
-      return _stepLoop(config);
     case "IF_ELSE":
       return _stepIfElse(config, context);
     case "EXPORT":
@@ -351,14 +349,6 @@ async function _stepAutoExtract(config = {}) {
   });
 
   return result;
-}
-
-async function _stepNavigate({ url, waitMode = "AUTO" }) {
-  if (location.href !== url) {
-    location.href = url;
-    return { navigated: true };
-  }
-  return { navigated: false };
 }
 
 // ── Search elements in iframes (for LinkedIn popups, etc.) ─────────────────────
@@ -790,12 +780,6 @@ async function _stepExtract({ fields = [], schema = [] }, context = {}) {
     results.push(row);
   }
   return results;
-}
-
-async function _stepScreenshot({ fullPage = false }) {
-  // Screenshots require SW coordination via chrome.tabs.captureVisibleTab
-  // Signal back to SW to capture
-  return { screenshotRequested: true, fullPage };
 }
 
 async function _stepUploadActivity(
@@ -1459,10 +1443,6 @@ async function _stepDragDrop({ source, target }, context = {}) {
   return { dragged: true };
 }
 
-async function _stepLoop({ type, selector, max }) {
-  return { loopInfo: { type, selector, max } };
-}
-
 /** Collapse every run of whitespace to one space, and trim. */
 function _normText(v) {
   return String(v ?? "")
@@ -1962,14 +1942,8 @@ function _sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function _waitForSelector(selector, timeout) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    if (document.querySelector(selector)) return;
-    await _sleep(200);
-  }
-  throw new Error(`Timeout waiting for selector: ${selector}`);
-}
+// _waitForSelector lived here, duplicating _waitForSelectorScoped below
+// without the scoping. Nothing called it (B-32).
 
 async function _waitForSelectorScoped(selector, timeout, context = {}) {
   const deadline = Date.now() + timeout;

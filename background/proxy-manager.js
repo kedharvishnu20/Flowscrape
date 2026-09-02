@@ -26,7 +26,6 @@
  */
 
 import { logger } from "../utils/logger.js";
-import { S } from "../utils/strings.js";
 
 const MODULE = "proxy-manager";
 
@@ -53,7 +52,11 @@ const HEALTH_CHECK_URL = "https://httpbin.org/ip";
 // ── Module state ──────────────────────────────────────────────────────────────
 let _pool = []; // Array<ProxyEntry> (creds stripped)
 let _credMap = new Map(); // host:port → {user, pass}
+// Two cursors, not one. Round-robin and sticky both advanced the same counter,
+// so switching modes — or assigning a sticky proxy to a new domain — perturbed
+// the round-robin order for reasons nothing in the UI explains (audit B-34).
 let _rrIndex = 0; // round-robin cursor
+let _stickyIndex = 0; // next proxy to hand a domain that has none
 let _stickyMap = new Map(); // domain → ProxyEntry
 
 // ── Rotation mode ─────────────────────────────────────────────────────────────
@@ -437,6 +440,7 @@ export async function clearPool() {
   _pool = [];
   _credMap = new Map();
   _rrIndex = 0;
+  _stickyIndex = 0;
   _stickyMap = new Map();
   try {
     await chrome.storage.local.set({ [STORAGE_KEY_POOL]: [] });
@@ -507,9 +511,9 @@ export function selectProxy(context = {}) {
         );
         if (stillAlive) return _attachCreds(stillAlive);
       }
-      // Assign a new one
-      const entry = alive[_rrIndex % alive.length];
-      _rrIndex = (_rrIndex + 1) % alive.length;
+      // Assign a new one, from the sticky cursor.
+      const entry = alive[_stickyIndex % alive.length];
+      _stickyIndex = (_stickyIndex + 1) % alive.length;
       _stickyMap.set(domain, entry);
       return _attachCreds(entry);
     }

@@ -9,10 +9,11 @@
  *   headers came from Object.keys(rows[0]), so a column missing from the first
  *   row was dropped.
  *
- *   NOT CURRENTLY REACHED. Nothing imports this module: the EXPORT step is
- *   handled by _doExport in the service worker, which downloads directly. This
- *   exists for a caller that wants the File System Access API's save dialog,
- *   which a service worker cannot show. See docs/ISSUE_AUDIT.md F-01.
+ *   Used by the side panel's partial-run download. The EXPORT *step* is handled
+ *   by _doExport in the service worker, which downloads directly — a worker
+ *   cannot show the File System Access API's save dialog. The panel can, so it
+ *   comes through here (audit F-01, which listed this module and stream-writer
+ *   as dead).
  *
  * @dependencies row-formatters, stream-writer
  */

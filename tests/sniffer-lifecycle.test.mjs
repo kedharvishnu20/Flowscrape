@@ -23,7 +23,7 @@ const swSrc = await readFile(
 );
 
 test("the sniffer is not a declared content script", () => {
-  const declared = manifest.content_scripts.flatMap((c) => c.js);
+  const declared = (manifest.content_scripts ?? []).flatMap((c) => c.js);
   assert.ok(
     !declared.includes("content/page-sniffer.js"),
     "declaring it here runs it on every site the user visits",
@@ -31,7 +31,9 @@ test("the sniffer is not a declared content script", () => {
 });
 
 test("no MAIN-world script is declared in the manifest at all", () => {
-  const mainWorld = manifest.content_scripts.filter((c) => c.world === "MAIN");
+  const mainWorld = (manifest.content_scripts ?? []).filter(
+    (c) => c.world === "MAIN",
+  );
   assert.deepEqual(
     mainWorld,
     [],

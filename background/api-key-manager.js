@@ -483,18 +483,18 @@ async function _solve2captcha(key, { type, sitekey, pageUrl, imageBase64 }) {
   return _poll2captcha(key, captchaId);
 }
 
-async function _poll2captcha(key, captchaId, attempts = 0) {
-  if (attempts > 24) throw new Error("2captcha polling timeout");
-  await _sleep(5000);
-  const res = await _timedFetch(
-    `https://2captcha.com/res.php?key=${key}&action=get&id=${captchaId}&json=1`,
-  );
-  const json = await res.json();
-  if (json.status === 0 && json.request === "CAPCHA_NOT_READY") {
-    return _poll2captcha(key, captchaId, attempts + 1);
+async function _poll2captcha(key, captchaId) {
+  for (let attempt = 0; attempt <= POLL_MAX_ATTEMPTS; attempt++) {
+    await _sleep(POLL_INTERVAL_MS);
+    const res = await _timedFetch(
+      `https://2captcha.com/res.php?key=${key}&action=get&id=${captchaId}&json=1`,
+    );
+    const json = await res.json();
+    if (json.status === 0 && json.request === "CAPCHA_NOT_READY") continue;
+    if (!json.status) throw new Error(json.request ?? "Poll failed");
+    return json.request;
   }
-  if (!json.status) throw new Error(json.request ?? "Poll failed");
-  return json.request;
+  throw new Error(POLL_TIMEOUT_MESSAGE("2captcha"));
 }
 
 async function _solveAnticaptcha(key, { type, sitekey, pageUrl }) {
@@ -513,19 +513,23 @@ async function _solveAnticaptcha(key, { type, sitekey, pageUrl }) {
   return _pollAnticaptcha(key, json.taskId);
 }
 
-async function _pollAnticaptcha(key, taskId, attempts = 0) {
-  if (attempts > 24) throw new Error("Anticaptcha polling timeout");
-  await _sleep(5000);
-  const res = await _timedFetch("https://api.anti-captcha.com/getTaskResult", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clientKey: key, taskId }),
-  });
-  const json = await res.json();
-  if (json.status === "processing")
-    return _pollAnticaptcha(key, taskId, attempts + 1);
-  if (json.errorId) throw new Error(json.errorDescription);
-  return json.solution?.gRecaptchaResponse ?? json.solution?.token;
+async function _pollAnticaptcha(key, taskId) {
+  for (let attempt = 0; attempt <= POLL_MAX_ATTEMPTS; attempt++) {
+    await _sleep(POLL_INTERVAL_MS);
+    const res = await _timedFetch(
+      "https://api.anti-captcha.com/getTaskResult",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientKey: key, taskId }),
+      },
+    );
+    const json = await res.json();
+    if (json.status === "processing") continue;
+    if (json.errorId) throw new Error(json.errorDescription);
+    return json.solution?.gRecaptchaResponse ?? json.solution?.token;
+  }
+  throw new Error(POLL_TIMEOUT_MESSAGE("Anti-Captcha"));
 }
 
 async function _solveCapsolver(key, { type, sitekey, pageUrl }) {
@@ -546,20 +550,35 @@ async function _solveCapsolver(key, { type, sitekey, pageUrl }) {
   return _pollCapsolver(key, json.taskId);
 }
 
-async function _pollCapsolver(key, taskId, attempts = 0) {
-  if (attempts > 24) throw new Error("Capsolver polling timeout");
-  await _sleep(5000);
-  const res = await _timedFetch("https://api.capsolver.com/getTaskResult", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clientKey: key, taskId }),
-  });
-  const json = await res.json();
-  if (json.status === "processing")
-    return _pollCapsolver(key, taskId, attempts + 1);
-  if (json.errorId) throw new Error(json.errorDescription);
-  return json.solution?.gRecaptchaResponse ?? json.solution?.token;
+async function _pollCapsolver(key, taskId) {
+  for (let attempt = 0; attempt <= POLL_MAX_ATTEMPTS; attempt++) {
+    await _sleep(POLL_INTERVAL_MS);
+    const res = await _timedFetch("https://api.capsolver.com/getTaskResult", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientKey: key, taskId }),
+    });
+    const json = await res.json();
+    if (json.status === "processing") continue;
+    if (json.errorId) throw new Error(json.errorDescription);
+    return json.solution?.gRecaptchaResponse ?? json.solution?.token;
+  }
+  throw new Error(POLL_TIMEOUT_MESSAGE("Capsolver"));
 }
+
+/**
+ * Captcha solve polling.
+ *
+ * The three pollers recursed once per attempt, building 25 nested await frames
+ * per solve, and their `attempts > 24` budget was an undocumented two-minute
+ * hang with a message that did not say how long it had waited (audit B-33).
+ * They loop now, and the timeout says what it means.
+ */
+const POLL_INTERVAL_MS = 5000;
+const POLL_MAX_ATTEMPTS = 24;
+const POLL_TIMEOUT_MESSAGE = (service) =>
+  `${service} did not return a solution within ` +
+  `${Math.round((POLL_INTERVAL_MS * (POLL_MAX_ATTEMPTS + 1)) / 1000)}s.`;
 
 function _sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));

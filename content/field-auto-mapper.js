@@ -10,7 +10,7 @@
  *   proposals) BEFORE the user confirms. This lets the user visually verify
  *   mappings on the actual page, not just in the mapping table.
  *
- * @dependencies overlay-engine, color-utils, logger
+ * @dependencies overlay-engine, color-utils, logger, levenshtein
  *
  * NOT REACHABLE. Nothing imports this module. It exists to support the
  * FORM_FILL flow described in docs/ISSUE_AUDIT.md A-07, which has no entry
@@ -22,6 +22,10 @@
 import { overlayEngine } from "./overlay-engine.js";
 import { ZONE_PALETTE, COLOR_WARNING } from "../utils/color-utils.js";
 import { logger } from "../utils/logger.js";
+import {
+  tokenize,
+  fieldMatchScore as sharedFieldMatchScore,
+} from "../utils/levenshtein.js";
 
 const MODULE = "field-auto-mapper";
 const LEVENSHTEIN_THRESHOLD = 0.7;
@@ -53,52 +57,11 @@ const STOPWORDS = new Set([
 ]);
 
 // ── Similarity algorithms ─────────────────────────────────────────────────────
+// levenshteinDistance, levenshteinNorm, tokenize, jaccard and fieldMatchScore
+// were re-implemented here, in full, while utils/levenshtein.js exported all
+// five and was imported by nothing (audit F-01). One copy now.
 
-function levenshteinDistance(a, b) {
-  if (a === b) return 0;
-  if (!a.length) return b.length;
-  if (!b.length) return a.length;
-  let prev = new Uint32Array(b.length + 1);
-  let curr = new Uint32Array(b.length + 1);
-  for (let j = 0; j <= b.length; j++) prev[j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      curr[j] = Math.min(
-        prev[j] + 1,
-        curr[j - 1] + 1,
-        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
-      );
-    }
-    [prev, curr] = [curr, prev];
-  }
-  return prev[b.length];
-}
-
-function levenshteinNorm(a, b) {
-  const al = a.toLowerCase().trim(),
-    bl = b.toLowerCase().trim();
-  if (al === bl) return 1;
-  const max = Math.max(al.length, bl.length);
-  return max === 0 ? 1 : 1 - levenshteinDistance(al, bl) / max;
-}
-
-function tokenize(s) {
-  return new Set(
-    String(s || "")
-      .replace(/([a-z])([A-Z])/g, "$1 $2")
-      .split(/[\s_\-./\\[\]()+,;:]+/)
-      .map((w) => w.toLowerCase())
-      .filter((w) => w.length > 0 && !STOPWORDS.has(w)),
-  );
-}
-
-function jaccard(setA, setB) {
-  if (!setA.size && !setB.size) return 1;
-  const inter = new Set([...setA].filter((t) => setB.has(t)));
-  return inter.size / (setA.size + setB.size - inter.size);
-}
-
+/** Share of A's tokens that appear in B. Not in utils/levenshtein.js. */
 function tokenCoverage(setA, setB) {
   if (!setA.size) return 0;
   let hit = 0;
@@ -106,13 +69,15 @@ function tokenCoverage(setA, setB) {
   return hit / setA.size;
 }
 
+/**
+ * The shared score, plus the token-coverage term this module wants: a short
+ * column name fully contained in a long field label should score highly, and
+ * neither Jaccard nor Levenshtein says so.
+ */
 function fieldMatchScore(col, signal) {
-  const sa = tokenize(col),
-    sb = tokenize(signal);
   return Math.max(
-    jaccard(sa, sb),
-    levenshteinNorm(col, signal),
-    tokenCoverage(sa, sb),
+    sharedFieldMatchScore(col, signal),
+    tokenCoverage(tokenize(col), tokenize(signal)),
   );
 }
 

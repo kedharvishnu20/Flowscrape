@@ -71,7 +71,23 @@ code the way the rest of the docs did.
 FORM_FILL). All three are unreachable, so they behave identically whether
 removed or kept. Enabling them adds a class of capability that was never asked
 for; deleting them forecloses that. Each module now states plainly that nothing
-calls it, and B-19 — the one dangerous latent bug among them — is fixed.
+calls it, and B-19 — the one dangerous latent bug among them — is fixed. Their
+own defects are still fixed as defects: B-33 (captcha poll recursion) and B-34
+(shared rotation cursor) are done.
+
+**How F-01's nine modules were resolved, one at a time.** "Dead code" is not one
+decision:
+
+| Module                                                                  | Outcome                                                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `data-sources/csv-parser.js`, `json-parser.js`                          | **Deleted.** No data-file input path exists; building one is new product scope, not a fix                           |
+| `utils/deduplicator.js`                                                 | **Deleted.** `_rowKey` in the worker supersedes it (D-07)                                                           |
+| `content/smart-sleep.js`                                                | **Deleted.** `injector.js` is a classic content script and cannot import a module, so it could never have used this |
+| `utils/strings.js`                                                      | **Deleted.** Its only importer never referenced anything on it, and the panel hardcodes its text (F-07)             |
+| `exporters/text-exporters.js`, `stream-writer.js`                       | **Wired up.** The panel's partial-run download uses them, for the save dialog a worker cannot show                  |
+| `utils/levenshtein.js`                                                  | **Wired up.** `field-auto-mapper.js` imported it instead of keeping its own copy                                    |
+| `background/rate-limiter.js`                                            | **Wired up.** The executor paces every page- and network-touching step (F-09)                                       |
+| `content/captcha-detector.js`, `field-auto-mapper.js`, `form-filler.js` | **Kept**, per the decision above                                                                                    |
 
 **Batch 5 — fixed:**
 
@@ -102,6 +118,7 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 | C-10, B-32, D-12, D-13, E-19, **A-10** | _this batch_ | Log level switchable and quiet in a packed build; unreachable content-script handlers removed; a failed flush no longer kills the step; the ring-buffer claim corrected; the finished run stops matching the log filter. A-10 is new — found while testing D-12 |
 | E-05, E-09, E-11, E-12, E-15, E-16, E-17, E-20 | _this batch_ | Drag-and-drop works anywhere in the tree; the panel is keyboard-operable; wires redraw once a frame; the zoom modifier is explained; IF_ELSE can be optional; field rows are editable; key capture counts down; the library shows how full it is |
 | B-28, G-05 | _this batch_ | `utils/pdf-text.js` reads PDFs in the worker with no dependencies; both "use an MCP tool" messages are gone, one of which named a tool that never existed |
+| C-09, F-01, F-02, F-04, F-07, F-09, B-33, B-34 | _this batch_ | Content scripts injected on demand instead of running on every page; the dead half resolved module by module; rate limiting actually paces a run; captcha polling loops; sticky and round-robin get separate cursors |
 
 **Still open** — 27 of 126, all MEDIUM or LOW: B-28, B-32, B-33, B-34; C-09,
 C-10; D-12, D-13; E-05, E-09, E-11, E-12, E-15, E-16, E-17, E-19, E-20; F-01,
@@ -610,6 +627,8 @@ Every file is re-rendered on each change, with no aggregate size indicator to wa
 `service-worker.js`: the handler imports `getApiKey` and `validateApiKey`, then returns only `listProviders()`. Consequently **no key is ever validated** — all six `_validate*` functions in `api-key-manager.js` are dead, and the UI gives no feedback beyond "saved".
 
 ### F-04 · MEDIUM · Only 3 of the README's 15 advertised providers exist in code
+
+**Resolved by the README rewrite** (`62bd304`): it no longer advertises providers the code does not have. Nothing was added to the code.
 
 Implemented: 2captcha, Anti-Captcha, CapSolver (solve + validate), plus Hunter/OpenAI/Gemini validators. Advertised but entirely absent: Clearbit, Abstract API, IPinfo, Claude/Anthropic, DeathByCaptcha, NoCaptchaAI, and **all four notification channels** (Slack, Discord, Telegram, SMTP) — which is why the `notifications` permission is unused (C-08).
 

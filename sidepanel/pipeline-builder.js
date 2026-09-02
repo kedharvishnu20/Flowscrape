@@ -12,6 +12,7 @@ import {
   formatMeta,
   ROW_FORMATS,
 } from "../exporters/row-formatters.js";
+import { exportRows } from "../exporters/text-exporters.js";
 
 const MSG = {
   PIPELINE_START: "pipeline:start",
@@ -230,17 +231,18 @@ async function _downloadRunRows(runId) {
     return;
   }
 
-  const blob = new Blob(["\uFEFF" + formatRows(rows, "csv")], {
-    type: formatMeta("csv").mime,
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `flowscrape_${runId}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  // exporters/text-exporters.js was written for exactly this and nothing
+  // imported it (F-01). It uses the File System Access API's save dialog where
+  // the browser has one — which a service worker cannot show, but the side
+  // panel can — and falls back to a Blob download everywhere else.
+  try {
+    await exportRows(rows, "csv", `flowscrape_${runId}.csv`);
+  } catch (err) {
+    // A cancelled save dialog is a choice, not a failure.
+    if (err?.name === "AbortError") return;
+    notify("error-log", `Download failed: ${err.message}`);
+    return;
+  }
   logToMonitor("info-log", `Downloaded ${rows.length} rows from ${runId}.`);
 }
 
@@ -2829,6 +2831,28 @@ function _confirmEthicsWarnings(warnings) {
 }
 
 // ── Selector picker with mode toggle ──────────────────────────────────────────
+/**
+ * Make sure the content scripts are in the target tab before talking to them.
+ *
+ * They used to be declared for `<all_urls>` and were therefore always present.
+ * Now they are injected on demand (C-09), so the picker has to ask for them.
+ *
+ * @param {number} tabId
+ * @returns {Promise<boolean>} false when the page refuses injection
+ */
+async function _ensureContentReady(tabId) {
+  const res = await chrome.runtime
+    .sendMessage({ type: "content:ensure", payload: { tabId } })
+    .catch(() => null);
+  if (res?.ok) return true;
+  notify(
+    "error-log",
+    res?.error ||
+      "Cannot reach that page. Chrome blocks extensions on chrome:// pages, the Web Store and PDF viewers.",
+  );
+  return false;
+}
+
 async function _pickSelector(stepId, key) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return notify("error-log", "No active tab available.");
@@ -2842,6 +2866,7 @@ async function _pickSelector(stepId, key) {
   if (mode === null) return; // cancelled
 
   try {
+    if (!(await _ensureContentReady(tab.id))) return;
     const resp = await chrome.tabs.sendMessage(tab.id, {
       type: "FS_PICK_SELECTOR",
       payload: { bulk: mode },
@@ -2932,6 +2957,7 @@ async function _addExtractField(stepId) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
   try {
+    if (!(await _ensureContentReady(tab.id))) return;
     const resp = await chrome.tabs.sendMessage(tab.id, {
       type: "FS_PICK_SELECTOR",
       payload: { bulk: true },
@@ -2968,6 +2994,7 @@ async function _addFillField(stepId) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
   try {
+    if (!(await _ensureContentReady(tab.id))) return;
     const resp = await chrome.tabs.sendMessage(tab.id, {
       type: "FS_PICK_SELECTOR",
       payload: { bulk: false },

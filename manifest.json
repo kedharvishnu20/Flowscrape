@@ -24,22 +24,7 @@
     "type": "module"
   },
 
-  "_comment_content_scripts": "page-sniffer.js is NOT declared here. It wraps fetch/XHR in the page's own world and forwards request and response bodies, so it is registered at runtime via chrome.scripting only while an API_SNIFFER run is active, scoped to that run's origin. See _enableSniffer in background/service-worker.js.",
-
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content/smart-extractor.js"],
-      "run_at": "document_idle",
-      "all_frames": false
-    },
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content/injector.js"],
-      "run_at": "document_idle",
-      "all_frames": false
-    }
-  ],
+  "_comment_content_scripts": "There are none, deliberately. content/injector.js and content/smart-extractor.js used to be declared here for <all_urls>, so both ran in every page the user visited — for a tool that acts on one tab at a time (audit C-09). They are injected on demand by _ensureInjected in background/service-worker.js, into the tab a run or a picker is about to touch. page-sniffer.js has always been runtime-registered: it wraps fetch/XHR in the page's own world, so it is scoped to an active API_SNIFFER run's origin. <all_urls> host access is still needed for API steps and robots.txt fetches, which the worker makes, not the page.",
 
   "side_panel": {
     "default_path": "sidepanel/index.html"

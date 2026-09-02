@@ -169,7 +169,10 @@ test("every web-accessible resource actually exists", async () => {
 });
 
 test("declared content scripts and icons exist on disk", async () => {
-  for (const entry of manifest.content_scripts) {
+  // There are no declared content scripts any more — everything is injected on
+  // demand (C-09) — but the check stays, so re-adding one without shipping the
+  // file still fails here.
+  for (const entry of manifest.content_scripts ?? []) {
     for (const f of entry.js) await access(join(ROOT, f));
   }
   for (const path of Object.values(manifest.icons))

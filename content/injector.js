@@ -206,6 +206,10 @@ const OWNED_MESSAGE_TYPES = new Set([
   CE.FORM_FILL_ROW,
   CE.PICK_SELECTOR,
   "step:execute",
+  // Answered so the worker can tell an already-injected tab from a fresh one.
+  // The script is no longer declared for <all_urls> — it is injected on demand
+  // (C-09) — so "is it there yet?" became a question that needed an answer.
+  "fs:ping",
 ]);
 
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
@@ -233,6 +237,9 @@ async function _handleEvent(type, payload, id) {
 
     case "step:execute":
       return _executeStep(payload);
+
+    case "fs:ping":
+      return { ready: true };
 
     default:
       throw new Error(`Unhandled event type: ${type}`);

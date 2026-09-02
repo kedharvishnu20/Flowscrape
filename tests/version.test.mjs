@@ -12,7 +12,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { VERSION } from "../utils/version.js";
-import { S } from "../utils/strings.js";
 import { compilePipeline } from "../script-gen/pipeline-compiler.js";
 
 const json = async (p) =>
@@ -36,9 +35,14 @@ test("every package manifest carries the same version", async () => {
   );
 });
 
-test("the UI strings read the shared constant", () => {
-  assert.equal(S.VERSION, VERSION);
-  assert.equal(S.APP_NAME, `FlowScrape v${VERSION.split(".")[0]}`);
+test("the UI-strings module that held a second copy is gone", async () => {
+  // utils/strings.js carried its own VERSION and APP_NAME. Its only importer
+  // (proxy-manager) never referenced anything on it, and the panel hardcodes
+  // its text in index.html, so 210 lines of strings rendered nowhere (F-07).
+  await assert.rejects(
+    () => import("../utils/strings.js"),
+    /Cannot find module|ERR_MODULE_NOT_FOUND/,
+  );
 });
 
 test("a compiled pipeline is stamped with it", () => {
@@ -75,7 +79,6 @@ test("the MCP server identifies itself with it", async () => {
 test("no source file still hardcodes the version", async () => {
   // Docs and changelogs legitimately name versions; source should not.
   const files = [
-    "../utils/strings.js",
     "../script-gen/pipeline-compiler.js",
     "../background/service-worker.js",
   ];

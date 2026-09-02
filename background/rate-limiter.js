@@ -76,26 +76,25 @@ export async function acquire(domain, count = 1) {
   if (!_buckets.has(domain)) initBucket(domain);
   const bucket = _buckets.get(domain);
 
-  // Refill based on elapsed time
-  _refill(bucket);
+  // Looped, not recursed: under contention this used to build one await frame
+  // per retry, and a busy domain could stack a lot of them.
+  for (;;) {
+    _refill(bucket);
 
-  if (bucket.tokens >= count) {
-    bucket.tokens -= count;
-    logger.debug(MODULE, "token-acquired", {
-      domain,
-      remaining: Math.floor(bucket.tokens),
-    });
-    return;
+    if (bucket.tokens >= count) {
+      bucket.tokens -= count;
+      logger.debug(MODULE, "token-acquired", {
+        domain,
+        remaining: Math.floor(bucket.tokens),
+      });
+      return;
+    }
+
+    const deficit = count - bucket.tokens;
+    const waitMs = Math.ceil((deficit / bucket.refillRate) * 1000);
+    logger.debug(MODULE, "token-wait", { domain, waitMs });
+    await _sleep(waitMs);
   }
-
-  // Calculate wait time until enough tokens
-  const deficit = count - bucket.tokens;
-  const waitMs = Math.ceil((deficit / bucket.refillRate) * 1000);
-  logger.debug(MODULE, "token-wait", { domain, waitMs });
-  await _sleep(waitMs);
-
-  // Recurse (tokens may still be contested)
-  return acquire(domain, count);
 }
 
 /**

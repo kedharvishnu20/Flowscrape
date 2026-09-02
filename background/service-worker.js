@@ -31,6 +31,7 @@
 
 import { logger } from "../utils/logger.js";
 import { extractPdfText } from "../utils/pdf-text.js";
+import { ALL_STEP_TYPES } from "../utils/step-types.js";
 import { initSessionKey } from "./api-key-manager.js";
 import { setApiKey } from "./api-key-manager.js";
 import {
@@ -431,6 +432,51 @@ function _pushCapture(runState, key, entry, bytes, maxBytes, maxCount, runId) {
   return true;
 }
 
+// ── Content script injection ─────────────────────────────────────────────────
+/**
+ * Files the page needs before a step can be dispatched to it.
+ *
+ * These used to be declared in the manifest for `<all_urls>`, so both ran in
+ * every page the user visited — for a tool that operates on one tab at a time
+ * (audit C-09). They are injected on demand now, into the tab a run or a picker
+ * is about to touch, which is the only tab that ever needed them.
+ *
+ * Order matters: injector.js expects the smart extractor to be present.
+ */
+const CONTENT_FILES = ["content/smart-extractor.js", "content/injector.js"];
+
+/**
+ * Make sure the content scripts are live in a tab.
+ *
+ * Injecting twice would re-register the message listener and double every
+ * response, so ask first. A tab that answers is already set up.
+ *
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+async function _ensureInjected(tabId) {
+  if (!tabId) throw new Error("No tab to inject into");
+
+  const alive = await chrome.tabs
+    .sendMessage(tabId, { type: "fs:ping" })
+    .catch(() => null);
+  if (alive?.ok) return;
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: CONTENT_FILES,
+    });
+  } catch (err) {
+    // chrome:// pages, the Web Store, and PDF viewers refuse injection. Saying
+    // which is more use than "Receiving end does not exist".
+    throw new Error(
+      `Cannot run steps on this page (${err.message}). Chrome blocks extensions ` +
+        `on chrome:// pages, the Web Store and PDF viewers.`,
+    );
+  }
+}
+
 // ── Message bus ───────────────────────────────────────────────────────────────
 /** @type {Map<string, (payload: any, sender: chrome.runtime.MessageSender) => Promise<any>>} */
 const _handlers = new Map();
@@ -553,6 +599,17 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
   };
   _runStates.set(runId, runState);
   _startHeartbeat(); // only needed while a run is in flight
+
+  // The content scripts are no longer declared for every page (C-09), so put
+  // them in before the first step needs them. Failing here is better than
+  // failing on step 1 with "Receiving end does not exist".
+  try {
+    await _ensureInjected(runState.tabId);
+  } catch (err) {
+    _runStates.delete(runId);
+    if (_runStates.size === 0) _stopHeartbeat();
+    throw err;
+  }
 
   if (enableSniffer) {
     await _enableSniffer(runId, runState.tabId, payload.targetOrigin);
@@ -1707,6 +1764,29 @@ async function _dispatchStep(step, tabId, runId, ctx) {
 }
 
 /**
+ * Step types that touch the page or the network, and so should be paced.
+ *
+ * WAIT, EXPORT and the two containers are excluded: WAIT is already a delay,
+ * EXPORT is local, and LOOP and IF_ELSE recurse into this same loop, so their
+ * children are paced individually and charging the container too would
+ * double-count.
+ */
+const RATE_LIMITED_STEPS = new Set(
+  ALL_STEP_TYPES.filter(
+    (t) => !["WAIT", "EXPORT", "LOOP", "IF_ELSE"].includes(t),
+  ),
+);
+
+/** The bucket key for a run: its target host, or one shared default. */
+function _runDomain(runState) {
+  try {
+    return new URL(runState?.targetOrigin ?? "").hostname || "default";
+  } catch {
+    return "default";
+  }
+}
+
+/**
  * Run a list of steps in order.
  *
  * @param {object[]} steps
@@ -1734,6 +1814,15 @@ async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
     if (!runState.active) break;
 
     const resolvedStep = _resolveConfig(step, ctx);
+
+    // Pace the run. Ethics gate 3 warns about request volume and nothing
+    // enforced it — rate-limiter.js was imported for two form-fill handlers
+    // that are themselves unreachable (audit F-09), while the emitted Python
+    // told the reader "MIN_DELAY_MS = 800  # Floor enforced by FlowScrape
+    // ethics engine", which was not true of the extension. It is now.
+    if (RATE_LIMITED_STEPS.has(resolvedStep.type)) {
+      await acquire(_runDomain(runState));
+    }
 
     chrome.runtime
       .sendMessage({
@@ -1850,6 +1939,14 @@ async function _executePipeline(runId, pipeline, targetTabId) {
   }
 }
 
+// The picker is driven straight from the panel with chrome.tabs.sendMessage, so
+// it needs its own way to make sure the page is ready first (C-09).
+_registerHandler("content:ensure", async (payload, sender) => {
+  const tabId = payload?.tabId ?? sender.tab?.id;
+  await _ensureInjected(tabId);
+  return { ready: true };
+});
+
 _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
   const { step, tabId } = payload;
   const targetTabId = tabId ?? sender.tab?.id;
@@ -1869,6 +1966,9 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
 
   if (!targetTabId)
     throw new Error("No target tab specified for execution test");
+
+  // Testing a single step is the other path that needs the page set up (C-09).
+  await _ensureInjected(targetTabId);
 
   if (resolvedStep.type === "WEBSITE" || resolvedStep.type === "NAVIGATE") {
     await chrome.tabs.update(targetTabId, { url: resolvedStep.config.url });

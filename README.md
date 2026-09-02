@@ -27,7 +27,7 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 423 tests, ~9s, no browser needed
+npm test        # 442 tests, ~9s, no browser needed
 npm run check   # parses every source file as an ES module
 npm run format  # prettier; `npm run format:check` in CI
 ```
@@ -82,7 +82,7 @@ background/                    Service worker
   llm-extractor.js             AUTO_EXTRACT layer 3 (Gemini Flash)
   api-key-manager.js           AES-GCM key store; captcha dispatch (unreachable)
   proxy-manager.js             Proxy pool (unreachable — see A-05)
-  rate-limiter.js              Token bucket (barely used)
+  rate-limiter.js              Token bucket; paces every acting step
 
 content/                       Page context
   injector.js                  Step dispatcher, selector picker, shadow host
@@ -93,7 +93,6 @@ content/                       Page context
   form-filler.js               (unreachable — see A-07)
   field-auto-mapper.js         (unreachable — see A-07)
   captcha-detector.js          (unreachable — see A-06)
-  smart-sleep.js               (unreachable — injector has its own waits)
 
 sidepanel/
   index.html                   UI and all styles; fonts bundled locally
@@ -107,9 +106,7 @@ utils/
   pdf-text.js                  PDF text extraction, no dependencies
   logger.js                    Structured logger; redacts by key name
   color-utils.js               Zone colours, WCAG contrast
-  strings.js                   UI strings (mostly unused)
-  levenshtein.js               (unreachable)
-  deduplicator.js              (unreachable)
+  levenshtein.js               Similarity scoring for field-auto-mapper
 
 checkpoint/
   idb-schema.js                Owns the IndexedDB schema
@@ -120,7 +117,7 @@ checkpoint/
 exporters/
   row-formatters.js            CSV · JSON · JSONL · TSV · XML · Markdown
   stream-writer.js             File System Access API, Blob fallback
-  text-exporters.js            Save-dialog wrapper (unreachable)
+  text-exporters.js            Save-dialog wrapper, used by the panel
 
 ethics/
   robots-parser.js             RFC 9309 parser
@@ -131,20 +128,19 @@ script-gen/
   python-emitter.js            AST → Python (playwright)
   node-emitter.js              AST → Node (playwright)
 
-data-sources/
-  csv-parser.js                (unreachable — no data-file input exists)
-  json-parser.js               (unreachable)
-
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         423 tests; node:test, jsdom, fake-indexeddb
+tests/                         442 tests; node:test, jsdom, fake-indexeddb
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, manual, template guide, limitations
 examples/                      Pipeline JSON you can import
 ```
 
-Modules marked unreachable are not dead in the sense of being broken — most
-work — but nothing in the product calls them. Each one says so in its own
-header, with the audit finding that explains why.
+Three modules are still marked unreachable: `form-filler.js`,
+`field-auto-mapper.js` and `captcha-detector.js`. They work; nothing in the
+product calls them. Each says so in its own header, with the audit finding that
+explains why, and the decision not to delete or enable them is recorded in
+[`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md). Everything else the audit listed
+as dead has since been deleted or wired up — see the F-01 table there.
 
 ---
 
@@ -195,15 +191,15 @@ Seven gates run before the first step. The side panel runs them as a preflight
 and shows what they found; the service worker runs them again at start, so a
 client that skips the preflight gains nothing.
 
-| Gate                | Effect                                                                        |
-| ------------------- | ----------------------------------------------------------------------------- |
-| 1 robots.txt        | Warn if the path is disallowed (override with the bypass checkbox)            |
-| 2 PII               | Deferred to the content side, which does not implement it — currently a no-op |
-| 3 Rate limit        | Warn above ~100 req/hr estimated                                              |
-| 4 Captcha volume    | Warn above 50 solves/hr estimated                                             |
-| 5 Proxy geo         | Warn if the proxy region differs from the declared one                        |
-| 6 Domain lock       | **Block** if any step's origin differs from the tab's                         |
-| 7 Overlay readiness | Warn about selectors that match nothing on the page                           |
+| Gate                | Effect                                                                                                                          |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| 1 robots.txt        | Warn if the path is disallowed (override with the bypass checkbox)                                                              |
+| 2 PII               | Deferred to the content side, which does not implement it — currently a no-op                                                   |
+| 3 Rate limit        | Warn above ~100 req/hr estimated. The executor also _enforces_ a token bucket per host — burst of 10, then 1 acting step/second |
+| 4 Captcha volume    | Warn above 50 solves/hr estimated                                                                                               |
+| 5 Proxy geo         | Warn if the proxy region differs from the declared one                                                                          |
+| 6 Domain lock       | **Block** if any step's origin differs from the tab's                                                                           |
+| 7 Overlay readiness | Warn about selectors that match nothing on the page                                                                             |
 
 Gate 6 is aggressive: it blocks multi-domain pipelines and any `API` step
 pointing at a third-party host. See audit B-03 — whether it should block, warn,
@@ -243,6 +239,13 @@ Seven, each with a call site, enforced by a test:
 
 `web_accessible_resources` lists five files — the modules the content script
 dynamically imports — not the whole tree.
+
+**No content script is declared.** `injector.js` and `smart-extractor.js` used
+to run on `<all_urls>`, in every page you visited, for a tool that acts on one
+tab at a time (audit C-09). They are injected on demand into the tab a run or a
+picker is about to touch. `<all_urls>` host access is still needed, but for
+`fetch` from the worker — API steps and robots.txt — not for running code in
+pages.
 
 ---
 

@@ -27,7 +27,7 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 405 tests, ~9s, no browser needed
+npm test        # 423 tests, ~9s, no browser needed
 npm run check   # parses every source file as an ES module
 npm run format  # prettier; `npm run format:check` in CI
 ```
@@ -104,6 +104,7 @@ sidepanel/
 utils/
   step-types.js                The step vocabulary — one definition
   version.js                   The version number — one definition
+  pdf-text.js                  PDF text extraction, no dependencies
   logger.js                    Structured logger; redacts by key name
   color-utils.js               Zone colours, WCAG contrast
   strings.js                   UI strings (mostly unused)
@@ -135,7 +136,7 @@ data-sources/
   json-parser.js               (unreachable)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         405 tests; node:test, jsdom, fake-indexeddb
+tests/                         423 tests; node:test, jsdom, fake-indexeddb
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, manual, template guide, limitations
 examples/                      Pipeline JSON you can import
@@ -157,8 +158,12 @@ Twenty-one, defined in [`utils/step-types.js`](utils/step-types.js).
 | Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE`                                                                     |
 | Data     | `EXTRACT` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT`                    |
 
-`PDF_EXTRACTION` is a stub inside the extension: it logs a message pointing at
-the MCP server's `pdf_extract_text`, which does the real work.
+`PDF_EXTRACTION` reads the PDF in the service worker, with no dependencies —
+see [`utils/pdf-text.js`](utils/pdf-text.js). It handles uncompressed and
+FlateDecode content streams, literal and hex strings, and per-font `/ToUnicode`
+CMaps. Encrypted PDFs, scanned pages and CID fonts with no `/ToUnicode` map are
+reported rather than guessed at. The MCP server's `pdf_extract_text` uses pdfjs
+and handles more; the two are independent.
 
 ### Templates
 
@@ -248,12 +253,12 @@ A pipeline can be emitted as a runnable Python or Node script (Playwright).
 The emitters cover **17 of the 21 step types**. The other four need the
 extension itself and cannot be expressed standalone:
 
-| Step              | Why                                              |
-| ----------------- | ------------------------------------------------ |
-| `UPLOAD_ACTIVITY` | Needs file bytes from the storage library        |
-| `API_SNIFFER`     | Needs the in-page fetch/XHR hook                 |
-| `PDF_EXTRACTION`  | Needs the MCP server's PDF tooling               |
-| `AUTO_EXTRACT`    | Needs the three-layer extractor and a Gemini key |
+| Step              | Why                                                       |
+| ----------------- | --------------------------------------------------------- |
+| `UPLOAD_ACTIVITY` | Needs file bytes from the storage library                 |
+| `API_SNIFFER`     | Needs the in-page fetch/XHR hook                          |
+| `PDF_EXTRACTION`  | Playwright drives a browser; it has no PDF text extractor |
+| `AUTO_EXTRACT`    | Needs the three-layer extractor and a Gemini key          |
 
 Those emit an explicit `raise NotImplementedError` / `throw`, and are listed in
 the run log before the download. They used to become a `# TODO` comment, so the

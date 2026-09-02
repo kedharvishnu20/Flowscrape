@@ -101,6 +101,7 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 | F-03, F-10 | _this batch_ | API keys are validated on save, which makes the six validators reachable; the example uses a selector that can match, and `examples/` has a README |
 | C-10, B-32, D-12, D-13, E-19, **A-10** | _this batch_ | Log level switchable and quiet in a packed build; unreachable content-script handlers removed; a failed flush no longer kills the step; the ring-buffer claim corrected; the finished run stops matching the log filter. A-10 is new — found while testing D-12 |
 | E-05, E-09, E-11, E-12, E-15, E-16, E-17, E-20 | _this batch_ | Drag-and-drop works anywhere in the tree; the panel is keyboard-operable; wires redraw once a frame; the zoom modifier is explained; IF_ELSE can be optional; field rows are editable; key capture counts down; the library shows how full it is |
+| B-28, G-05 | _this batch_ | `utils/pdf-text.js` reads PDFs in the worker with no dependencies; both "use an MCP tool" messages are gone, one of which named a tool that never existed |
 
 **Still open** — 27 of 126, all MEDIUM or LOW: B-28, B-32, B-33, B-34; C-09,
 C-10; D-12, D-13; E-05, E-09, E-11, E-12, E-15, E-16, E-17, E-19, E-20; F-01,
@@ -345,6 +346,8 @@ The UI labels the elements-mode field "Safety max (0 = unlimited)" and `_execute
 `service-worker.js` contains the same ~90-line step dispatch chain twice (once for top-level steps, once for loop/branch bodies). They already disagree: the nested `EXPORT` branch calls `finalizeBuffer()` + `initBuffer()` first, the top-level one does not — so exporting from the root exports without flushing the row buffer.
 
 ### B-28 · MEDIUM · `PDF_EXTRACTION` is a stub inside the extension
+
+**Fixed by implementing it, with the limits stated.** `utils/pdf-text.js` handles uncompressed and FlateDecode content streams, literal and hex strings, PDF escapes, and per-font `/ToUnicode` CMaps (`bfchar` and `bfrange`). Encrypted PDFs, scanned pages and CID text whose font ships no `/ToUnicode` map are **reported**, never guessed at — a page it cannot read comes back with a note rather than mojibake. The MCP server keeps its pdfjs-based tool; the two are independent implementations and that is fine.
 
 `_executePdfExtraction` (`service-worker.js`) never parses anything; it logs _"use MCP tool pdf_extract_text"_ and stores `{status: "pending"}`. The step appears in the palette with a full config UI (source, max pages, storeAs) that has no effect. Real extraction exists only in the MCP server.
 

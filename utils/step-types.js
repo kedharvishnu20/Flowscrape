@@ -209,7 +209,9 @@ export const STEP_TYPES = Object.freeze({
       maxPages: 50,
       storeAs: "pdf_text",
     },
-    // Not expressible in an exported script: needs the MCP server's PDF tooling.
+    // Not expressible in an exported script: Playwright drives a browser and
+    // has no PDF text extractor. The extension reads PDFs itself — see
+    // utils/pdf-text.js — but that cannot be emitted as standalone code.
     exportable: false,
   },
   AUTO_EXTRACT: {

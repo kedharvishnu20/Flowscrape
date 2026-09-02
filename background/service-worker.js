@@ -30,6 +30,7 @@
  */
 
 import { logger } from "../utils/logger.js";
+import { extractPdfText } from "../utils/pdf-text.js";
 import { initSessionKey } from "./api-key-manager.js";
 import { setApiKey } from "./api-key-manager.js";
 import {
@@ -688,46 +689,65 @@ async function _executePdfExtraction(config = {}, runId) {
   const maxPages = Number(config.maxPages) || 50;
   const storeAs = String(config.storeAs || "pdf_text").trim() || "pdf_text";
 
-  let fileBase64;
-  let fileUrl;
+  let bytes;
 
   if (source === "file") {
-    // Load from storage files
     const fileId = String(config.fileId || "").trim();
     const stored = await chrome.storage.local.get(STORAGE_FILES_KEY);
     const library = Array.isArray(stored?.[STORAGE_FILES_KEY])
       ? stored[STORAGE_FILES_KEY]
       : [];
     const file = library.find((f) => f.id === fileId);
-    if (!file) {
-      throw new Error(`PDF file not found in storage: ${fileId}`);
-    }
-    fileBase64 = file.dataUrl;
+    if (!file) throw new Error(`PDF file not found in storage: ${fileId}`);
+    bytes = _dataUrlToBytes(file.dataUrl);
   } else {
-    // Use URL
-    fileUrl = String(config.url || "").trim();
+    const fileUrl = String(config.url || "").trim();
     if (!fileUrl) {
       throw new Error("PDF_EXTRACTION requires a PDF URL or file selection");
     }
+    // Same origin rules as any other fetch the run makes.
+    await _assertOriginAllowed(
+      fileUrl,
+      _runStates.get(runId),
+      "PDF_EXTRACTION",
+    );
+    const res = await fetch(fileUrl);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch PDF: ${res.status} ${res.statusText}`);
+    }
+    bytes = new Uint8Array(await res.arrayBuffer());
   }
 
-  // Call MCP pdf_extract_text tool via sendMessage to a background context
-  // We use chrome.runtime.sendMessage to notify any listening context
-  // In practice, this would be handled by an external MCP call or built-in PDF parser
+  // This used to log "use MCP tool pdf_extract_text" and store
+  // {status: "pending"} — an instruction the user cannot act on, because there
+  // is no bridge from the extension to the MCP server (B-28, G-05). It extracts
+  // now, in the worker, with no dependencies.
+  const result = await extractPdfText(bytes, { maxPages });
 
-  // For now, return a placeholder that says to use the MCP tool
+  for (const warning of result.warnings) {
+    _broadcastLog("warn-log", `PDF_EXTRACTION: ${warning}`, runId);
+  }
+  if (result.truncated) {
+    _broadcastLog(
+      "warn-log",
+      `PDF_EXTRACTION: read ${result.pages.length} of ${result.pageCount} pages (maxPages is ${maxPages}).`,
+      runId,
+    );
+  }
   _broadcastLog(
-    "warn-log",
-    `PDF_EXTRACTION: Use MCP tool "pdf_extract_text" with source="${source}" to extract from PDF.`,
+    "info-log",
+    `PDF_EXTRACTION: ${result.text.length} characters from ${result.pages.length} page(s).`,
     runId,
   );
 
   return {
     [storeAs]: {
-      status: "pending",
-      message: "Use MCP pdf_extract_text tool for extraction",
+      text: result.text,
+      pages: result.pages,
+      pageCount: result.pageCount,
+      truncated: result.truncated,
+      warnings: result.warnings,
       source,
-      maxPages,
     },
   };
 }
@@ -1340,11 +1360,15 @@ async function _executeUploadActivityStep(config = {}, tabId, runId = null) {
     throw new Error("No target tab for UPLOAD_ACTIVITY.");
   }
 
-  // Warn if restricted site - use MCP tool instead
+  // This used to say to use MCP tool "upload_file_to_site", which is not one of
+  // the server's registered tools and never was — and there is no bridge from
+  // the extension to the MCP server anyway, so it was an instruction nobody
+  // could act on (G-05). Say what is actually true instead.
   if (RESTRICTED_UPLOAD_SITES[domain]) {
     _broadcastLog(
       "warn-log",
-      `⚠️ ${domain} blocks script-driven uploads. Use MCP tool "upload_file_to_site" for automation support.`,
+      `⚠️ ${domain} blocks script-driven file uploads. The step will try anyway; ` +
+        `if it fails, the file has to be attached by hand.`,
       runId,
     );
   }

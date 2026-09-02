@@ -100,6 +100,7 @@ calls it, and B-19 — the one dangerous latent bug among them — is fixed.
 | I-02, I-04, G-06, G-07, G-08 | `92e2ac7` | Prettier config and `npm run format`; one `utils/version.js` with a test that fails on drift; MCP search takes a file-name pattern and says a glob is not a directory; `pipeline_report` stops emitting two scripts to measure them. The MCP emit tools also gained the B-14/B-16 handling |
 | F-03, F-10 | _this batch_ | API keys are validated on save, which makes the six validators reachable; the example uses a selector that can match, and `examples/` has a README |
 | C-10, B-32, D-12, D-13, E-19, **A-10** | _this batch_ | Log level switchable and quiet in a packed build; unreachable content-script handlers removed; a failed flush no longer kills the step; the ring-buffer claim corrected; the finished run stops matching the log filter. A-10 is new — found while testing D-12 |
+| E-05, E-09, E-11, E-12, E-15, E-16, E-17, E-20 | _this batch_ | Drag-and-drop works anywhere in the tree; the panel is keyboard-operable; wires redraw once a frame; the zoom modifier is explained; IF_ELSE can be optional; field rows are editable; key capture counts down; the library shows how full it is |
 
 **Still open** — 27 of 126, all MEDIUM or LOW: B-28, B-32, B-33, B-34; C-09,
 C-10; D-12, D-13; E-05, E-09, E-11, E-12, E-15, E-16, E-17, E-19, E-20; F-01,

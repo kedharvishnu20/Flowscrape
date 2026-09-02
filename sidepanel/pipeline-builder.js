@@ -113,6 +113,7 @@ async function init() {
   bindStorageControls();
   bindPalette();
   bindDelegatedEvents();
+  bindKeyboardActivation();
   initBoardSurface();
 
   const savedState = await chrome.storage.local.get([
@@ -460,6 +461,24 @@ function _updateActivity(activityId, patch) {
 
 function renderStoragePanel() {
   const listEl = document.getElementById("storage-file-list");
+
+  // How full the library is. Files are base64 in chrome.storage.local against a
+  // fixed budget, and there was no aggregate anywhere — the first sign of
+  // trouble was a save being refused (E-20).
+  const usageEl = document.getElementById("storage-usage");
+  if (usageEl) {
+    const used = _storageBytesUsed();
+    const pct = Math.min(100, Math.round((used / STORAGE_BUDGET_BYTES) * 100));
+    usageEl.textContent = _storageFiles.length
+      ? `${_storageFiles.length} file${_storageFiles.length === 1 ? "" : "s"} · ${_mb(used)} of ${_mb(STORAGE_BUDGET_BYTES)} (${pct}%)`
+      : `0 files · ${_mb(STORAGE_BUDGET_BYTES)} available`;
+    usageEl.style.color =
+      pct >= 90
+        ? "var(--red)"
+        : pct >= 70
+          ? "var(--yellow)"
+          : "var(--text-dim)";
+  }
 
   if (listEl) {
     if (!_storageFiles.length) {
@@ -998,7 +1017,13 @@ function initBoardSurface() {
     "wheel",
     (e) => {
       if (!elBoardViewport) return;
-      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) return;
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        // A plain wheel scrolls the board rather than zooming, which is what a
+        // long pipeline needs. Saying so once beats leaving trackpad users to
+        // conclude zoom is broken (E-12).
+        _hintZoomModifier();
+        return;
+      }
       e.preventDefault();
       const rect = elBoardViewport.getBoundingClientRect();
       const cx = e.clientX - rect.left;
@@ -1038,7 +1063,7 @@ function initBoardSurface() {
   };
   elBoardViewport.addEventListener("pointerup", stopPan);
   elBoardViewport.addEventListener("pointercancel", stopPan);
-  window.addEventListener("resize", () => _renderBoardWires());
+  window.addEventListener("resize", () => _scheduleWireRender());
 
   _applyBoardTransform();
 }
@@ -1065,7 +1090,29 @@ function _applyBoardTransform() {
   if (elBoardZoomLabel) {
     elBoardZoomLabel.textContent = `${Math.round(_boardState.scale * 100)}%`;
   }
-  _renderBoardWires();
+  _scheduleWireRender();
+}
+
+/** Pending rAF handle for the wire redraw. */
+let _wireFrame = null;
+
+/**
+ * Redraw the wires at most once per frame.
+ *
+ * _renderBoardWires regenerates the entire SVG as a string and assigns it to
+ * innerHTML — measuring every node, re-parsing the markup, rebuilding the whole
+ * subtree. Pointer-move panning called it on every single move event, with no
+ * throttle, so a drag across the board did that work dozens of times per frame
+ * (E-11). Coalescing to one redraw per animation frame is the entire fix; the
+ * transform itself is a CSS property and stays synchronous, so panning still
+ * tracks the pointer exactly.
+ */
+function _scheduleWireRender() {
+  if (_wireFrame !== null) return;
+  _wireFrame = requestAnimationFrame(() => {
+    _wireFrame = null;
+    _renderBoardWires();
+  });
 }
 
 function _fitBoardToContent() {
@@ -1291,6 +1338,7 @@ function populatePalette() {
     html += `</div></div>`;
   }
   elPaletteContent.innerHTML = html;
+  _makeKeyboardAccessible(elPaletteContent);
 }
 
 // ── Deep step helpers ─────────────────────────────────────────────────────────
@@ -1467,6 +1515,7 @@ function renderPipeline() {
       <div>Start building your flow.</div>
       <button class="btn btn-primary" style="margin-top:16px;" data-action="open-palette" data-index="-1" data-parent-id="" data-branch="">+ Add First Step</button></div>`;
     if (elPipelineWires) elPipelineWires.innerHTML = "";
+    _makeKeyboardAccessible(elCanvas);
     _applyBoardTransform();
     return;
   }
@@ -1477,6 +1526,7 @@ function renderPipeline() {
   elCanvas.innerHTML = html;
   bindConfigInputs();
   bindDragAndDrop();
+  _makeKeyboardAccessible(elCanvas);
   requestAnimationFrame(() => {
     if (!_boardState.fittedOnce) _fitBoardToContent();
     else _applyBoardTransform();
@@ -1596,7 +1646,11 @@ function generateConfigHtml(step) {
       c.url || "",
     );
     html += toggle(step, "wait", "Wait for page load");
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1639,7 +1693,11 @@ function generateConfigHtml(step) {
       "exposeBodyAsExtracted",
       "Merge JSON body into extracted context",
     );
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1652,7 +1710,11 @@ function generateConfigHtml(step) {
       "fallbackToLoopItem",
       "Inside a loop, click the item itself if the selector misses",
     );
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1680,8 +1742,8 @@ function generateConfigHtml(step) {
       html += `<div id="fill-fields-${step.id}" style="margin-bottom:8px;">`;
       (c.fields || []).forEach((f, fi) => {
         html += `<div class="fill-field-row">
-          <input type="text" value="${esc(f.selector || "")}" disabled placeholder="selector" style="flex:1.5;font-size:10px;">
-          <input type="text" value="${esc(f.value || "")}"    disabled placeholder="value"    style="flex:2;">
+          <input type="text" class="field-edit" data-id="${step.id}" data-index="${fi}" data-prop="selector" value="${esc(f.selector || "")}" placeholder="selector" style="flex:1.5;font-size:10px;">
+          <input type="text" class="field-edit" data-id="${step.id}" data-index="${fi}" data-prop="value" value="${esc(f.value || "")}" placeholder="value" style="flex:2;">
           <button class="btn btn-icon" style="color:var(--red);" data-action="remove-fill-field" data-id="${step.id}" data-index="${fi}">✕</button>
         </div>`;
       });
@@ -1693,7 +1755,11 @@ function generateConfigHtml(step) {
       html += `<label style="margin-top:6px;">Submit Button Selector (optional)</label>`;
       html += selectorRow(step, "submitSelector");
     }
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1704,7 +1770,11 @@ function generateConfigHtml(step) {
       <div class="key-display" id="key-disp-${step.id}">${esc(c.key || "Not set")}</div>
       <button class="btn key-register-btn" id="key-reg-${step.id}" data-action="register-key" data-id="${step.id}">🔴 Register Key</button>
     </div>`;
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1749,7 +1819,11 @@ function generateConfigHtml(step) {
       <option value="skip" ${(c.onFail || "skip") === "skip" ? "selected" : ""}>Skip and continue</option>
       <option value="stop" ${c.onFail === "stop" ? "selected" : ""}>Stop loop, keep data</option>
     </select>`;
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1778,6 +1852,14 @@ function generateConfigHtml(step) {
     }
     html += `<p style="font-size:11px;color:var(--text-dim);margin-top:8px;margin-bottom:0;">
       Add steps in the <b>IF ✓</b> and <b>ELSE ✗</b> blocks below the card.</p>`;
+    // Every other step type ends with this; IF_ELSE was the only one without it,
+    // so a branch whose selector was missing took the whole run down with no way
+    // to mark it tolerable (E-15).
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1793,7 +1875,11 @@ function generateConfigHtml(step) {
     } else {
       html += field(step, "amount", "Amount", "number", c.amount ?? 500);
     }
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1805,7 +1891,11 @@ function generateConfigHtml(step) {
           `<option value="${f}" ${(c.format || "csv") === f ? "selected" : ""}>${esc(formatMeta(f).label)}</option>`,
       ).join("")}
     </select>`;
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1844,7 +1934,11 @@ function generateConfigHtml(step) {
       html += `</div>`;
     }
 
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1853,8 +1947,8 @@ function generateConfigHtml(step) {
     html += `<div id="extract-fields-${step.id}">`;
     (c.fields || []).forEach((f, fi) => {
       html += `<div class="flex gap-2" style="margin-bottom:4px;align-items:center;">
-        <input type="text" value="${esc(f.name || "")}"     disabled style="flex:1;">
-        <input type="text" value="${esc(f.selector || "")}" disabled style="flex:2;">
+        <input type="text" class="field-edit" data-id="${step.id}" data-index="${fi}" data-prop="name" value="${esc(f.name || "")}" placeholder="name" style="flex:1;">
+        <input type="text" class="field-edit" data-id="${step.id}" data-index="${fi}" data-prop="selector" value="${esc(f.selector || "")}" placeholder="selector" style="flex:2;">
         <select class="extract-type-select" data-id="${step.id}" data-index="${fi}" style="flex:0.8;font-size:11px;padding:4px 6px;">
           <option value="text" ${(f.type || "text") === "text" ? "selected" : ""}>Text</option>
           <option value="html" ${f.type === "html" ? "selected" : ""}>HTML</option>
@@ -1878,7 +1972,11 @@ function generateConfigHtml(step) {
       <div style="flex:1"><label style="margin-top:0;">Field Name</label><input type="text" id="new-ex-name-${step.id}" placeholder="e.g. price"></div>
       <button class="btn btn-primary" data-action="add-extract-field" data-id="${step.id}" style="height:28px;">🎯 Pick Element</button>
     </div>`;
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1929,7 +2027,11 @@ function generateConfigHtml(step) {
       "text",
       c.storeAs || "pdf_text",
     );
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -1973,7 +2075,11 @@ function generateConfigHtml(step) {
       <b>Tip:</b> Use this step inside a LOOP to extract products from multiple pages automatically.
     </div>`;
 
-    html += toggle(step, "optional", "optional");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
     return html;
   }
 
@@ -2183,6 +2289,7 @@ function _rerenderCardConfig(step) {
 
     configEl.innerHTML = generateConfigHtml(step);
     bindConfigInputs(configEl);
+    _makeKeyboardAccessible(configEl);
 
     if (restore) {
       const again = configEl.querySelector(`[data-key="${restore.key}"]`);
@@ -2234,17 +2341,128 @@ function bindDragAndDrop() {
       if (!_dragSourceId) return;
       const targetId = w.dataset.id;
       if (!targetId || targetId === _dragSourceId) return;
-      // Only reorder within the same parent for now (root level)
-      const srcIdx = _pipeline.steps.findIndex((s) => s.id === _dragSourceId);
-      const tgtIdx = _pipeline.steps.findIndex((s) => s.id === targetId);
-      if (srcIdx !== -1 && tgtIdx !== -1) {
-        const [moved] = _pipeline.steps.splice(srcIdx, 1);
-        _pipeline.steps.splice(tgtIdx, 0, moved);
-        saveState();
-        renderPipeline();
-      }
+      const moved = _moveStep(_dragSourceId, targetId);
       _dragSourceId = null;
+      if (!moved) return;
+      saveState();
+      renderPipeline();
     });
+  });
+}
+
+/**
+ * Find the list a step lives in, and its index in it.
+ *
+ * @param {object[]} steps
+ * @param {string} id
+ * @returns {{ list: object[], index: number, parent: object|null } | null}
+ */
+function _locateStep(steps, id, parent = null) {
+  for (let i = 0; i < steps.length; i++) {
+    if (steps[i].id === id) return { list: steps, index: i, parent };
+    for (const key of ["children", "ifBranch", "elseBranch"]) {
+      const sub = steps[i][key];
+      if (!Array.isArray(sub)) continue;
+      const found = _locateStep(sub, id, steps[i]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/** Is `id` inside `step`'s own subtree? */
+function _containsStep(step, id) {
+  for (const key of ["children", "ifBranch", "elseBranch"]) {
+    for (const child of step[key] ?? []) {
+      if (child.id === id || _containsStep(child, id)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Move a step to sit where another one is, anywhere in the tree.
+ *
+ * bindDragAndDrop looked both ids up in _pipeline.steps only, so dragging a
+ * step inside a LOOP or an IF/ELSE branch — or between a branch and the root —
+ * silently did nothing, while the drop target still drew the accent outline and
+ * signalled success (E-05).
+ *
+ * @param {string} sourceId
+ * @param {string} targetId
+ * @returns {boolean} false when the move is not possible
+ */
+function _moveStep(sourceId, targetId) {
+  const src = _locateStep(_pipeline.steps, sourceId);
+  if (!src) return false;
+
+  // A container cannot be dropped inside itself; that detaches the subtree.
+  if (_containsStep(src.list[src.index], targetId)) {
+    notify("warn-log", "A step cannot be moved inside itself.");
+    return false;
+  }
+
+  const [moved] = src.list.splice(src.index, 1);
+
+  // Located after the removal, so the target index is the post-removal one.
+  const tgt = _locateStep(_pipeline.steps, targetId);
+  if (!tgt) {
+    src.list.splice(src.index, 0, moved); // put it back
+    return false;
+  }
+  tgt.list.splice(tgt.index, 0, moved);
+  return true;
+}
+
+/** Shown at most once per panel session. */
+let _zoomHintShown = false;
+
+/** Tell the user how to zoom, the first time they try it the obvious way. */
+function _hintZoomModifier() {
+  if (_zoomHintShown) return;
+  _zoomHintShown = true;
+  const key = navigator.platform?.startsWith("Mac") ? "⌘" : "Ctrl";
+  notify("info-log", `Hold ${key} or Shift while scrolling to zoom the board.`);
+}
+
+// ── Keyboard access ───────────────────────────────────────────────────────────
+/**
+ * Elements that behave like buttons but are not buttons.
+ *
+ * The board is built from divs with click handlers — nav pills, node headers,
+ * the + insert affordances, accordion headers, palette items — none of which had
+ * a role, a tabindex or any keyboard activation, so the panel could not be
+ * operated without a mouse (E-09). Rather than hand-editing every generation
+ * site, they are stamped after each render and activated by one delegated
+ * handler, which also covers markup added later.
+ */
+const KEYBOARD_ACTIVATABLE =
+  ".nav-pill, .node-header, .insert-step, .accordion-header, .palette-item, [data-action]";
+
+/** Anything the browser already makes focusable and Enter-activatable. */
+const NATIVELY_INTERACTIVE = "button, a[href], input, select, textarea";
+
+/**
+ * Give the div-buttons in `root` a role and a tab stop.
+ * @param {ParentNode} [root]
+ */
+function _makeKeyboardAccessible(root = document) {
+  for (const el of root.querySelectorAll(KEYBOARD_ACTIVATABLE)) {
+    if (el.matches(NATIVELY_INTERACTIVE)) continue;
+    if (!el.hasAttribute("role")) el.setAttribute("role", "button");
+    if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+  }
+}
+
+/** Enter and Space activate a div-button, the way they do a real one. */
+function bindKeyboardActivation() {
+  document.body.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    const el = e.target.closest?.(KEYBOARD_ACTIVATABLE);
+    if (!el || el.matches(NATIVELY_INTERACTIVE)) return;
+    // Space scrolls the page by default, and Enter inside a form submits it.
+    e.preventDefault();
+    el.click();
   });
 }
 
@@ -2351,6 +2569,18 @@ function bindDelegatedEvents() {
     }
 
     if (!(target instanceof HTMLInputElement)) return;
+
+    // Field rows used to render as `disabled` inputs — greyed out and
+    // uneditable — so fixing a typo in a selector meant deleting the row and
+    // re-picking the element (E-16).
+    if (target.classList.contains("field-edit")) {
+      const step = _findStepDeep(_pipeline.steps, target.dataset.id);
+      const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
+      if (!field) return;
+      field[target.dataset.prop] = target.value;
+      saveState();
+      return;
+    }
 
     if (target.classList.contains("extract-attr-input")) {
       const step = _findStepDeep(_pipeline.steps, target.dataset.id);
@@ -2798,13 +3028,16 @@ function _uploadStepToggleFile(stepId, fileId, checked) {
 }
 
 // ── Keyboard register ─────────────────────────────────────────────────────────
+/** How long the panel waits for a keystroke before giving up. */
+const KEY_CAPTURE_SECONDS = 15;
+
 function _registerKey(stepId) {
   if (_keyListening) return;
   _keyListening = true;
   const btn = document.getElementById(`key-reg-${stepId}`);
   const disp = document.getElementById(`key-disp-${stepId}`);
   if (btn) {
-    btn.textContent = "⏺ Press key(s)...";
+    btn.textContent = `⏺ Press key(s)… ${KEY_CAPTURE_SECONDS}s`;
     btn.classList.add("listening");
   }
 
@@ -2812,6 +3045,7 @@ function _registerKey(stepId) {
     // Ignore standalone modifier presses
     if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
     e.preventDefault();
+    clearInterval(countdown);
     e.stopPropagation();
 
     // Build combo string e.g. "Ctrl+Shift+Enter"
@@ -2838,7 +3072,19 @@ function _registerKey(stepId) {
   };
 
   document.addEventListener("keydown", onKey, true);
-  setTimeout(() => {
+
+  // The button used to sit on "⏺ Press key(s)..." and then silently revert
+  // after 15 seconds, with nothing to say why (E-17). Count it down instead,
+  // and say what happened when it runs out.
+  let remaining = KEY_CAPTURE_SECONDS;
+  const countdown = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0) {
+      if (_keyListening && btn)
+        btn.textContent = `⏺ Press key(s)… ${remaining}s`;
+      return;
+    }
+    clearInterval(countdown);
     if (!_keyListening) return;
     document.removeEventListener("keydown", onKey, true);
     _keyListening = false;
@@ -2846,7 +3092,11 @@ function _registerKey(stepId) {
       btn.textContent = "🔴 Register Key";
       btn.classList.remove("listening");
     }
-  }, 15000);
+    notify(
+      "warn-log",
+      "No key pressed — key capture timed out. Click to retry.",
+    );
+  }, 1000);
 }
 
 // ── System listeners ──────────────────────────────────────────────────────────

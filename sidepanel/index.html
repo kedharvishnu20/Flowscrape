@@ -1033,6 +1033,24 @@
         color: var(--text-main);
       }
 
+      /* Focus, for the div-buttons the panel is built from (E-09). Without a
+       visible ring, keyboard navigation is technically possible and practically
+       useless. */
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: 3px;
+      }
+
+      .nav-pill:focus-visible,
+      .palette-item:focus-visible,
+      .node-header:focus-visible,
+      .insert-step:focus-visible,
+      .accordion-header:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
       /* Toasts — the replacement for alert() (E-06) */
       #fs-toasts {
         position: fixed;
@@ -1567,9 +1585,15 @@
         </div>
         <div class="nav-pills">
           <div class="nav-pill active" data-tab="pipeline">Flow</div>
-          <div class="nav-pill" data-tab="monitor">Run</div>
-          <div class="nav-pill" data-tab="storage">Storage</div>
-          <div class="nav-pill" data-tab="config">Settings</div>
+          <div class="nav-pill" role="tab" tabindex="0" data-tab="monitor">
+            Run
+          </div>
+          <div class="nav-pill" role="tab" tabindex="0" data-tab="storage">
+            Storage
+          </div>
+          <div class="nav-pill" role="tab" tabindex="0" data-tab="config">
+            Settings
+          </div>
         </div>
       </header>
 
@@ -1817,6 +1841,13 @@
                 </button>
               </div>
               <input id="input-storage-files" type="file" multiple hidden />
+              <!-- The list showed no aggregate at all, so there was no warning
+                   before a save hit the quota (E-20, see C-12). -->
+              <div
+                id="storage-usage"
+                class="storage-meta"
+                style="margin: 8px 0"
+              ></div>
               <div id="storage-file-list" class="storage-list"></div>
             </div>
           </div>

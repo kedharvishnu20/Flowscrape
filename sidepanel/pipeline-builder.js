@@ -7,6 +7,7 @@ import {
   defaultConfig,
   isKnownStepType,
 } from "../utils/step-types.js";
+import { TRANSFORMS, isValidRegex } from "../utils/value-transforms.js";
 import {
   formatRows,
   formatMeta,
@@ -2011,6 +2012,35 @@ function generateConfigHtml(step) {
             style="flex:2.8;font-size:11px;">
         </div>`;
       }
+
+      // Clean the value here, rather than in a spreadsheet afterwards.
+      const picked = Array.isArray(f.transform) ? f.transform[0] : "";
+      html += `<div class="flex gap-2" style="margin:-2px 0 6px 0;align-items:center;">
+        <span style="flex:1;font-size:10px;color:var(--text-dim);text-align:right;">clean up</span>
+        <select class="extract-transform-select" data-id="${step.id}" data-index="${fi}" style="flex:2.8;font-size:11px;padding:4px 6px;">
+          <option value="">As it appears on the page</option>
+          ${Object.entries(TRANSFORMS)
+            .map(
+              ([name, meta]) =>
+                `<option value="${name}" ${picked === name ? "selected" : ""}>${esc(meta.label)}</option>`,
+            )
+            .join("")}
+        </select>
+      </div>`;
+      if (picked) html += hint(TRANSFORMS[picked]?.help ?? "");
+      if (picked === "regex") {
+        // Told now, in the box, rather than as an empty column after a run.
+        const bad = f.regexPattern && !isValidRegex(f.regexPattern);
+        html += `<div class="flex gap-2" style="margin:-6px 0 6px 0;align-items:center;">
+          <span style="flex:1;font-size:10px;color:var(--text-dim);text-align:right;">pattern</span>
+          <input type="text" class="extract-regex-input" data-id="${step.id}" data-index="${fi}"
+            value="${esc(f.regexPattern || "")}" placeholder="SKU: (\\S+)"
+            style="flex:2.8;font-size:11px;${bad ? "border-color:var(--red);" : ""}">
+        </div>`;
+        if (bad) {
+          html += `<p style="font-size:11px;color:var(--red);margin:-4px 0 8px 0;">Not a valid pattern — this field would come back empty.</p>`;
+        }
+      }
     });
     html += `</div>
     <div class="flex gap-2" style="margin-top:12px;align-items:flex-end;">
@@ -2292,6 +2322,80 @@ function generateConfigHtml(step) {
         "in the run monitor and in the export.",
     );
     html += toggle(step, "enabled", "Record network requests during this run");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
+  // ── PAGE_DATA ──
+  if (step.type === "PAGE_DATA") {
+    html += `<div style="background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.35);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">🧾 The page's own data — no selectors</div>
+      <div style="font-size:11px;color:var(--text-dim);line-height:1.5;">
+        Most sites publish their content as structured data for search engines:
+        JSON-LD, microdata, Open Graph. This reads it straight off the page.
+        It is already typed and named, and it does not break when the site
+        changes its CSS.<br><br>
+        Best for a <b>single record</b> — a product, an article, a job, a
+        recipe — which Detect Table cannot help with, because there is nothing
+        repeating to find.
+      </div>
+    </div>`;
+
+    const src = c.source || "auto";
+    html += `<label>Where to read from</label>
+    <select id="cfg-${step.id}-source" data-id="${step.id}" data-key="source" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="auto"      ${src === "auto" ? "selected" : ""}>Anywhere it can (recommended)</option>
+      <option value="jsonld"    ${src === "jsonld" ? "selected" : ""}>JSON-LD only</option>
+      <option value="microdata" ${src === "microdata" ? "selected" : ""}>Microdata only</option>
+      <option value="meta"      ${src === "meta" ? "selected" : ""}>Page tags only (Open Graph)</option>
+    </select>`;
+    if (src === "auto") {
+      html += hint(
+        "Tries JSON-LD first, then microdata. It does not merge the two — a " +
+          "site publishing both publishes the same record twice, and merging " +
+          "would double every row.",
+      );
+    }
+
+    if (src !== "meta") {
+      html += field(
+        step,
+        "type",
+        "Keep only this type (optional)",
+        "text",
+        c.type || "",
+      );
+      html += hint(
+        "A Schema.org type: Product, Article, Recipe, JobPosting, Event, " +
+          "LocalBusiness. Leave blank to keep everything the page publishes.",
+      );
+    }
+
+    html += toggle(step, "flatten", "Flatten into one row per record");
+    html += hint(
+      c.flatten === false
+        ? "Off: records keep their shape. Good for the JSON export, but a " +
+            "spreadsheet has no cell for a nested object."
+        : "Nested values become columns like offers.price, so the rows fit a " +
+            "spreadsheet. Turn off to keep the original shape for JSON.",
+    );
+
+    html += field(
+      step,
+      "storeAs",
+      "Also store the whole reading as",
+      "text",
+      c.storeAs || "pageData",
+    );
+    html += hint(
+      "Later steps can reference it — {{pageData.meta.og:title}} — alongside " +
+        "the rows it produced.",
+    );
+
     html += toggle(
       step,
       "optional",
@@ -2798,6 +2902,23 @@ function bindDelegatedEvents() {
       return;
     }
 
+    if (
+      target instanceof HTMLSelectElement &&
+      target.classList.contains("extract-transform-select")
+    ) {
+      const step = _findStepDeep(_pipeline.steps, target.dataset.id);
+      const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
+      if (!field) return;
+      // Stored as a list because the engine chains them. The UI offers one for
+      // now; a stored list means offering a second later changes no data shape.
+      if (target.value) field.transform = [target.value];
+      else delete field.transform;
+      if (target.value !== "regex") delete field.regexPattern;
+      saveState();
+      _rerenderCardConfig(step); // show the help, and the pattern box
+      return;
+    }
+
     if (!(target instanceof HTMLInputElement)) return;
 
     // Field rows used to render as `disabled` inputs — greyed out and
@@ -2809,6 +2930,20 @@ function bindDelegatedEvents() {
       if (!field) return;
       field[target.dataset.prop] = target.value;
       saveState();
+      return;
+    }
+
+    if (target.classList.contains("extract-regex-input")) {
+      const step = _findStepDeep(_pipeline.steps, target.dataset.id);
+      const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
+      if (!field) return;
+      const wasBad = field.regexPattern && !isValidRegex(field.regexPattern);
+      field.regexPattern = target.value;
+      saveState();
+      // Only when the verdict changed: re-rendering on every keystroke would
+      // take the caret with it, which is what E-10 was about.
+      const isBad = target.value && !isValidRegex(target.value);
+      if (Boolean(wasBad) !== Boolean(isBad)) _rerenderCardConfig(step);
       return;
     }
 
@@ -3201,16 +3336,87 @@ async function _detectStructure() {
 
   const { candidates = [] } = res.result ?? {};
   if (!candidates.length) {
-    notify(
-      "warn-log",
-      "No repeating tables found. This page may show a single record, or build its list in a way that has no shared structure — pick fields by hand instead.",
-    );
+    // A single-record page — a product, an article, a listing — has nothing
+    // repeating to find, and that is most of the pages people point this at
+    // after a list. Before sending them off to pick elements by hand, look for
+    // the structured data the page probably already publishes: it needs no
+    // selectors at all and does not break when the site's CSS changes.
+    await _offerPageData(tab.id);
     return;
   }
 
   const chosen = await _chooseDetectedTable(candidates);
   if (!chosen) return;
   _insertDetectedTable(chosen);
+}
+
+/**
+ * The fallback when there is no repeating structure: read the page's own data.
+ *
+ * Only offered when there is actually something to read. Suggesting a step that
+ * would come back empty is worse than saying nothing, because the user spends a
+ * run finding out.
+ *
+ * @param {number} tabId
+ */
+async function _offerPageData(tabId) {
+  const res = await chrome.runtime
+    .sendMessage({
+      type: "step:execute",
+      payload: {
+        step: { id: "probe", type: "PAGE_DATA", config: { source: "auto" } },
+        tabId,
+      },
+    })
+    .catch(() => null);
+
+  const data = res?.ok ? res.result : null;
+  if (!data?.found) {
+    notify(
+      "warn-log",
+      "No repeating tables here, and the page publishes no structured data either. " +
+        "Pick the fields you want by hand.",
+    );
+    return;
+  }
+
+  const types = [
+    ...new Set(
+      (data.records ?? [])
+        .map((r) => (Array.isArray(r["@type"]) ? r["@type"][0] : r["@type"]))
+        .filter(Boolean),
+    ),
+  ];
+  const what = types.length
+    ? `${types.join(", ")} data`
+    : `${Object.keys(data.meta ?? {}).length} page tags`;
+
+  const ok = await _confirmDestructive({
+    title: "No table — but this page describes itself",
+    body:
+      `There is nothing repeating on this page to loop over, but it publishes ` +
+      `${what} for search engines. Reading that needs no selectors, and it does ` +
+      `not break when the site changes its layout.\n\nAdd a "Read the page's own data" step?`,
+    confirmLabel: "Add the step",
+  });
+  if (!ok) return;
+
+  const stepNode = {
+    id: _nextStepId(),
+    type: "PAGE_DATA",
+    config: {
+      ...defaultConfig("PAGE_DATA"),
+      type: types.length === 1 ? types[0] : "",
+    },
+  };
+  _pipeline.steps.push(stepNode);
+  _expandedNodeId = stepNode.id;
+  saveState();
+  renderPipeline();
+  notify(
+    "info-log",
+    `Added a step that reads this page's ${what}. Run it to see the rows.`,
+  );
 }
 
 /**
@@ -3337,6 +3543,31 @@ function _chooseDetectedTable(candidates) {
  *
  * @param {object} table
  */
+/**
+ * The obvious clean-up for a detected column, from what its samples look like.
+ *
+ * The point of Detect Table is that you press one button and get usable data.
+ * Handing back a price column full of "$25.50" strings, and a link column of
+ * "/p/123", makes the user do the last mile by hand — which is the mile they
+ * came here to avoid. Conservative on purpose: only a column that is *mostly*
+ * currency gets read as a number, because guessing wrong is worse than not
+ * guessing, and the choice is visible and changeable in the field's row.
+ *
+ * @param {{kind: string, samples: string[]}} field
+ * @returns {string} a transform name, or "" to leave the value alone
+ */
+function _transformFor(field) {
+  if (field.kind === "href" || field.kind === "src") return "url";
+  const samples = (field.samples ?? []).filter(Boolean);
+  if (samples.length === 0) return "";
+  const money = samples.filter(
+    (s) =>
+      /^[^\d]{0,3}[\d][\d.,\s]*(?:[^\d]{0,4})$/.test(String(s).trim()) &&
+      /[$£€¥₹]|\d[.,]\d{2}\b/.test(String(s)),
+  ).length;
+  return money / samples.length > 0.6 ? "number" : "";
+}
+
 function _insertDetectedTable(table) {
   const extract = {
     id: _nextStepId(),
@@ -3349,6 +3580,7 @@ function _insertDetectedTable(table) {
         type: f.kind === "text" ? "text" : "attribute",
         ...(f.kind === "href" ? { attribute: "href" } : {}),
         ...(f.kind === "src" ? { attribute: "src" } : {}),
+        ...(_transformFor(f) ? { transform: [_transformFor(f)] } : {}),
       })),
     },
   };

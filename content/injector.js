@@ -303,6 +303,15 @@ async function _executeStep(step) {
       return _stepPaginate(config, context);
     case "PAGINATE_PROBE":
       return _stepPaginateProbe(config, context);
+    case "PAGE_DATA": {
+      // page-data.js is injected alongside this file and publishes the reader
+      // on the shared isolated world, the same way structure-detector.js does.
+      const read = globalThis.__fsReadPageData;
+      if (typeof read !== "function") {
+        throw new Error("Page data reader is not loaded in this page.");
+      }
+      return read(config);
+    }
     case "QUERY_COUNT": {
       const els = _queryScoped(config.selector || "*", context, true);
       return { count: els.length };

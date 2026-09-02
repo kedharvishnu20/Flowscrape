@@ -114,6 +114,40 @@ const paged = (n) => `<!doctype html><html><body>
   }
 </body></html>`;
 
+/**
+ * A product page shaped the way real ones are: JSON-LD for the search engines,
+ * Open Graph for the social cards, and prices rendered for people. Nothing
+ * repeating, so the structure detector has nothing to offer — which is exactly
+ * the case PAGE_DATA exists for.
+ */
+const RICH = `<!doctype html><html><head>
+  <title>Widget — Test Shop</title>
+  <meta property="og:title" content="Widget">
+  <meta property="og:image" content="/i/widget.jpg">
+  <meta name="description" content="A very good widget.">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      { "@type": "WebSite", "name": "Test Shop" },
+      {
+        "@type": "Product",
+        "name": "Widget",
+        "sku": "W-1",
+        "brand": { "@type": "Brand", "name": "Acme" },
+        "offers": { "@type": "Offer", "price": "10.00", "priceCurrency": "USD" }
+      }
+    ]
+  }
+  </script>
+</head><body>
+  <h1>Widget</h1>
+  <div itemscope itemtype="https://schema.org/Review">
+    <span itemprop="author">Sam</span>
+    <meta itemprop="datePublished" content="2026-01-05">
+  </div>
+</body></html>`;
+
 let env;
 let site;
 
@@ -125,6 +159,7 @@ test.before(async () => {
     "/page/1": paged(1),
     "/page/2": paged(2),
     "/page/3": paged(3),
+    "/rich": RICH,
   });
   env = await launch();
 });
@@ -662,5 +697,172 @@ test("a page step works after the run has navigated away", async () => {
     `the step could not reach the new page: ${JSON.stringify(res)}`,
   );
   assert.deepEqual(res.result, [{ t: "Page 2" }]);
+  await page.close();
+});
+
+test("EXTRACT cleans values as it reads them", async () => {
+  // The transforms run in the worker, against rows a real page produced, with
+  // the real tab URL as the base for resolving links — none of which the unit
+  // tests exercise, because they hand the worker rows it invented.
+  const { page, tabId } = await onSite();
+  const res = await env.send("step:execute", {
+    step: step("EXTRACT", {
+      fields: [
+        { name: "name", selector: ".product-link" },
+        { name: "price", selector: ".price", transform: ["number"] },
+        {
+          name: "link",
+          selector: ".product-link",
+          type: "attribute",
+          attribute: "href",
+          transform: ["url"],
+        },
+      ],
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  // step:execute returns the page's raw rows; the run applies the transforms,
+  // so check them through a run rather than through a single step.
+  const started = await env.send("pipeline:start", {
+    tabId,
+    targetOrigin: site.origin,
+    pipeline: {
+      name: "clean",
+      steps: [
+        step("EXTRACT", {
+          fields: [
+            { name: "name", selector: ".product-link" },
+            { name: "price", selector: ".price", transform: ["number"] },
+            {
+              name: "link",
+              selector: ".product-link",
+              type: "attribute",
+              attribute: "href",
+              transform: ["url"],
+            },
+          ],
+        }),
+      ],
+    },
+  });
+  assert.equal(started.ok, true, JSON.stringify(started));
+
+  let rows = [];
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    const dl = await env.send("data:download", { runId: started.result.runId });
+    if (dl.ok && dl.result.rows?.length) {
+      rows = dl.result.rows;
+      break;
+    }
+  }
+
+  assert.equal(rows.length, 3);
+  const widget = rows.find((r) => r.name === "Widget");
+  assert.equal(widget.price, 10, 'a price is a number, not "$10.00"');
+  assert.equal(
+    widget.link,
+    site.url("/p/1"),
+    "a relative link is resolved against the page it came from",
+  );
+  await page.close();
+});
+
+test("PAGE_DATA reads a real page's structured data with no selectors", async () => {
+  const { page, tabId } = await onSite("/rich");
+  const res = await env.send("step:execute", {
+    step: step("PAGE_DATA", {
+      source: "auto",
+      type: "Product",
+      flatten: true,
+      storeAs: "pageData",
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  assert.equal(res.result.found, true);
+  assert.equal(
+    res.result.records.length,
+    1,
+    "the @graph was flattened and filtered",
+  );
+  const r = res.result.records[0];
+  assert.equal(r.name, "Widget");
+  assert.equal(r.sku, "W-1");
+  assert.equal(r["brand.name"], "Acme", "nested objects become columns");
+  assert.equal(r["offers.price"], "10.00");
+  assert.equal(res.result.meta["og:title"], "Widget");
+  assert.equal(
+    res.result.meta["og:image"],
+    site.url("/i/widget.jpg"),
+    "and meta URLs are absolute",
+  );
+  await page.close();
+});
+
+test("PAGE_DATA falls back to microdata when there is no JSON-LD of that type", async () => {
+  const { page, tabId } = await onSite("/rich");
+  const res = await env.send("step:execute", {
+    step: step("PAGE_DATA", { source: "microdata", flatten: true }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  const review = res.result.records.find((r) => r["@type"] === "Review");
+  assert.ok(
+    review,
+    `no microdata record: ${JSON.stringify(res.result.records)}`,
+  );
+  assert.equal(review.author, "Sam");
+  assert.equal(
+    review.datePublished,
+    "2026-01-05",
+    "read from the meta content, not the rendered text",
+  );
+  await page.close();
+});
+
+test("a PAGE_DATA run turns the page into exportable rows", async () => {
+  const { page, tabId } = await onSite("/rich");
+  const started = await env.send("pipeline:start", {
+    tabId,
+    targetOrigin: site.origin,
+    pipeline: {
+      name: "pd",
+      steps: [
+        step("PAGE_DATA", { source: "auto", type: "Product", flatten: true }),
+      ],
+    },
+  });
+  assert.equal(started.ok, true, JSON.stringify(started));
+
+  let rows = [];
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    const dl = await env.send("data:download", { runId: started.result.runId });
+    if (dl.ok && dl.result.rows?.length) {
+      rows = dl.result.rows;
+      break;
+    }
+  }
+  assert.equal(rows.length, 1, "the record became a row");
+  assert.equal(rows[0].name, "Widget");
+  assert.equal(rows[0]["offers.price"], "10.00");
+  await page.close();
+});
+
+test("PAGE_DATA on a page with nothing structured does not fail the run", async () => {
+  // A pipeline reading many pages must not stop because one of them has no
+  // markup — but it must say why the row is missing.
+  const { page, tabId } = await onSite("/page/1");
+  const res = await env.send("step:execute", {
+    step: step("PAGE_DATA", { source: "auto" }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.result.found, false);
+  assert.match(res.result.reason, /no structured data/i);
   await page.close();
 });

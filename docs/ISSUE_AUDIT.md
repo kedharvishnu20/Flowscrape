@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 135 findings — 13 blocker · 29 high · 64 medium · 29 low. The
+**Totals:** 137 findings — 13 blocker · 31 high · 64 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -20,7 +20,7 @@ gaps found by reading every step type against its implementation.
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
-| J · Capability gaps             | 5        |
+| J · Capability gaps             | 7        |
 
 ---
 
@@ -127,15 +127,16 @@ decision:
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
+| J-06, J-07 | _this batch_ | Extracted values are cleaned as they are read, in one module both emitters share; and PAGE_DATA reads the JSON-LD, microdata and Open Graph every site already publishes — the answer to "turn the page into JSON" for a single record |
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 132 of 135 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 134 of 137 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
 stream framing), A-12 (`EXPORT` downloading nothing at all) and A-13 (every page
-step after a navigation failing) — and because section J records five
+step after a navigation failing) — and because section J records seven
 capabilities the steps advertised and did not have. Three of the four new
 blockers came from running the code in a real browser, which is why
 `npm run e2e` exists.
@@ -931,6 +932,88 @@ unusable in practice.
 
 All seven now have their own block, each stating what the step does, what the
 value means, and what happens when it fails.
+
+### J-06 · HIGH · Extracted values are never cleaned, so every scrape ends in a spreadsheet
+
+`EXTRACT` returned exactly what the page rendered. A price came back as
+`"$25.50"` — a string, with a currency symbol inside it. A link came back as
+`"/p/123"`, which is not a link anywhere except on the page it came from. A
+review count came back as `"1,234 reviews"`. Nothing in the product could turn
+any of those into a value you could sort, sum or follow.
+
+So the last mile of every scrape was done by hand, in Excel, with find-and-
+replace — which is the part of the job people actually mind, and the reason a
+tool like this exists.
+
+Fixed with a per-field transform, in `utils/value-transforms.js` so both script
+emitters apply the same ones and an exported script produces the same values
+rather than a plausible-looking approximation. Number reading handles European
+decimals, where the comma is the point: `"1.234,56"` read as `1.234` is a
+hundredfold error in a price column with nothing to signal it. Text with no
+number in it becomes `null`, never `0` — `0` is a plausible price and would sit
+in the column indistinguishable from a real one.
+
+Detect Table picks the obvious ones automatically: link columns become absolute
+URLs, and a column whose samples are mostly currency is read as a number.
+Conservative on purpose — guessing wrong empties a column the user can see on
+the page — and visible in the field row, so it can be changed.
+
+Two escaping bugs in the emitters were found while doing it, and both produced
+scripts that ran:
+
+- in JavaScript, a user's pattern `SKU: (\S+)` went into a single-quoted
+  literal, where `\S` is just `S` — so the pattern silently matched nothing;
+- in Python it was emitted into an `r""` raw string with the backslash
+  doubled, giving a literal backslash followed by `S`.
+
+Both parse. The column simply came back empty. The suite now reads the emitted
+pattern back out and checks what it _matches_, rather than how it is spelled —
+and an unusable pattern is emitted as a refusal rather than repaired, because a
+repaired pattern gives a script that runs and extracts something else.
+
+### J-07 · HIGH · The structured data every site publishes is ignored
+
+Most real sites embed JSON-LD, Schema.org microdata, or Open Graph tags: clean,
+typed, already-structured data, put there deliberately for machines to read.
+FlowScrape read none of it, and asked the user for CSS selectors instead —
+selectors describing data the site was handing out for free, and which break the
+next time a designer renames a class.
+
+`smart-extractor.js` does read JSON-LD, but only hunting for `@type: Product`.
+A recipe, a job posting, an article, an event, a business's address and opening
+hours: all invisible.
+
+This is also the honest answer to the question the user kept asking — "can we
+just turn the page into JSON". For a **single-record** page, which the structure
+detector cannot help with at all because there is nothing repeating to find,
+`PAGE_DATA` is exactly that, with no selectors involved.
+
+It handles what real pages do rather than what a clean example does: a `@graph`
+is flattened into its nodes (which is what WordPress and Yoast publish, so
+reading the wrapper and stopping finds nothing usable on a large share of the
+web); one malformed block does not lose the others, and is reported rather than
+swallowed; nested microdata scopes stay nested, so an offer's price does not get
+hoisted onto the product; `<meta itemprop>` and `<time datetime>` are read for
+their machine-readable value rather than their rendered text, which is the
+difference between an ISO timestamp and "3 days ago"; a repeated `itemprop`
+becomes a list. Flattening guards against the cycles JSON-LD graphs genuinely
+contain, which would otherwise hang the tab.
+
+In `auto` mode microdata is a fallback rather than an addition: a site
+publishing both publishes the same record twice, and returning it twice would
+double every row.
+
+A page with nothing structured on it comes back `found: false` with a reason,
+rather than a guess assembled from headings — a guess is indistinguishable from
+a reading, and the user has no way to tell which they got. Detect Table offers
+the step when it finds no repeating structure, and only when there is actually
+something to read.
+
+**Stated limitation.** Both script emitters carry the JSON-LD and meta reading
+but not the microdata reader — that is a hundred lines of DOM walking, and a
+second compact implementation would drift from the first. The emitted script
+says so at run time when it finds no JSON-LD, at the moment it matters, rather
+than differing in silence.
 
 ---
 

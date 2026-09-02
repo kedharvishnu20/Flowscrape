@@ -173,6 +173,13 @@ export const STEP_TYPES = Object.freeze({
     runsIn: "background",
     def: { quality: 100 },
   },
+  PAGE_DATA: {
+    icon: "🧾",
+    cat: "Data",
+    desc: "Read the page's own data",
+    runsIn: "page",
+    def: { source: "auto", type: "", flatten: true, storeAs: "pageData" },
+  },
   EXPORT: {
     icon: "💾",
     cat: "Data",

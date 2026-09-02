@@ -10,12 +10,12 @@ if any copy of it drifts.
 ## [Unreleased]
 
 Everything below was found by a full-repository audit
-([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 135 findings) and fixed against
+([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 137 findings) and fixed against
 it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-501**, plus **42 end-to-end checks** that load the extension into a real
+550**, plus **47 end-to-end checks** that load the extension into a real
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
@@ -49,6 +49,40 @@ capabilities the configuration promised and the code did not have.
 - Both script emitters were brought along, so an exported script does what the
   pipeline does: the new wait modes, the infinite scroll loop, and a paginating
   LOOP that clicks Next — which the emitted loop never did at all.
+- **`PAGE_DATA` reads the structured data the page already publishes** (J-07) —
+  JSON-LD, Schema.org microdata, Open Graph. No selectors at all, already typed
+  and named, and it does not break when a designer renames a class. The existing
+  JSON-LD reader only ever looked for `@type: Product`, so a recipe, a job
+  posting, an article or an event was invisible.
+
+  This is the answer to "can we just turn the page into JSON" for a single
+  record — a product, an article — which Detect Table cannot help with, because
+  there is nothing repeating to find. Detect Table now offers it when it finds
+  no table, and only when there is something to read.
+
+- **Extracted values are cleaned as they are read** (J-06). `"$25.50"` arrives
+  as `25.5`, `"/p/123"` as a full URL. Number reading handles European decimals,
+  where the comma is the point — `"1.234,56"` read as `1.234` is a hundredfold
+  error in a price column with nothing to signal it — and text with no number in
+  it becomes empty, never `0`, because `0` is a plausible price. Detect Table
+  picks the obvious transforms itself.
+
+### Fixed — the exported scripts
+
+- **A regex transform reached neither script intact.** In JavaScript `\S` in a
+  single-quoted literal is just `S`; in Python the same pattern was emitted into
+  an `r""` raw string with the backslash doubled. Both scripts parsed, ran, and
+  matched nothing. The suite now reads the emitted pattern back and checks what
+  it _matches_ rather than how it is spelled, and an unusable pattern is emitted
+  as a refusal instead of repaired.
+- **The browser snippet `PAGE_DATA` hands to Playwright** was embedded in a
+  Python `"""…"""` literal with escaped single quotes, which Python resolves
+  before the browser sees them — arriving as JavaScript with an unterminated
+  string. It compiled as Python, because to Python it is just text.
+- The emitted scripts are now **compiled** in the test suite — `node --check`
+  and `python -m py_compile` over a pipeline using every construct the emitters
+  can produce. Pattern-matching the output is happy with source that will not
+  parse.
 
 ### Fixed — the product did not work
 

@@ -6,11 +6,11 @@ tab, and export the results.
 
 No build step. No bundler. Plain ES modules, loaded directly by Chrome.
 
-> **Status.** A full audit found 135 issues; 132 are fixed and three are left
+> **Status.** A full audit found 137 issues; 134 are fixed and three are left
 > alone on purpose (three subsystems that work but that nothing calls — the
 > reasoning is in the audit). Every fix landed with regression tests that were
-> run against the pre-fix code first to confirm they failed: 501 tests, from
-> zero, plus 42 end-to-end checks in a real Chromium with the extension loaded —
+> run against the pre-fix code first to confirm they failed: 550 tests, from
+> zero, plus 47 end-to-end checks in a real Chromium with the extension loaded —
 > which is how four findings were caught, among them an `EXPORT` that had never
 > downloaded anything and page steps that failed after every navigation. [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) is the inventory,
 > [`CHANGELOG.md`](CHANGELOG.md) the summary, and
@@ -32,8 +32,8 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 501 tests, ~30s, no browser needed
-npm run e2e     # 42 checks in a real Chromium with the extension loaded
+npm test        # 550 tests, ~30s, no browser needed
+npm run e2e     # 47 checks in a real Chromium with the extension loaded
 npm run check   # parses every source file as an ES module
 npm run format  # prettier; `npm run format:check` in CI
 ```
@@ -92,6 +92,7 @@ background/                    Service worker
 
 content/                       Page context
   injector.js                  Step dispatcher, selector picker, shadow host
+  page-data.js                 PAGE_DATA: JSON-LD, microdata, Open Graph
   smart-extractor.js           AUTO_EXTRACT layers 1 & 2
   structure-detector.js        Finds a page's repeating tables, for Detect Table
   page-sniffer.js              fetch/XHR capture, injected only during a run
@@ -136,8 +137,8 @@ script-gen/
   node-emitter.js              AST → Node (playwright)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         501 tests; node:test, jsdom, fake-indexeddb
-e2e/                           42 checks against a real Chromium
+tests/                         550 tests; node:test, jsdom, fake-indexeddb
+e2e/                           47 checks against a real Chromium
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, architecture, manual, template guide
 examples/                      Pipeline JSON you can import
@@ -154,13 +155,13 @@ as dead has since been deleted or wired up — see the F-01 table there.
 
 ## Step types
 
-Twenty-one, defined in [`utils/step-types.js`](utils/step-types.js).
+Twenty-two, defined in [`utils/step-types.js`](utils/step-types.js).
 
 | Category | Steps                                                                                                  |
 | -------- | ------------------------------------------------------------------------------------------------------ |
 | Action   | `WEBSITE` `NAVIGATE` `CLICK` `FILL` `HOVER` `SELECT` `SCROLL` `KEYBOARD` `DRAG_DROP` `UPLOAD_ACTIVITY` |
 | Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE`                                                                     |
-| Data     | `EXTRACT` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT`                    |
+| Data     | `EXTRACT` `PAGE_DATA` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT`        |
 
 `PDF_EXTRACTION` reads the PDF in the service worker, with no dependencies —
 see [`utils/pdf-text.js`](utils/pdf-text.js). It handles uncompressed and
@@ -184,8 +185,51 @@ silently scrape a subset); a price written `<span>$</span><span>10</span>` is
 one column; a list is one column rather than one per item; an anchor's text and
 its `href` are two columns with two names.
 
-A page with nothing repeating — a product detail page — says so instead of
-guessing. The picker is still there for anything detection misses.
+A page with nothing repeating — a product detail page — is offered `PAGE_DATA`
+instead, and told plainly when there is nothing to read either way. The picker
+is still there for anything detection misses.
+
+### PAGE_DATA — the page's own data, without selectors
+
+Most sites publish their content as structured data for search engines: JSON-LD,
+Schema.org microdata, Open Graph tags. It is already typed, already named, and
+it does not break when a designer renames a class. FlowScrape ignored all of it
+and asked for CSS selectors describing the same data.
+
+`PAGE_DATA` reads it. No selectors at all. It handles what real pages do: a
+`@graph` is flattened into its nodes (which is how WordPress and Yoast publish);
+one malformed block does not lose the others, and is reported; nested microdata
+scopes stay nested, so an offer's price does not end up on the product;
+`<meta itemprop>` and `<time datetime>` are read for their machine-readable
+value rather than their rendered text; a repeated `itemprop` becomes a list.
+
+Optionally flattened, so `offers.price` is a column and a spreadsheet gets
+scalars instead of `[object Object]`.
+
+This is the answer to "can we just turn the page into JSON" for a _single_
+record — a product, an article, a job posting — which Detect Table cannot help
+with, because there is nothing repeating to find. A page that publishes nothing
+says so, rather than returning a guess assembled from headings: a guess is
+indistinguishable from a reading, and you would have no way to tell which you
+got.
+
+### Cleaning values as you extract them
+
+Each `EXTRACT` field can carry a transform, so `"$25.50"` arrives as `25.5` and
+`"/p/123"` as a full URL — rather than as a spreadsheet doing find-and-replace
+afterwards. Number reading handles European decimals, where the comma is the
+point: reading `"1.234,56"` as `1.234` is a hundredfold error in a price column
+with nothing to signal it. Text with no number in it becomes empty, never zero —
+`0` is a plausible price and would sit in the column indistinguishable from a
+real one.
+
+Detect Table picks the obvious ones for you: link columns become absolute URLs,
+and a column that is mostly currency is read as a number. Conservative on
+purpose, and visible in the field row so you can change it.
+
+The transforms live in [`utils/value-transforms.js`](utils/value-transforms.js)
+and both script emitters apply the same ones, so an exported script produces the
+same values.
 
 ### Templates
 

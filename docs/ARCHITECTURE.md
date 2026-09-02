@@ -217,3 +217,49 @@ retried, because re-sending it would turn a second page [J-03].
 
 The same shape applies to any step that navigates. `NAVIGATE` waits on the
 tab's load state from the worker rather than on anything in the page [J-04].
+
+---
+
+## 12. Read what the page says about itself before reading what it looks like
+
+Three readers now sit in front of the selector picker, in order of how much they
+survive a redesign:
+
+| Reader       | Reads                          | Breaks when                               |
+| ------------ | ------------------------------ | ----------------------------------------- |
+| `PAGE_DATA`  | JSON-LD, microdata, Open Graph | the site stops publishing structured data |
+| Detect Table | repeating DOM shapes           | the list's markup changes shape           |
+| The picker   | one CSS selector               | any class is renamed                      |
+
+The order is deliberate. A selector describes what a page currently looks like;
+structured data describes what it _is_, and the site maintains it for search
+engines, so it is the most durable thing on the page and it was the one thing
+the product ignored [J-07].
+
+They cover different pages rather than competing. Detect Table needs something
+repeating, which a product detail page does not have. `PAGE_DATA` needs the site
+to publish markup, which many do not. So Detect Table falls through to
+`PAGE_DATA`, and both fall through to the picker — and each says which it is, so
+a reading is never mistaken for a guess.
+
+None of them guesses. A page with no repeating structure and no structured data
+says exactly that. Assembling a plausible record out of headings would be
+indistinguishable from a real reading, and the user would have no way to tell
+which they got.
+
+## 13. Clean the value where it is read, once
+
+Transforms live in `utils/value-transforms.js` and run in the **worker**, not
+the page — for three reasons, in order of weight: a classic content script
+cannot import an ES module, so doing it in the page would mean a second copy
+that drifts (the G-01 rule); the worker knows the tab's URL, which is what a
+relative link must be resolved against; and a failing transform can name the
+field it failed on rather than surfacing as a column quietly full of nulls.
+
+Both script emitters apply the same transforms, so an exported script produces
+the same values [J-06].
+
+The rule inside every transform is the one the whole audit kept arriving at: a
+transform that cannot do its job returns `null`, never a wrong answer that looks
+right. `"Out of stock"` as a number is not `0` — `0` is a price, and it would
+sit in the column indistinguishable from a real one.

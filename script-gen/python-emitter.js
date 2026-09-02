@@ -14,6 +14,7 @@
  */
 
 import { logger } from "../utils/logger.js";
+import { isValidRegex } from "../utils/value-transforms.js";
 
 const MODULE = "python-emitter";
 
@@ -56,6 +57,51 @@ export function emitPython(pipeline) {
     "    if not isinstance(s, str):",
     "        return s",
     '    return re.sub(r"__FS_ENV__([A-Z0-9_]+)__", lambda m: os.environ.get(m.group(1), ""), s)',
+    "",
+    "",
+    "# ── Value transforms ─────────────────────────────────────────",
+    "# Mirrors utils/value-transforms.js. The pipeline cleans values as it",
+    "# extracts them; a script that skipped this would run, produce a file, and",
+    "# fill the number columns with currency symbols.",
+    "from urllib.parse import urljoin",
+    "",
+    "",
+    "def fs_number(t):",
+    '    m = re.search(r"-?\\d[\\d.,\\s]*\\d|-?\\d", str(t or ""))',
+    "    if not m:",
+    "        return None",
+    '    b = re.sub(r"\\s", "", m.group(0))',
+    '    c, d = b.rfind(","), b.rfind(".")',
+    "    if c > -1 and d > -1:",
+    '        dec, th = (",", ".") if c > d else (".", ",")',
+    '        b = b.replace(th, "").replace(dec, ".")',
+    "    elif c > -1:",
+    '        after, single = len(b) - c - 1, b.find(",") == c',
+    '        b = b.replace(",", ".") if single and 0 < after <= 2 else b.replace(",", "")',
+    "    elif d > -1:",
+    '        after, single = len(b) - d - 1, b.find(".") == d',
+    "        if not (single and 0 < after <= 2):",
+    '            b = b.replace(".", "")',
+    "    try:",
+    "        n = float(b)",
+    "    except ValueError:",
+    "        return None",
+    "    return int(n) if n.is_integer() else n",
+    "",
+    "",
+    "def fs_url(v, base):",
+    '    return urljoin(base, str(v or "").strip()) if v else v',
+    "",
+    "",
+    "def fs_regex(v, p):",
+    '    m = re.search(p, str(v or ""))',
+    "    if not m:",
+    "        return None",
+    "    return m.group(1) if m.groups() else m.group(0)",
+    "",
+    "",
+    "def fs_trim(v):",
+    '    return re.sub(r"\\s+", " ", str(v or "")).strip()',
     "",
     "# ── Config ────────────────────────────────────────────────────",
     `TARGET_ORIGIN = "${pipeline.targetOrigin ?? ""}"`,
@@ -282,6 +328,96 @@ function _emitStep(step) {
         "",
       ];
 
+    case "PAGE_DATA": {
+      // The same subset the Node emitter carries, for the same reason: JSON-LD
+      // and meta tags travel cleanly; a second microdata reader here would
+      // drift from content/page-data.js. The script says so when it finds
+      // nothing, rather than differing in silence.
+      const wantType = String(config.type ?? "").toLowerCase();
+      const flat = config.flatten !== false;
+      const js = [
+        "() => {",
+        "  const abs = v => { try { return new URL(String(v ?? '').trim(), location.href).href; } catch { return v; } };",
+        "  const records = [];",
+        "  const walk = (d, depth = 0) => {",
+        "    if (!d || depth > 6) return;",
+        "    if (Array.isArray(d)) return d.forEach(x => walk(x, depth + 1));",
+        "    if (typeof d !== 'object') return;",
+        "    if (Array.isArray(d['@graph'])) {",
+        "      d['@graph'].forEach(x => walk(x, depth + 1));",
+        "      if (Object.keys(d).filter(k => k !== '@graph' && k !== '@context').length === 0) return;",
+        "    }",
+        "    records.push(d);",
+        "  };",
+        // Double quotes inside the JS, on purpose: the snippet is embedded in a
+        // Python \"\"\"…\"\"\" literal, where a backslash-escaped single quote is
+        // resolved by Python before the browser ever sees it — leaving the JS
+        // string unterminated. A double quote needs no escape in either.
+        "  for (const el of document.querySelectorAll('script[type=\"application/ld+json\"]')) {",
+        "    try { walk(JSON.parse(el.textContent || '')); } catch {}",
+        "  }",
+        "  const meta = {};",
+        "  for (const el of document.querySelectorAll('meta[content]')) {",
+        "    const k = el.getAttribute('property') || el.getAttribute('name');",
+        "    if (!k) continue;",
+        "    if (!/^(og|twitter|product|article|book|music|video|profile):/.test(k) &&",
+        "        !['description','keywords','author','robots'].includes(k)) continue;",
+        "    const v = el.getAttribute('content');",
+        "    meta[k] = /(?:^|:)(?:url|image|video|audio|player)$/.test(k) ? abs(v) : String(v ?? '').replace(/\\s+/g, ' ').trim();",
+        "  }",
+        "  return { records, meta, url: location.href, title: document.title };",
+        "}",
+      ].join(" ");
+
+      const lines = [
+        "# PAGE_DATA — the page's own structured data, no selectors",
+        `page_data = await page.evaluate("""${js}""")`,
+      ];
+      if (wantType) {
+        lines.push(
+          `page_data["records"] = [r for r in page_data["records"]`,
+          `    if ${JSON.stringify(wantType)} in [str(t).lower() for t in (r.get("@type") if isinstance(r.get("@type"), list) else [r.get("@type")])]]`,
+        );
+      }
+      lines.push(
+        'if not page_data["records"]:',
+        '    print("PAGE_DATA: no JSON-LD found. The extension would also try microdata here;")',
+        '    print("           this script does not carry that reader, so the result may differ.")',
+      );
+      if (flat) {
+        lines.push(
+          "",
+          "def _fs_flat(v, p='', out=None, depth=0):",
+          "    out = {} if out is None else out",
+          "    if v is None:",
+          "        return out",
+          "    if isinstance(v, list):",
+          "        if all(not isinstance(x, (dict, list)) for x in v):",
+          "            out[p or 'value'] = ', '.join(str(x) for x in v)",
+          "        else:",
+          "            for i, x in enumerate(v):",
+          "                _fs_flat(x, f'{p}.{i}' if p else str(i), out, depth + 1)",
+          "        return out",
+          "    if isinstance(v, dict):",
+          "        if depth >= 6:",
+          "            return out",
+          "        for k, val in v.items():",
+          "            _fs_flat(val, f'{p}.{k}' if p else k, out, depth + 1)",
+          "        return out",
+          "    out[p or 'value'] = v",
+          "    return out",
+          "",
+          'page_data["records"] = [_fs_flat(r) for r in page_data["records"]]',
+        );
+      }
+      lines.push(
+        'for record in page_data["records"]:',
+        "    print(json.dumps(record))",
+        "",
+      );
+      return lines;
+    }
+
     case "PAGINATE": {
       // A bare click was what this emitted, so past the last page the script
       // carried on believing it had turned one. `break` is not emitted here:
@@ -350,21 +486,52 @@ function _emitFill(config) {
   return lines;
 }
 
+/**
+ * Wrap a read in the transforms the field carries, innermost first.
+ * @returns {string|null} null when a transform cannot be emitted faithfully
+ */
+function _transformPy(expr, field) {
+  let out = expr;
+  for (const name of field.transform ?? []) {
+    if (name === "number") out = `fs_number(${out})`;
+    else if (name === "trim") out = `fs_trim(${out})`;
+    else if (name === "url") out = `fs_url(${out}, page.url)`;
+    else if (name === "lower") out = `str(${out} or "").lower()`;
+    else if (name === "upper") out = `str(${out} or "").upper()`;
+    else if (name === "regex") {
+      const raw = String(field.regexPattern ?? "");
+      // A raw literal cannot end in a backslash, and a lone trailing backslash
+      // is not a valid pattern anyway — so refuse rather than trim it, which
+      // would give a script that extracts something else without saying so.
+      if (!isValidRegex(raw) || /\\$/.test(raw)) return null;
+      // r"" means a backslash stands for itself, so _escStr's doubling would
+      // turn `\S` into a literal backslash followed by S. Only the quote
+      // needs handling.
+      out = `fs_regex(${out}, r"${raw.replace(/"/g, '\\"')}")`;
+    }
+  }
+  return out;
+}
+
 function _emitExtract(config) {
   const lines = ["# EXTRACT"];
   const fields = config.fields ?? config.schema ?? [];
   if (fields.length === 0) return ["# EXTRACT: no fields defined", ""];
   lines.push("extracted = {}");
-  for (const { name, selector, attribute } of fields) {
-    if (attribute) {
+  for (const field of fields) {
+    const { name, selector, attribute } = field;
+    const read = attribute
+      ? `await page.get_attribute("${_escStr(selector)}", "${attribute}")`
+      : `await page.inner_text("${_escStr(selector)}")`;
+    const expr = _transformPy(read, field);
+    if (expr === null) {
       lines.push(
-        `extracted["${name}"] = await page.get_attribute("${_escStr(selector)}", "${attribute}")`,
+        `# INVALID: field "${name}" has a pattern this script cannot carry.`,
+        `raise ValueError("FlowScrape field '${name}': invalid regex pattern")`,
       );
-    } else {
-      lines.push(
-        `extracted["${name}"] = await page.inner_text("${_escStr(selector)}")`,
-      );
+      continue;
     }
+    lines.push(`extracted["${name}"] = ${expr}`);
   }
   lines.push("print(json.dumps(extracted))", "");
   return lines;

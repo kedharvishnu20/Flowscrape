@@ -32,6 +32,7 @@
 import { logger } from "../utils/logger.js";
 import { extractPdfText } from "../utils/pdf-text.js";
 import { ALL_STEP_TYPES } from "../utils/step-types.js";
+import { applyTransforms } from "../utils/value-transforms.js";
 import { initSessionKey } from "./api-key-manager.js";
 import { setApiKey } from "./api-key-manager.js";
 import {
@@ -446,6 +447,7 @@ function _pushCapture(runState, key, entry, bytes, maxBytes, maxCount, runId) {
 const CONTENT_FILES = [
   "content/smart-extractor.js",
   "content/structure-detector.js",
+  "content/page-data.js",
   "content/injector.js",
 ];
 
@@ -1701,6 +1703,51 @@ async function _executeIfElse(step, tabId, runId, parentCtx = {}) {
   );
 }
 
+/**
+ * Apply each EXTRACT field's transforms to the rows the page produced.
+ *
+ * Here rather than in the content script for three reasons: the transforms are
+ * an ES module and a classic content script cannot import one, so doing it in
+ * the page would mean a second copy that drifts (G-01); the worker knows the
+ * tab's URL, which is what a relative link has to be resolved against; and a
+ * failing transform can then name the field it failed on, rather than surfacing
+ * as a column quietly full of nulls.
+ *
+ * @param {object[]} rows
+ * @param {object} config - the EXTRACT step's config, for its `fields`
+ * @param {number} tabId
+ * @returns {Promise<object[]>}
+ */
+async function _transformRows(rows, config = {}, tabId) {
+  const fields = (config.fields ?? []).filter(
+    (f) => Array.isArray(f.transform) && f.transform.length > 0,
+  );
+  if (fields.length === 0) return rows;
+
+  // Only fetched when something actually needs it.
+  let base = "";
+  if (fields.some((f) => f.transform.includes("url"))) {
+    base = (await chrome.tabs.get(tabId).catch(() => null))?.url || "";
+  }
+
+  return rows.map((row) => {
+    const out = { ...row };
+    for (const field of fields) {
+      const name = field.name || "data";
+      if (!(name in out)) continue;
+      try {
+        out[name] = applyTransforms(out[name], field.transform, {
+          base,
+          pattern: field.regexPattern,
+        });
+      } catch (err) {
+        throw new Error(`EXTRACT field "${name}": ${err.message}`);
+      }
+    }
+    return out;
+  });
+}
+
 /** How long a navigation may take before the run stops waiting for it. */
 const NAV_TIMEOUT_MS = 30000;
 
@@ -1922,6 +1969,42 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       await _doExport(runId, step.config);
       return;
 
+    case "PAGE_DATA": {
+      const resp = await _sendToPage(tabId, step);
+      if (!resp?.ok) throw new Error(resp?.error || "PAGE_DATA failed");
+      const data = resp.result;
+      const storeAs = String(step.config.storeAs || "pageData").trim();
+      ctx[storeAs || "pageData"] = data;
+
+      for (const warning of data.warnings ?? []) {
+        _broadcastLog("warn-log", `PAGE_DATA: ${warning}`, runId);
+      }
+
+      if (!data.found) {
+        // Not an error: a pipeline reading many pages should not stop because
+        // one of them carries no markup. But it must not be silent either —
+        // an empty export with no explanation is the thing this step exists
+        // to replace.
+        _broadcastLog("warn-log", `PAGE_DATA: ${data.reason}`, runId);
+        return;
+      }
+
+      const rows = data.records ?? [];
+      runState.results.push(...rows);
+      for (const row of rows) await pushRow(runId, row);
+      if (rows.length > 0) {
+        Object.assign(ctx.extracted, rows[rows.length - 1]);
+      }
+      _broadcastLog(
+        "info-log",
+        rows.length
+          ? `PAGE_DATA: read ${rows.length} record${rows.length === 1 ? "" : "s"} from ${data.sources.join(" + ")}.`
+          : `PAGE_DATA: no records, but ${Object.keys(data.meta ?? {}).length} page tags read.`,
+        runId,
+      );
+      return;
+    }
+
     case "PAGINATE": {
       const paged = await _executePaginate(tabId, step.config);
       if (paged.exhausted) {
@@ -1943,11 +2026,12 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       if (!resp?.ok) throw new Error(resp?.error || "Step failed");
 
       if (step.type === "EXTRACT" && Array.isArray(resp.result)) {
-        runState.results.push(...resp.result);
-        for (const row of resp.result) await pushRow(runId, row);
+        const rows = await _transformRows(resp.result, step.config, tabId);
+        runState.results.push(...rows);
+        for (const row of rows) await pushRow(runId, row);
         _broadcastLog(
           "info-log",
-          `Extracted ${resp.result.length} rows (total: ${runState.results.length}).`,
+          `Extracted ${rows.length} rows (total: ${runState.results.length}).`,
           runId,
         );
         // Without this the count only moves on the next step's status message,
@@ -1964,8 +2048,8 @@ async function _dispatchStep(step, tabId, runId, ctx) {
           })
           .catch(() => {});
         // So later steps can reference {{extracted.fieldName}}
-        if (resp.result.length > 0) {
-          Object.assign(ctx.extracted, resp.result[resp.result.length - 1]);
+        if (rows.length > 0) {
+          Object.assign(ctx.extracted, rows[rows.length - 1]);
         }
       }
     }

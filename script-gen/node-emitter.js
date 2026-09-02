@@ -6,6 +6,7 @@
  */
 
 import { logger } from "../utils/logger.js";
+import { isValidRegex } from "../utils/value-transforms.js";
 const MODULE = "node-emitter";
 
 export function emitNode(pipeline) {
@@ -33,6 +34,31 @@ export function emitNode(pipeline) {
     `const fsEnv = s => typeof s === 'string'`,
     `  ? s.replace(/__FS_ENV__([A-Z0-9_]+)__/g, (_, n) => process.env[n] ?? '')`,
     `  : s;`,
+    "",
+    `// Value transforms, mirroring utils/value-transforms.js. The pipeline`,
+    `// cleans values as it extracts them; a script that skipped this would run,`,
+    `// produce a file, and fill the number columns with currency symbols.`,
+    `const fsNumber = t => {`,
+    `  const m = String(t ?? '').match(/-?\\d[\\d.,\\s]*\\d|-?\\d/);`,
+    `  if (!m) return null;`,
+    `  let b = m[0].replace(/\\s/g, '');`,
+    `  const c = b.lastIndexOf(','), d = b.lastIndexOf('.');`,
+    `  if (c > -1 && d > -1) {`,
+    `    const dec = c > d ? ',' : '.', th = dec === ',' ? '.' : ',';`,
+    `    b = b.split(th).join('').replace(dec, '.');`,
+    `  } else if (c > -1) {`,
+    `    const after = b.length - c - 1, single = b.indexOf(',') === c;`,
+    `    b = single && after > 0 && after <= 2 ? b.replace(',', '.') : b.split(',').join('');`,
+    `  } else if (d > -1) {`,
+    `    const after = b.length - d - 1, single = b.indexOf('.') === d;`,
+    `    if (!(single && after > 0 && after <= 2)) b = b.split('.').join('');`,
+    `  }`,
+    `  const n = Number(b);`,
+    `  return Number.isFinite(n) ? n : null;`,
+    `};`,
+    `const fsUrl = (v, base) => { try { return new URL(String(v ?? '').trim(), base).href; } catch { return v; } };`,
+    `const fsRegex = (v, p) => { const m = String(v ?? '').match(new RegExp(p)); return m ? (m[1] ?? m[0]) : null; };`,
+    `const fsTrim = v => String(v ?? '').replace(/\\s+/g, ' ').trim();`,
     "",
     `const sleep = ms => new Promise(r => setTimeout(r, ms));`,
     `const jitter = (min, max) => min + Math.random() * (max - min);`,
@@ -224,6 +250,84 @@ function _emitNodeStep(step) {
         "",
       ];
 
+    case "PAGE_DATA": {
+      // JSON-LD and the page's meta tags carry over cleanly. The microdata
+      // reader does not: it is a hundred lines of DOM walking in
+      // content/page-data.js, and a second, compact implementation here would
+      // drift from it. So the script reads what it can and says loudly when it
+      // finds nothing — the pipeline would have fallen back to microdata there,
+      // and a silent difference is exactly what the audit was about.
+      const wantType = esc(config.type ?? "");
+      const flat = config.flatten !== false;
+      return [
+        `{`,
+        `  const pageData = await page.evaluate(() => {`,
+        `    const abs = v => { try { return new URL(String(v ?? '').trim(), location.href).href; } catch { return v; } };`,
+        `    const records = [];`,
+        `    const walk = (d, depth = 0) => {`,
+        `      if (!d || depth > 6) return;`,
+        `      if (Array.isArray(d)) return d.forEach(x => walk(x, depth + 1));`,
+        `      if (typeof d !== 'object') return;`,
+        `      if (Array.isArray(d['@graph'])) {`,
+        `        d['@graph'].forEach(x => walk(x, depth + 1));`,
+        `        if (Object.keys(d).filter(k => k !== '@graph' && k !== '@context').length === 0) return;`,
+        `      }`,
+        `      records.push(d);`,
+        `    };`,
+        `    for (const el of document.querySelectorAll('script[type="application/ld+json"]')) {`,
+        `      try { walk(JSON.parse(el.textContent || '')); } catch {}`,
+        `    }`,
+        `    const meta = {};`,
+        `    for (const el of document.querySelectorAll('meta[content]')) {`,
+        `      const k = el.getAttribute('property') || el.getAttribute('name');`,
+        `      if (!k) continue;`,
+        `      if (!/^(og|twitter|product|article|book|music|video|profile):/.test(k) &&`,
+        `          !['description','keywords','author','robots'].includes(k)) continue;`,
+        `      const v = el.getAttribute('content');`,
+        `      meta[k] = /(?:^|:)(?:url|image|video|audio|player)$/.test(k) ? abs(v) : String(v ?? '').replace(/\\s+/g, ' ').trim();`,
+        `    }`,
+        `    return { records, meta, url: location.href, title: document.title };`,
+        `  });`,
+        ...(wantType
+          ? [
+              `  pageData.records = pageData.records.filter(r => {`,
+              `    const t = Array.isArray(r['@type']) ? r['@type'] : [r['@type']];`,
+              `    return t.some(x => String(x ?? '').toLowerCase() === '${wantType.toLowerCase()}');`,
+              `  });`,
+            ]
+          : []),
+        `  if (pageData.records.length === 0) {`,
+        `    console.warn('PAGE_DATA: no JSON-LD found. The extension would also try microdata here;');`,
+        `    console.warn('           this script does not carry that reader, so the result may differ.');`,
+        `  }`,
+        ...(flat
+          ? [
+              `  const flat = (v, p = '', out = {}, depth = 0, seen = new Set()) => {`,
+              `    if (v == null) return out;`,
+              `    if (Array.isArray(v)) {`,
+              `      if (v.every(x => x === null || typeof x !== 'object')) out[p || 'value'] = v.join(', ');`,
+              `      else v.forEach((x, i) => flat(x, p ? p + '.' + i : String(i), out, depth + 1, seen));`,
+              `      return out;`,
+              `    }`,
+              `    if (typeof v === 'object') {`,
+              `      if (depth >= 6 || seen.has(v)) return out;`,
+              `      seen.add(v);`,
+              `      for (const [k, val] of Object.entries(v)) flat(val, p ? p + '.' + k : k, out, depth + 1, seen);`,
+              `      seen.delete(v);`,
+              `      return out;`,
+              `    }`,
+              `    out[p || 'value'] = v;`,
+              `    return out;`,
+              `  };`,
+              `  pageData.records = pageData.records.map(r => flat(r));`,
+            ]
+          : []),
+        `  for (const record of pageData.records) console.log(JSON.stringify(record));`,
+        `}`,
+        "",
+      ];
+    }
+
     case "PAGINATE": {
       // A bare click was what this emitted. Past the last page it clicks
       // nothing and reports success — the same defect the extension's PAGINATE
@@ -293,16 +397,47 @@ function _emitNodeFill(config, esc) {
   return lines;
 }
 
+/**
+ * Wrap a read in the transforms the field carries, innermost first.
+ * @returns {string|null} null when a transform cannot be emitted faithfully
+ */
+function _transformNode(expr, field) {
+  let out = expr;
+  for (const name of field.transform ?? []) {
+    if (name === "number") out = `fsNumber(${out})`;
+    else if (name === "trim") out = `fsTrim(${out})`;
+    else if (name === "url") out = `fsUrl(${out}, page.url())`;
+    else if (name === "lower") out = `String(${out} ?? '').toLowerCase()`;
+    else if (name === "upper") out = `String(${out} ?? '').toUpperCase()`;
+    else if (name === "regex") {
+      const raw = String(field.regexPattern ?? "");
+      if (!isValidRegex(raw)) return null; // the caller emits a refusal
+      // A regex is full of backslashes, and the quote-escaper alone turned
+      // `\\S` into a bare `S` inside the emitted literal, so the pattern
+      // silently matched nothing. Backslashes first, then quotes.
+      const pattern = raw.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      out = `fsRegex(${out}, '${pattern}')`;
+    }
+  }
+  return out;
+}
+
 function _extractNode(config) {
   const lines = ["const extracted = {};"];
-  for (const { name, selector, attribute } of config.fields ?? []) {
-    if (attribute) {
+  for (const field of config.fields ?? []) {
+    const { name, selector, attribute } = field;
+    const read = attribute
+      ? `await page.getAttribute('${selector}', '${attribute}')`
+      : `await page.innerText('${selector}')`;
+    const expr = _transformNode(read, field);
+    if (expr === null) {
       lines.push(
-        `extracted['${name}'] = await page.getAttribute('${selector}', '${attribute}');`,
+        `// INVALID: field '${name}' has a pattern JavaScript will not accept.`,
+        `throw new Error("FlowScrape field '${name}': invalid regex pattern");`,
       );
-    } else {
-      lines.push(`extracted['${name}'] = await page.innerText('${selector}');`);
+      continue;
     }
+    lines.push(`extracted['${name}'] = ${expr};`);
   }
   lines.push(`console.log(JSON.stringify(extracted));`, "");
   return lines;

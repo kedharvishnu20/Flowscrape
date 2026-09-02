@@ -388,14 +388,30 @@ test("the sample rows are rendered as nodes, never as markup", async () => {
   assert.match(fn, /if \(e\.key === "Escape"\) done\(null\)/);
 });
 
-test("a page with nothing to find says so usefully", async () => {
+test("a page with nothing repeating is offered the page's own data instead", async () => {
+  // A single-record page — a product, an article — has nothing to loop over,
+  // and that is most of what people point this at after scraping a list.
+  // Sending them straight to picking elements by hand skips the thing that
+  // needs no selectors at all.
   const panel = await readFile(
     new URL("../sidepanel/pipeline-builder.js", import.meta.url),
     "utf8",
   );
-  const fn = panel.match(
+  const detect = panel.match(
     /async function _detectStructure\(\) \{[\s\S]*?\n\}/,
   )[0];
-  assert.match(fn, /No repeating tables found/);
-  assert.match(fn, /pick fields by hand instead/, "it says what to do next");
+  assert.match(detect, /_offerPageData/, "no fallback is offered");
+
+  const offer = panel.match(
+    /async function _offerPageData\(tabId\) \{[\s\S]*?\n\}\n/,
+  )[0];
+  // Only offered when there is something to read: suggesting a step that comes
+  // back empty costs the user a run to find out.
+  assert.match(offer, /if \(!data\?\.found\)/);
+  assert.match(
+    offer,
+    /Pick the fields you want by hand/,
+    "and when there is nothing either way, it says what to do next",
+  );
+  assert.match(offer, /PAGE_DATA/);
 });

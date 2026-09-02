@@ -275,3 +275,262 @@ test("PAGINATE stops at the last page in an exported script too", () => {
   assert.match(js, /count\(\)|isDisabled|is_disabled/);
   assert.match(py, /count\(\)|is_disabled/);
 });
+
+// ── value transforms travel with the pipeline ────────────────────────────────
+
+test("an exported script cleans values the way the pipeline does", () => {
+  // Otherwise the export is a new instance of the old lie: it runs, it produces
+  // a file, and the numbers in it are strings with currency symbols.
+  const { py, js } = emit([
+    step("EXTRACT", {
+      fields: [
+        { name: "price", selector: ".p", transform: ["number"] },
+        {
+          name: "link",
+          selector: "a",
+          type: "attribute",
+          attribute: "href",
+          transform: ["url"],
+        },
+      ],
+    }),
+  ]);
+  assert.match(js, /fsNumber|_fs_number/i);
+  assert.match(py, /fs_number/i);
+  // A relative link is resolved against the page it came from.
+  assert.match(js, /page\.url\(\)/);
+  assert.match(py, /page\.url/);
+});
+
+test("a field with no transform is emitted with no wrapper", () => {
+  const { js } = emit([
+    step("EXTRACT", { fields: [{ name: "name", selector: ".n" }] }),
+  ]);
+  assert.match(js, /extracted\['name'\] = await page\.innerText\('\.n'\);/);
+});
+
+// ── the generated scripts are valid programs ─────────────────────────────────
+//
+// The emitters build source by concatenating string literals, which is exactly
+// where an unbalanced brace or a bad escape hides: every assertion above
+// pattern-matches the output, and a pattern match is happy with source that
+// will not parse. So parse it.
+
+import { execFileSync } from "node:child_process";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const dir = mkdtempSync(join(tmpdir(), "fs-emit-"));
+
+/** Every construct the emitters can produce, in one pipeline. */
+const KITCHEN_SINK = [
+  step("NAVIGATE", { url: "https://shop.test/", wait: true }),
+  step("WAIT", { mode: "selector-visible", selector: ".r", timeout: 9000 }),
+  step("WAIT", { mode: "selector-gone", selector: ".spin" }),
+  step("WAIT", { mode: "DOM-stable" }),
+  step("WAIT", { mode: "fixed", ms: 500 }),
+  step("SCROLL", { mode: "infinite", maxScrolls: 5, settleMs: 800 }),
+  step("SCROLL", { mode: "percent", amount: 80 }),
+  step("CLICK", { selector: ".buy" }),
+  step("FILL", { selector: "#q", text: "shoes" }),
+  step("SELECT", { selector: "#size", value: "l" }),
+  step("HOVER", { selector: ".menu" }),
+  step("KEYBOARD", { key: "Enter" }),
+  step("DRAG_DROP", { source: ".a", target: ".b" }),
+  step("PAGINATE", { selector: ".next" }),
+  step("EXTRACT", {
+    fields: [
+      { name: "name", selector: ".n" },
+      { name: "price", selector: ".p", transform: ["number"] },
+      { name: "tidy", selector: ".t", transform: ["trim"] },
+      { name: "loud", selector: ".l", transform: ["upper"] },
+      { name: "quiet", selector: ".q", transform: ["lower"] },
+      {
+        name: "sku",
+        selector: ".s",
+        transform: ["regex"],
+        regexPattern: "SKU: (\\S+)",
+      },
+      {
+        name: "link",
+        selector: "a",
+        type: "attribute",
+        attribute: "href",
+        transform: ["url"],
+      },
+    ],
+  }),
+  step("PAGE_DATA", { source: "auto", type: "Product", flatten: true }),
+  step("PAGE_DATA", { source: "jsonld", type: "", flatten: false }),
+  step("SCREENSHOT", { quality: 90 }),
+  step("EXPORT", { format: "csv" }),
+];
+
+const NESTED = [
+  {
+    id: "loop",
+    type: "LOOP",
+    config: { type: "paginate", selector: ".next", max: 5 },
+    children: [step("EXTRACT", { fields: [{ name: "t", selector: "h1" }] })],
+  },
+  {
+    id: "loop2",
+    type: "LOOP",
+    config: { type: "elements", selector: ".card", max: 0 },
+    children: [step("CLICK", { selector: ".open" })],
+  },
+];
+
+test("the emitted Node script parses", () => {
+  const file = join(dir, "out.mjs");
+  writeFileSync(file, emit([...KITCHEN_SINK, ...NESTED]).js);
+  execFileSync(process.execPath, ["--check", file]);
+});
+
+test("the emitted Python script compiles", (t) => {
+  let python;
+  try {
+    python = execFileSync("sh", ["-c", "command -v python3"], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    t.skip("no python3 on this machine");
+    return;
+  }
+  const file = join(dir, "out.py");
+  writeFileSync(file, emit([...KITCHEN_SINK, ...NESTED]).py);
+  execFileSync(python, ["-m", "py_compile", file]);
+});
+
+test("a user's regex pattern reaches the script intact", () => {
+  // Both scripts parsed and both patterns were wrong, which is why the parse
+  // check above is not enough on its own.
+  //
+  //   JS:     '\\S' inside a single-quoted literal is just 'S'
+  //   Python: '\\\\S' inside an r"" raw string is a literal backslash then S
+  //
+  // Either way "SKU: (\\S+)" silently became a pattern that matches nothing,
+  // and the column came back empty with no error anywhere.
+  const { py, js } = emit([
+    step("EXTRACT", {
+      fields: [
+        {
+          name: "sku",
+          selector: ".s",
+          transform: ["regex"],
+          regexPattern: "SKU: (\\S+)",
+        },
+      ],
+    }),
+  ]);
+
+  // Read the emitted pattern back out and check what it actually matches,
+  // rather than checking how it is spelled.
+  const jsPattern = js.match(
+    /fsRegex\(await page\.innerText\('\.s'\), '(.*)'\)/,
+  )?.[1];
+  assert.ok(jsPattern, `no fsRegex call emitted:\n${js}`);
+  const jsSource = new Function(`return '${jsPattern}'`)();
+  assert.equal("SKU: ABC-1".match(new RegExp(jsSource))?.[1], "ABC-1");
+
+  const pyPattern = py.match(
+    /fs_regex\(await page\.inner_text\("\.s"\), r"(.*)"\)/,
+  )?.[1];
+  assert.ok(pyPattern, `no fs_regex call emitted:\n${py}`);
+  // r"" is raw: what is between the quotes is the pattern, verbatim.
+  assert.equal("SKU: ABC-1".match(new RegExp(pyPattern))?.[1], "ABC-1");
+});
+
+test("a quote in a regex pattern cannot break out of the string", () => {
+  const { py, js } = emit([
+    step("EXTRACT", {
+      fields: [
+        {
+          name: "q",
+          selector: ".q",
+          transform: ["regex"],
+          regexPattern: `it's "(\\w+)"`,
+        },
+      ],
+    }),
+  ]);
+  const file = join(dir, "quote.mjs");
+  writeFileSync(file, js);
+  execFileSync(process.execPath, ["--check", file]);
+  assert.ok(py.includes("fs_regex"));
+});
+
+test("an invalid regex pattern makes the script refuse to run, not quietly differ", () => {
+  // A lone trailing backslash is not a regex. Stripping it to make the emitted
+  // literal well-formed would produce a script that runs and extracts
+  // something other than what the pipeline extracts — the exact class of
+  // defect the audit was about.
+  const { py, js } = emit([
+    step("EXTRACT", {
+      fields: [
+        {
+          name: "q",
+          selector: ".q",
+          transform: ["regex"],
+          regexPattern: "abc\\",
+        },
+      ],
+    }),
+  ]);
+  assert.match(js, /INVALID|throw new Error/);
+  assert.match(py, /INVALID|raise /);
+});
+
+test("the JavaScript PAGE_DATA hands to the browser is itself valid JavaScript", (t) => {
+  // Both scripts compile with this broken, because to Python and Node the
+  // browser snippet is just a string. Python's """...""" treats \\' as an
+  // escape, so a single-quoted selector inside it arrives at the browser
+  // unterminated — a run-time SyntaxError in a page, which no parse check
+  // above can see.
+  const { py, js } = emit([
+    step("PAGE_DATA", { source: "auto", type: "Product", flatten: true }),
+  ]);
+
+  // Read it back the way Python will: the text in the .py file is not what
+  // reaches the browser, because Python resolves the escapes in it first.
+  // Checking the raw text passes with this broken, which is how it got here.
+  let python;
+  try {
+    python = execFileSync("sh", ["-c", "command -v python3"], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    t.skip("no python3 on this machine");
+    return;
+  }
+  const pyFile = join(dir, "pd.py");
+  writeFileSync(pyFile, py);
+  const reader = join(dir, "read_snippet.py");
+  writeFileSync(
+    reader,
+    [
+      "import ast, sys",
+      "tree = ast.parse(open(sys.argv[1]).read())",
+      "for node in ast.walk(tree):",
+      "    if isinstance(node, ast.Constant) and isinstance(node.value, str):",
+      '        if "querySelectorAll" in node.value:',
+      "            sys.stdout.write(node.value)",
+      "            break",
+    ].join("\n"),
+  );
+  const pySnippet = execFileSync(python, [reader, pyFile], {
+    encoding: "utf8",
+  });
+  assert.ok(pySnippet.includes("querySelectorAll"), "no snippet found");
+  assert.doesNotThrow(
+    () => new Function(`return (${pySnippet})`),
+    "the snippet Python sends to the browser does not parse as JavaScript",
+  );
+
+  // The Node emitter inlines the snippet as a real arrow function in the
+  // script itself, so `node --check` above already parses it. Assert only that
+  // it is present.
+  assert.match(js, /page\.evaluate\(\(\) => \{/);
+  assert.match(js, /ld\+json/);
+});

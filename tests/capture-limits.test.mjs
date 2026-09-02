@@ -210,3 +210,79 @@ test("stopping clears the interval as well as the alarm", () => {
 test("the alarm is no longer described as a 20-second heartbeat", () => {
   assert.ok(!/\{ periodInMinutes: 0\.33 \}\); \/\/ ~20s/.test(swSrc));
 });
+
+// ── A-12, found by running an export in a real browser ───────────────────────
+
+test("the worker never asks for a Blob URL it cannot have", () => {
+  // MV3 service workers have Blob but not URL.createObjectURL. Every EXPORT
+  // failed with "URL.createObjectURL is not a function" and downloaded nothing,
+  // while the unit tests passed because this harness stubbed it in.
+  const code = swSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  assert.ok(
+    !/URL\.createObjectURL/.test(code),
+    "a service worker does not have it",
+  );
+  assert.ok(!/URL\.revokeObjectURL/.test(code));
+});
+
+test("downloads go out as data: URLs, BOM included in the bytes", () => {
+  const fn = swSrc.match(/async function _doExport\([\s\S]*?\n\}\n/)[0];
+  assert.match(fn, /_bytesToDataUrl\(zipBytes, "application\/zip"\)/);
+  assert.match(
+    fn,
+    /_bytesToDataUrl\(enc\.encode\("\\uFEFF" \+ dataContent\), dataMime\)/,
+    "the BOM is encoded with the content, not dropped into the URL raw",
+  );
+});
+
+test("base64 is built in chunks, and oversized exports are refused by name", () => {
+  const fn = swSrc.match(
+    /function _bytesToDataUrl\(bytes, mime\) \{[\s\S]*?\n\}/,
+  )[0];
+  assert.match(
+    fn,
+    /const CHUNK = 0x8000;/,
+    "spreading a big array would throw",
+  );
+  assert.match(fn, /String\.fromCharCode\.apply\(null, bytes\.subarray/);
+  assert.match(fn, /bytes\.length > MAX_DOWNLOAD_BYTES/);
+  assert.match(fn, /over the/, "and the error says what the limit is");
+  assert.match(swSrc, /const MAX_DOWNLOAD_BYTES = 64 \* 1024 \* 1024;/);
+});
+
+test("it encodes what it is given, at size", () => {
+  const toDataUrl = new Function(
+    `const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+     ${swSrc.match(/function _bytesToDataUrl\(bytes, mime\) \{[\s\S]*?\n\}/)[0]}
+     return _bytesToDataUrl;`,
+  )();
+
+  const small = toDataUrl(new TextEncoder().encode("a,b\n1,2\n"), "text/csv");
+  assert.match(small, /^data:text\/csv;base64,/);
+  assert.equal(atob(small.split(",")[1]), "a,b\n1,2\n");
+
+  // Past the argument limit that String.fromCharCode(...bytes) would hit.
+  const big = new Uint8Array(300000).fill(65);
+  const url = toDataUrl(big, "application/zip");
+  assert.equal(atob(url.split(",")[1]).length, 300000);
+
+  assert.throws(
+    () => toDataUrl(new Uint8Array(65 * 1024 * 1024), "application/zip"),
+    /over the 64 MB limit/,
+  );
+});
+
+test("the worker harness does not hand the worker something it lacks", async () => {
+  const harness = await readFile(
+    new URL("./helpers/worker-harness.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(harness, /delete globalThis\.URL\.createObjectURL/);
+  assert.match(
+    harness,
+    /The mock has to be as poor as\s*\n\/\/ the real thing/,
+    "the reason is written down",
+  );
+});

@@ -84,11 +84,17 @@ over real HTTP, and drives actual steps against it. The unit tests mock `chrome`
 jsdom the DOM and fake IndexedDB — they prove the logic, and they cannot prove
 Chrome will load the manifest or that a step reaches a page.
 
-That distinction is not theoretical. The PDF reader passed 18 hand-built
-fixtures and returned nothing at all for a PDF Chrome had printed, because
-`endstream` ends in `stream` and the scan matched the tail of the token it had
-just consumed (A-11). No fixture I would have thought to write catches that. A
-real file does, immediately.
+That distinction is not theoretical. Two blockers survived the whole unit suite:
+
+- The PDF reader passed 18 hand-built fixtures and returned nothing for a PDF
+  Chrome had printed, because `endstream` ends in `stream` and the scan matched
+  the tail of the token it had just consumed (A-11).
+- `EXPORT` had **never** downloaded a file. Service workers have no
+  `URL.createObjectURL`, and the worker harness defined one (A-12).
+
+The second is the sharper lesson: **a mock must be as poor as the thing it
+stands in for.** A stub that is more capable than the runtime does not test the
+code, it tests a fiction. When you add to a harness, add the limitation too.
 
 Add an e2e check for anything that crosses a boundary the unit tests fake:
 injection, messaging, storage, a real file format.
@@ -100,7 +106,7 @@ it matters — why it is built the way it is. Several record a decision that loo
 wrong until you know the constraint. Keep that up; the docblocks that were left
 to drift are what made this codebase hard to trust.
 
-`docs/ISSUE_AUDIT.md` is the inventory: 128 findings, what is fixed, what is
+`docs/ISSUE_AUDIT.md` is the inventory: 129 findings, what is fixed, what is
 open, and what was left alone on purpose. Read it before trusting any claim
 about how something works.
 

@@ -129,10 +129,16 @@ globalThis.fetch = async () => ({
   },
 });
 
-// The worker builds Blob URLs for downloads.
-if (!globalThis.URL.createObjectURL) {
-  globalThis.URL.createObjectURL = () => "blob:mock";
-  globalThis.URL.revokeObjectURL = () => {};
+// Deliberately NOT stubbing URL.createObjectURL.
+//
+// This harness used to define it, because the worker called it for downloads.
+// MV3 service workers do not have it — it is undefined in a real one — so the
+// stub made every unit test pass while EXPORT failed in every real browser with
+// "URL.createObjectURL is not a function" (A-12). The mock has to be as poor as
+// the real thing, or it tests something that does not exist.
+if (globalThis.URL.createObjectURL) {
+  delete globalThis.URL.createObjectURL;
+  delete globalThis.URL.revokeObjectURL;
 }
 
 const worker = await import(

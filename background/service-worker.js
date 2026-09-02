@@ -1103,6 +1103,44 @@ function _rowKey(row) {
   );
 }
 
+/**
+ * Bytes to a `data:` URL the downloads API can fetch.
+ *
+ * A service worker has `Blob` but **not** `URL.createObjectURL` — MV3 removed
+ * it from worker contexts. So every EXPORT failed with "URL.createObjectURL is
+ * not a function" and downloaded nothing, in every real browser, while the unit
+ * tests passed because the worker harness stubs that function (A-12).
+ *
+ * The comment this replaces argued for Blob URLs on the grounds that "a large
+ * export could exceed what a data: URL can carry". The downloads API takes them
+ * at least into the tens of megabytes — verified at 20 MB in e2e — and a Blob
+ * URL that cannot be created carries nothing at all.
+ *
+ * @param {Uint8Array} bytes
+ * @param {string} mime
+ * @returns {string}
+ */
+function _bytesToDataUrl(bytes, mime) {
+  if (bytes.length > MAX_DOWNLOAD_BYTES) {
+    throw new Error(
+      `Export is ${Math.round(bytes.length / 1048576)} MB, over the ` +
+        `${Math.round(MAX_DOWNLOAD_BYTES / 1048576)} MB limit for a single download. ` +
+        `Export fewer rows, or split the run.`,
+    );
+  }
+  // Chunked: String.fromCharCode(...bytes) blows the argument limit on anything
+  // of real size, which is exactly the case that matters here.
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
+/** Ceiling on one download. Above this the base64 string itself is the problem. */
+const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+
 async function _doExport(runId, config) {
   const runState = _runStates.get(runId);
   if (!runState) return;
@@ -1165,19 +1203,11 @@ async function _doExport(runId, config) {
     }
 
     const zipBytes = _buildZip(zipFiles);
-    const blob = new Blob([zipBytes], { type: "application/zip" });
-    const zipUrl = URL.createObjectURL(blob);
-    try {
-      await chrome.downloads.download({
-        url: zipUrl,
-        filename: `flowscrape_export_${ts}.zip`,
-        saveAs: false,
-      });
-    } finally {
-      // Never revoked before, so every export leaked its whole payload for the
-      // lifetime of the worker.
-      URL.revokeObjectURL(zipUrl);
-    }
+    await chrome.downloads.download({
+      url: _bytesToDataUrl(zipBytes, "application/zip"),
+      filename: `flowscrape_export_${ts}.zip`,
+      saveAs: false,
+    });
     // A short export is never silent: if the capture buffers filled, the count
     // that did not make it is part of the result.
     const dropped =
@@ -1193,20 +1223,14 @@ async function _doExport(runId, config) {
       runId,
     );
   } else if (allRows.length > 0) {
-    // A Blob URL, not a data: URL. The BOM used to sit outside
-    // encodeURIComponent, so it went into the URL raw and was mangled; and a
-    // large export could exceed what a data: URL can carry.
-    const blob = new Blob(["\uFEFF" + dataContent], { type: dataMime });
-    const url = URL.createObjectURL(blob);
-    try {
-      await chrome.downloads.download({
-        url,
-        filename: `flowscrape_export_${ts}.${dataExt}`,
-        saveAs: false,
-      });
-    } finally {
-      URL.revokeObjectURL(url);
-    }
+    // The BOM goes through the encoder with the rest of the content, so it is
+    // base64 of real UTF-8 bytes rather than a character dropped into a URL and
+    // mangled — which is what the original data: URL build got wrong.
+    await chrome.downloads.download({
+      url: _bytesToDataUrl(enc.encode("\uFEFF" + dataContent), dataMime),
+      filename: `flowscrape_export_${ts}.${dataExt}`,
+      saveAs: false,
+    });
     _broadcastLog(
       "info-log",
       `Exported ${allRows.length} rows as ${fmt.toUpperCase()}.`,

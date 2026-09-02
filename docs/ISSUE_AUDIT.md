@@ -120,14 +120,16 @@ decision:
 | B-28, G-05 | _this batch_ | `utils/pdf-text.js` reads PDFs in the worker with no dependencies; both "use an MCP tool" messages are gone, one of which named a tool that never existed |
 | C-09, F-01, F-02, F-04, F-07, F-09, B-33, B-34 | _this batch_ | Content scripts injected on demand instead of running on every page; the dead half resolved module by module; rate limiting actually paces a run; captcha polling loops; sticky and round-robin get separate cursors |
 | H-12 | _this batch_ | `CONTRIBUTING.md`, `CHANGELOG.md` and `docs/ARCHITECTURE.md` — the last had ten decisions in it that were only recorded in module docblocks, if anywhere |
-| **A-11** | _this batch_ | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
+| **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
+| **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 125 of 128 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 126 of 129 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because two
 findings were discovered while testing the fixes for others and added to the
-audit rather than fixed silently: A-10 (a cached IndexedDB failure) and A-11 (the
-PDF stream framing).
+audit rather than fixed silently: A-10 (a cached IndexedDB failure), A-11 (PDF
+stream framing) and A-12 (`EXPORT` downloading nothing at all). The last two came
+from running the code in a real browser, which is why `npm run e2e` exists.
 
 The four **Correction** paragraphs in the sections below mark entries that were
 overstated or wrong when written. They are left in place, corrected, rather than
@@ -259,6 +261,18 @@ _Not in the original audit — found by running `utils/pdf-text.js` against a PD
 It also ignored `/Length` entirely, framing streams by the next `endstream` — which is wrong for binary font programs whose bytes contain that sequence.
 
 Fixed with a negative lookbehind on the scan, a cursor that clears the whole `endstream` token, and `/Length` honoured where the dictionary states it directly (falling back to the delimiter for a wrong or indirect length). The hand-built fixtures in `tests/pdf-text.test.mjs` all passed throughout — this needed a PDF a real writer produced.
+
+### A-12 · BLOCKER · `EXPORT` has never downloaded anything in a real browser
+
+_Not in the original audit — found by running an export end to end in Chromium._
+
+`_doExport` built a `Blob` and called `URL.createObjectURL`. **MV3 service workers do not have that function.** Every export therefore failed with `[EXPORT] URL.createObjectURL is not a function` and produced no file, on every run, in every browser.
+
+It survived 442 unit tests because `tests/helpers/worker-harness.mjs` defined `URL.createObjectURL` for the worker — a mock more capable than the thing it stood in for. That stub is now deleted rather than corrected, so the harness is as poor as the real runtime.
+
+Worse, the code was deliberate: the comment above it read _"A Blob URL, not a data: URL … a large export could exceed what a data: URL can carry."_ The `data:` route was removed in favour of one that cannot run at all. Chrome's downloads API takes a `data:` URL well into the tens of megabytes — verified at 20 MB in the e2e suite — and a Blob URL that cannot be created carries nothing.
+
+Fixed by encoding to a `data:` URL in chunks (spreading a large array into `String.fromCharCode` throws), with the BOM inside the encoded bytes rather than dropped into the URL raw, and a stated 64 MB ceiling.
 
 ---
 

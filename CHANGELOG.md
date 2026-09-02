@@ -10,12 +10,13 @@ if any copy of it drifts.
 ## [Unreleased]
 
 Everything below was found by a full-repository audit
-([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 126 findings) and fixed against
+([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 129 findings) and fixed against
 it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-442**.
+451**, plus **32 end-to-end checks** that load the extension into a real
+Chromium and drive it — which is what caught the last three findings.
 
 ### Fixed — the product did not work
 
@@ -49,9 +50,17 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 
 - **Rows were silently duplicated on export** (D-07): dedup compared stringified
   rows, and an IndexedDB round-trip does not preserve key order.
+- **`EXPORT` had never downloaded a file** (A-12). The worker called
+  `URL.createObjectURL`, which MV3 service workers do not have, so every export
+  failed and produced nothing. It passed 442 unit tests because the test harness
+  defined that function for the worker — a mock more capable than the runtime.
+  Found by running an export in a real browser.
 - **One failed `indexedDB.open` disabled all persistence** for the worker's life
   (A-10, found while testing D-12) — the rejected promise stayed cached, and
   every later write failed with the original error.
+- **The PDF reader lost every stream after the first** (A-11), because
+  `endstream` ends in `stream`. Eighteen hand-built fixtures passed; a
+  Chrome-printed PDF came back empty.
 - **A transient flush failure killed the step that produced the row** (D-12),
   under a docblock promising the opposite.
 - **The keep-alive could not keep anything alive** (D-02). Chrome clamps the

@@ -119,12 +119,17 @@ decision:
 | E-05, E-09, E-11, E-12, E-15, E-16, E-17, E-20 | _this batch_ | Drag-and-drop works anywhere in the tree; the panel is keyboard-operable; wires redraw once a frame; the zoom modifier is explained; IF_ELSE can be optional; field rows are editable; key capture counts down; the library shows how full it is |
 | B-28, G-05 | _this batch_ | `utils/pdf-text.js` reads PDFs in the worker with no dependencies; both "use an MCP tool" messages are gone, one of which named a tool that never existed |
 | C-09, F-01, F-02, F-04, F-07, F-09, B-33, B-34 | _this batch_ | Content scripts injected on demand instead of running on every page; the dead half resolved module by module; rate limiting actually paces a run; captcha polling loops; sticky and round-robin get separate cursors |
+| H-12 | _this batch_ | `CONTRIBUTING.md`, `CHANGELOG.md` and `docs/ARCHITECTURE.md` — the last had ten decisions in it that were only recorded in module docblocks, if anywhere |
+| F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open** — 27 of 126, all MEDIUM or LOW: B-28, B-32, B-33, B-34; C-09,
-C-10; D-12, D-13; E-05, E-09, E-11, E-12, E-15, E-16, E-17, E-19, E-20; F-01,
-F-02, F-04, F-07, F-09; G-05; H-12. Plus A-05, A-06 and A-07, left by decision
-(see above). F-01, F-02, F-04, F-07 and F-09 all describe the same unreachable
-half of the tree that decision covers; each module now says so in its own header.
+**Still open: nothing.** 124 of 127 findings fixed; A-05, A-06 and A-07 left by
+decision, as set out above. The count is 127 rather than the original 126
+because A-10 was found while writing a regression test for D-12 and added to the
+audit rather than fixed silently.
+
+The four **Correction** paragraphs in the sections below mark entries that were
+overstated or wrong when written. They are left in place, corrected, rather than
+edited into looking right.
 
 **E-01 was worse than recorded, and partly my doing.** The finding says the
 backend was fully wired and only the button was missing. By the time it was

@@ -1,0 +1,192 @@
+# Architecture decisions
+
+Why the parts are shaped the way they are. Each entry states the constraint
+first, because most of these look arbitrary until you know it.
+
+Findings in brackets are from [`ISSUE_AUDIT.md`](ISSUE_AUDIT.md).
+
+---
+
+## 1. No build step, no dependencies in the extension
+
+Plain ES modules, loaded directly by Chrome. `npm install` is for the test suite
+and Prettier.
+
+**Why.** A bundler is a second thing to keep working, and MV3's CSP forbids
+remote scripts anyway. The cost is real and paid deliberately: no npm library is
+available at run time, which is why `utils/pdf-text.js` reads PDFs by hand
+rather than importing pdfjs the way the MCP server does. When a dependency looks
+necessary, the answer is usually a smaller design.
+
+**Consequence.** `content/injector.js` and `content/page-sniffer.js` are classic
+scripts, not modules — content scripts cannot use `import`. They dynamically
+`import(chrome.runtime.getURL(...))` for the few modules they need, which is why
+`web_accessible_resources` exists and why it is exactly five files.
+
+---
+
+## 2. One definition, plus a test that fails on drift
+
+The same list was copy-pasted into four places and had diverged in all of them:
+`pipeline_validate` reported step types the UI had just produced as
+"unsupported", while listing one that did not exist [G-01].
+
+Shared things now have exactly one home, and each has a test whose only job is
+to fail when a second copy appears:
+
+| One place                     | Read by                                     |
+| ----------------------------- | ------------------------------------------- |
+| `utils/step-types.js`         | panel, both emitters, MCP server, executor  |
+| `exporters/row-formatters.js` | worker export, panel download, MCP          |
+| `checkpoint/idb-schema.js`    | row buffer, cursor store, resume manager    |
+| `utils/version.js`            | compiler, MCP identity, manifest (via test) |
+| `_dispatchStep`               | top-level steps, loop bodies, branches      |
+
+The test is the load-bearing part. Without it "one place" lasts until the next
+person is in a hurry.
+
+`content/injector.js` cannot import the registry, so a test asserts its switch
+covers every type marked `runsIn: "page"` instead.
+
+---
+
+## 3. Fail loudly rather than doing less quietly
+
+The single most common defect in this codebase was a step that reported success
+while doing nothing:
+
+- Emitters turned unsupported steps into a `# TODO` comment, so the script ran
+  and did less than the pipeline [B-13].
+- `FILL` typed into a field a framework immediately reverted [B-10].
+- `SELECT` cleared the control when nothing matched [B-23].
+- `EXTRACT` padded short columns with fabricated values [B-08].
+- A loop with `max: 0` ran zero times and said nothing [B-22].
+
+So: an exported script throws on a step it cannot express, `FILL` verifies the
+value stuck, `SELECT` names the available options, and a zero-count loop is an
+error naming the mode where zero is legal.
+
+Where guessing is possible but wrong, the code refuses and reports. A PDF page
+whose font has no `/ToUnicode` map comes back with a note, never with the
+mojibake that guessing would produce.
+
+---
+
+## 4. State that must survive a terminated worker goes to storage
+
+MV3 kills an idle service worker after 30 seconds, and `await`ing a timer does
+not count as activity.
+
+- **Rows** → IndexedDB, flushed every 50 rows or 30 seconds.
+- **Run cursors** → IndexedDB, so an interrupted run stays recoverable.
+- **API keys** → `chrome.storage.session`, encrypted; see §5.
+- **`_runStates`** → module scope, deliberately. A run cannot survive worker
+  death, so the fix is to _detect_ the loss and keep the data reachable, not to
+  pretend otherwise [D-01].
+
+The keep-alive is an interval calling a cheap extension API, because that is
+what resets the idle timer. The alarm that was supposed to do it fired after the
+worker it was protecting had already been torn down — Chrome clamps sub-minute
+alarm periods [D-02].
+
+---
+
+## 5. The encryption key lives beside the ciphertext, and that is stated
+
+API keys are AES-GCM encrypted in `chrome.storage.session`; the key that
+encrypts them is in the same session-scoped storage.
+
+**Why.** There is no MV3 mechanism for a key that both outlives service-worker
+termination and is never written down. The previous design kept it in module
+scope only, which meant keys became unreadable about thirty seconds after you
+saved them [A-04].
+
+This is defence in depth against incidental exposure — a log line, a crash
+dump — not protection from anything that can already read extension storage. The
+README says so in those words rather than implying more.
+
+---
+
+## 6. Nothing runs in a page until that page is the target
+
+`injector.js` and `smart-extractor.js` were declared content scripts on
+`<all_urls>`, so both ran in every page the user visited, for a tool that acts
+on one tab at a time [C-09].
+
+They are injected on demand into the tab a run or a picker is about to touch.
+The worker pings first — a second injection would re-register the message
+listener and double every reply.
+
+`page-sniffer.js` has always been runtime-registered: it wraps `fetch` and `XHR`
+in the page's own world and forwards bodies, so it is scoped to an active
+`API_SNIFFER` run's origin [C-02].
+
+`<all_urls>` **host access** is still needed, for `fetch` from the worker — API
+steps and robots.txt. Host access and running code in pages are different
+things, and only the second was the problem.
+
+---
+
+## 7. The ethics gates run twice, on purpose
+
+The side panel runs them as a preflight and shows what they found. The service
+worker runs them again at `pipeline:start`.
+
+**Why.** A client that skips the preflight must gain nothing by it. The panel's
+copy is for explaining; the worker's is for enforcing.
+
+Gate 6 (domain lock) checks _authored_ origins at start, and undeclared origins
+are blocked at execution — which is where a templated URL is finally known
+[B-03].
+
+---
+
+## 8. Bounded, not solved — and labelled as such
+
+Some fixes are ceilings rather than designs:
+
+- Screenshots and sniffed requests are capped by size and count. The design fix
+  is to stream them to IndexedDB the way rows already are. Until then a run that
+  fills the buffer keeps going, drops the excess, and reports the count in the
+  export line [D-10, D-11].
+- Credential detection for script export is heuristic. It cannot recognise a
+  password in a field that looks like any other, so the export lists every
+  credential it _did_ replace, making the gaps visible by omission [B-14].
+- The file library checks a budget before writing, because
+  `chrome.storage.local` is ~10 MB and base64 inflates by a third. That is a
+  guard, not a storage design [C-12].
+
+Each limit is stated in the module and in the audit. A limitation someone has to
+rediscover is worse than one written down.
+
+---
+
+## 9. Two PDF readers, deliberately
+
+The MCP server uses pdfjs. The extension cannot — no bundler, no npm — so
+`utils/pdf-text.js` reads PDFs directly.
+
+They are independent implementations of overlapping scope, which is normally a
+smell. Here the alternative is worse: either the extension gains a build step,
+or `PDF_EXTRACTION` stays a stub that tells the user to run a tool they have no
+bridge to, which is what it did [B-28, G-05].
+
+The extension's reader handles what text PDFs are mostly made of and reports
+what it cannot do. pdfjs handles more. That difference is documented rather than
+papered over.
+
+---
+
+## 10. Three modules are kept unreachable on purpose
+
+`form-filler.js`, `field-auto-mapper.js` and `captcha-detector.js` work, and
+nothing calls them [A-05, A-06, A-07].
+
+Since they are unreachable, deleting and keeping them behave identically today.
+Enabling them would add a class of capability nobody asked for; deleting them
+forecloses a decision that is not mine. So each carries a header saying plainly
+that nothing calls it, with the finding that explains why — and their own
+defects are still fixed as defects [B-19, B-33, B-34].
+
+Everything else the audit called dead has since been deleted or wired up. The
+table is in the audit's status section.

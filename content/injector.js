@@ -300,7 +300,9 @@ async function _executeStep(step) {
     case "API":
       throw new Error("API step is executed in background runtime only");
     case "PAGINATE":
-      return _stepClick(config, context);
+      return _stepPaginate(config, context);
+    case "PAGINATE_PROBE":
+      return _stepPaginateProbe(config, context);
     case "QUERY_COUNT": {
       const els = _queryScoped(config.selector || "*", context, true);
       return { count: els.length };
@@ -652,10 +654,14 @@ async function _stepClick(
   };
 }
 
-async function _stepScroll(
-  { mode = "pixel", amount, value, selector, behavior = "smooth" },
-  context = {},
-) {
+async function _stepScroll(config = {}, context = {}) {
+  const {
+    mode = "pixel",
+    amount,
+    value,
+    selector,
+    behavior = "smooth",
+  } = config;
   const scrollAmount = amount ?? value ?? 300;
   const scrollBehavior = behavior === "instant" ? "auto" : "smooth";
   if ((mode === "selector" || mode === "element") && selector) {
@@ -673,6 +679,8 @@ async function _stepScroll(
       top: (docHeight * scrollAmount) / 100,
       behavior: scrollBehavior,
     });
+  } else if (mode === "infinite" || mode === "bottom") {
+    return _scrollInfinite(config);
   } else {
     // mode === 'pixel' or 'px' or default
     window.scrollBy({ top: scrollAmount, behavior: scrollBehavior });
@@ -680,20 +688,219 @@ async function _stepScroll(
   return { scrolled: true };
 }
 
+/** How tall the scrollable document is, whichever element owns the scroll. */
+function _docHeight() {
+  return Math.max(
+    document.documentElement?.scrollHeight ?? 0,
+    document.body?.scrollHeight ?? 0,
+  );
+}
+
+/**
+ * Scroll to the bottom repeatedly until the page stops growing.
+ *
+ * This is what an infinite feed needs and what the step could not do: the other
+ * modes each perform exactly one scroll, so scraping a lazy-loaded list meant
+ * guessing how many SCROLL steps to stack and hoping the network kept up.
+ *
+ * Two things it will not do:
+ *   * spin forever — `maxScrolls` bounds it, and the result says whether it
+ *     stopped because the feed ended or because it ran out of scrolls, so a
+ *     truncated scrape is visible rather than silent;
+ *   * declare the end on the first quiet round — `stableRounds` consecutive
+ *     rounds with no growth are required, because a feed that is mid-fetch when
+ *     the timer fires looks exactly like a feed that has finished.
+ *
+ * @returns {Promise<{scrolled: boolean, mode: string, scrolls: number,
+ *   height: number, grew: number, exhausted: boolean}>}
+ */
+async function _scrollInfinite({
+  maxScrolls = 50,
+  settleMs = 1200,
+  stableRounds = 2,
+  selector = "",
+} = {}) {
+  const limit = Math.max(1, Number(maxScrolls) || 50);
+  const settle = Math.max(0, Number(settleMs) ?? 1200);
+  const needed = Math.max(1, Number(stableRounds) || 2);
+
+  const startHeight = _docHeight();
+  const countItems = () =>
+    selector ? document.querySelectorAll(selector).length : 0;
+  const startItems = countItems();
+
+  let height = startHeight;
+  let items = startItems;
+  let quiet = 0;
+  let scrolls = 0;
+  let exhausted = false;
+
+  while (scrolls < limit) {
+    window.scrollTo({ top: _docHeight(), behavior: "auto" });
+    scrolls++;
+    await _sleep(settle);
+
+    const nextHeight = _docHeight();
+    const nextItems = countItems();
+    // Item count is the better signal where it is available: a feed can swap
+    // a placeholder for a card without the document getting any taller.
+    const grew = nextHeight > height || (selector && nextItems > items);
+    height = nextHeight;
+    items = nextItems;
+
+    if (grew) {
+      quiet = 0;
+      continue;
+    }
+    if (++quiet >= needed) {
+      exhausted = true;
+      break;
+    }
+  }
+
+  return {
+    scrolled: true,
+    mode: "infinite",
+    scrolls,
+    height,
+    grew: height - startHeight,
+    items,
+    newItems: items - startItems,
+    exhausted,
+  };
+}
+
+/**
+ * Class names sites give a Next control that has nothing left to go to.
+ * Checked as whole words so `disabled-state` matches and `undisabled` does not.
+ */
+const _PAGINATE_DEAD_CLASS =
+  /(^|[\s_-])(disabled|inactive|is-disabled)([\s_-]|$)/i;
+
+/**
+ * Is this Next control still usable?
+ * @returns {string} "" when it is, otherwise why it is not
+ */
+function _paginateDeadReason(el) {
+  if (el.disabled === true) return "the Next control is disabled";
+  if (el.getAttribute("aria-disabled") === "true") {
+    return "the Next control is marked aria-disabled";
+  }
+  if (_PAGINATE_DEAD_CLASS.test(el.className || "")) {
+    return "the Next control is styled as disabled";
+  }
+  if (el.tagName === "A" && !el.getAttribute("href")) {
+    return "the Next link has no target";
+  }
+  const style = el.ownerDocument.defaultView?.getComputedStyle?.(el);
+  if (style && (style.display === "none" || style.visibility === "hidden")) {
+    return "the Next control is hidden";
+  }
+  return "";
+}
+
+/**
+ * A cheap description of what is on the page right now.
+ *
+ * Enough to tell "the click loaded page 2" from "the click did nothing", which
+ * is the only way to stop at the end of a paginator whose Next button is always
+ * present and always enabled — a common shape in single-page apps.
+ */
+function _pageFingerprint() {
+  return `${location.href}|${_docHeight()}|${document.body?.textContent?.length ?? 0}`;
+}
+
+/**
+ * Look at the Next control without touching it.
+ *
+ * Split from the click deliberately. Clicking a real `<a href>` navigates, the
+ * content script is torn down with the document, and the reply never arrives —
+ * Chrome reports "the message channel closed before a response was received"
+ * and the step looks like a failure. So the page answers the question first and
+ * the worker performs the click, where losing the page mid-step is expected
+ * rather than fatal.
+ *
+ * @returns {{exhausted: boolean, reason: string, fingerprint: string}}
+ */
+function _stepPaginateProbe({ selector = "" }, context = {}) {
+  if (!selector) throw new Error("Paginate: no Next selector configured.");
+  const fingerprint = _pageFingerprint();
+
+  const matches = _queryScoped(selector, context, true);
+  if (matches.length === 0) {
+    return {
+      exhausted: true,
+      fingerprint,
+      reason: `no element matched "${selector}" — this looks like the last page`,
+    };
+  }
+  const dead = _paginateDeadReason(matches[0]);
+  return { exhausted: Boolean(dead), reason: dead, fingerprint };
+}
+
+/**
+ * Click through to the next page, and say whether there was one.
+ *
+ * This used to be `return _stepClick(config)` — a click wearing a different
+ * name. A loop configured for 10 pages therefore ran its body 10 times whether
+ * or not the site had 10 pages: past the last one the click matched nothing,
+ * _stepClick reported `clicked: 0` without failing, and the loop re-scraped the
+ * final page until the count ran out. Duplicate rows, and no sign anything was
+ * wrong.
+ *
+ * It does not wait for the next page here: see _stepPaginateProbe. The caller
+ * (LOOP in paginate mode, via the worker) stops on `exhausted`.
+ *
+ * @returns {Promise<{paginated: boolean, exhausted: boolean, reason: string}>}
+ */
+async function _stepPaginate({ selector = "" }, context = {}) {
+  const probe = _stepPaginateProbe({ selector }, context);
+  if (probe.exhausted) {
+    return { paginated: false, exhausted: true, reason: probe.reason };
+  }
+  await _stepClick({ selector, retries: 3 }, context);
+  return { paginated: true, exhausted: false, reason: "" };
+}
+
+/**
+ * Wait for something, rather than for the clock.
+ *
+ * Every branch below except "fixed" was unreachable until now: the service
+ * worker's WAIT case slept and returned, and never forwarded the step, so the
+ * only wait the product could actually perform was the one that is wrong on a
+ * page that loads its content asynchronously — which is all of them.
+ *
+ * A misconfigured wait throws instead of falling through to a sleep. Sleeping
+ * looks like success, and the step after it reads a page that is not ready.
+ */
 async function _stepWait(
-  { mode = "fixed", ms = 1000, selector, timeout = 15000 },
+  { mode = "fixed", ms = 1000, selector, timeout = 15000, quietMs = 500 },
   context = {},
 ) {
-  if (mode === "fixed") {
-    await _sleep(ms);
-  } else if (mode === "selector-visible" && selector) {
-    await _waitForSelectorScoped(selector, timeout, context);
-  } else if (mode === "DOM-stable") {
-    await _waitDOMStable();
-  } else {
-    await _sleep(ms);
+  const limit = Number(timeout) > 0 ? Number(timeout) : 15000;
+  switch (mode) {
+    case "selector-visible":
+      if (!selector) {
+        throw new Error("Wait: 'until element appears' needs a selector.");
+      }
+      await _waitForSelectorScoped(selector, limit, context);
+      return { waited: true, mode, selector };
+
+    case "selector-gone":
+      if (!selector) {
+        throw new Error("Wait: 'until element disappears' needs a selector.");
+      }
+      await _waitForSelectorGone(selector, limit, context);
+      return { waited: true, mode, selector };
+
+    case "DOM-stable":
+      await _waitDOMStable(Number(quietMs) || 500, limit);
+      return { waited: true, mode };
+
+    default:
+      await _sleep(Number(ms) || 1000);
+      return { waited: true, mode: "fixed", ms: Number(ms) || 1000 };
   }
-  return { waited: true };
 }
 
 async function _stepExtract({ fields = [], schema = [] }, context = {}) {
@@ -1964,13 +2171,48 @@ function _sleep(ms) {
 // _waitForSelector lived here, duplicating _waitForSelectorScoped below
 // without the scoping. Nothing called it (B-32).
 
+/**
+ * Is this element rendered, rather than merely present?
+ *
+ * A `display:none` placeholder for the spinner that has not started yet, or a
+ * results container the page keeps empty and hidden between searches, both
+ * match the selector the user picked. Treating those as "appeared" resolves the
+ * wait immediately and hands the next step a page with nothing on it.
+ */
+function _isVisible(el) {
+  if (!el || !el.isConnected) return false;
+  const style = el.ownerDocument.defaultView?.getComputedStyle?.(el);
+  if (style) {
+    if (style.display === "none") return false;
+    if (style.visibility === "hidden" || style.visibility === "collapse") {
+      return false;
+    }
+    if (Number(style.opacity) === 0) return false;
+  }
+  // A rendered element occupies space. Where there is no layout engine at all
+  // and no rect to read, fall back to trusting the style checks above.
+  const rect = el.getBoundingClientRect?.();
+  if (!rect) return true;
+  return rect.width > 0 || rect.height > 0;
+}
+
 async function _waitForSelectorScoped(selector, timeout, context = {}) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (_queryScoped(selector, context, false).length > 0) return;
-    await _sleep(200);
+    if (_queryScoped(selector, context, false).some(_isVisible)) return;
+    await _sleep(100);
   }
   throw new Error(`Timeout waiting for selector: ${selector}`);
+}
+
+/** The mirror of the above: wait for a spinner or overlay to go away. */
+async function _waitForSelectorGone(selector, timeout, context = {}) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (!_queryScoped(selector, context, false).some(_isVisible)) return;
+    await _sleep(100);
+  }
+  throw new Error(`Timeout waiting for "${selector}" to disappear`);
 }
 
 async function _waitDOMStable(quietMs = 300, timeout = 8000) {

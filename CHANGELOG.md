@@ -10,13 +10,45 @@ if any copy of it drifts.
 ## [Unreleased]
 
 Everything below was found by a full-repository audit
-([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 129 findings) and fixed against
+([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 135 findings) and fixed against
 it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-451**, plus **32 end-to-end checks** that load the extension into a real
-Chromium and drive it — which is what caught the last three findings.
+501**, plus **42 end-to-end checks** that load the extension into a real
+Chromium and drive it — which is what caught four of them, including the two
+worst.
+
+### Added — what the steps can now do
+
+Section J of the audit. These are not defects in the A–I sense; they are
+capabilities the configuration promised and the code did not have.
+
+- **`WAIT` can wait for something** (J-01), instead of only for the clock. Wait
+  for an element to appear, for one to disappear, or for the page to stop
+  changing. The first two had been implemented in the content script since the
+  first commit and were unreachable: the worker's WAIT case slept and returned,
+  so nothing ever forwarded them. "Appear" means rendered, not merely present —
+  a `display:none` placeholder matching the selector is what makes an existence
+  check resolve early and hand the next step an empty page.
+- **`SCROLL` has an infinite mode** (J-02) that scrolls until the page stops
+  growing, for feeds and "load more" lists. Bounded, and it says whether it
+  stopped because the feed ended or because it ran out of scrolls.
+- **`PAGINATE` knows when the pages run out** (J-03). It was
+  `return _stepClick(config)` — a click under a different name — so a loop set
+  to 10 pages ran its body 10 times whether or not the site had 10 pages, and
+  re-scraped the last one. A Next control that is missing, disabled, hidden or
+  hrefless now ends the loop, and it says which.
+- **`NAVIGATE` waits for the page** (J-04) rather than sleeping three seconds
+  and hoping. A slow page is no longer scraped empty; a fast one no longer costs
+  three seconds per iteration.
+- **Seven step types have a configuration UI** (J-05) — WAIT, HOVER, SELECT,
+  DRAG_DROP, PAGINATE, SCREENSHOT and API_SNIFFER fell through to a loop that
+  rendered raw config keys as labels, so DRAG_DROP offered "source" and "target"
+  and nothing else.
+- Both script emitters were brought along, so an exported script does what the
+  pipeline does: the new wait modes, the infinite scroll loop, and a paginating
+  LOOP that clicks Next — which the emitted loop never did at all.
 
 ### Fixed — the product did not work
 
@@ -50,6 +82,12 @@ Chromium and drive it — which is what caught the last three findings.
 
 - **Rows were silently duplicated on export** (D-07): dedup compared stringified
   rows, and an IndexedDB round-trip does not preserve key order.
+- **Every page step after a navigation failed** (A-13). Content scripts are
+  injected on demand and die with their document; only the start of a run
+  injected them. So a pipeline that turned a page collected the first page and
+  then logged `Receiving end does not exist` once per step — which is most of
+  what a scraper does. Found by an end-to-end check that paginated three pages
+  correctly and came back with one row.
 - **`EXPORT` had never downloaded a file** (A-12). The worker called
   `URL.createObjectURL`, which MV3 service workers do not have, so every export
   failed and produced nothing. It passed 442 unit tests because the test harness

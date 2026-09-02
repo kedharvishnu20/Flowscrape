@@ -9,7 +9,7 @@
     "check": "node scripts/check-syntax.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "e2e": "node --test --test-timeout=180000 e2e/run.mjs e2e/panel.mjs"
+    "e2e": "node --test --test-concurrency=1 --test-timeout=180000 e2e/run.mjs e2e/panel.mjs"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.0.0",

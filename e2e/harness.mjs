@@ -48,7 +48,14 @@ export async function startSite(routes) {
   };
 }
 
-/** Launch Chromium with the extension loaded. */
+/**
+ * Launch Chromium with the extension loaded.
+ *
+ * `npm run e2e` passes --test-concurrency=1: each file launches its own browser
+ * with its own profile, and two of them competing for the machine made the
+ * panel checks fail intermittently on timing rather than on behaviour. A flaky
+ * suite is worse than a slow one — it teaches you to re-run instead of to look.
+ */
 export async function launch() {
   const userDataDir = await mkdtemp(join(tmpdir(), "fs-e2e-"));
   const ctx = await chromium.launchPersistentContext(userDataDir, {

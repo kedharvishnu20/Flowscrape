@@ -481,6 +481,42 @@ async function _ensureInjected(tabId) {
   }
 }
 
+/** Chrome's ways of saying "there is no content script on that tab". */
+const _GONE =
+  /Receiving end does not exist|message channel closed|Could not establish connection/i;
+
+/**
+ * Send a step to a page, putting the content script back if it is not there.
+ *
+ * Content scripts are injected on demand (C-09) and are destroyed with the
+ * document that hosts them. The run injected once, at the start, so every page
+ * step after any navigation — a NAVIGATE, a PAGINATE, a CLICK that follows a
+ * link — failed with "Receiving end does not exist". A pipeline that visits
+ * more than one page is most pipelines, so this was close to the whole product
+ * on any multi-page site; it survived because nothing had ever paginated far
+ * enough to notice.
+ *
+ * Optimistic rather than defensive: send first, and pay for the injection only
+ * on the tab where it is actually needed. `_ensureInjected` pings before it
+ * injects, so a retry cannot double-register the listener.
+ *
+ * @param {number} tabId
+ * @param {object} payload - a resolved step, `{type, config}`
+ * @returns {Promise<{ok: boolean, result?: any, error?: string}>}
+ */
+async function _sendToPage(tabId, payload) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, {
+      type: "step:execute",
+      payload,
+    });
+  } catch (err) {
+    if (!_GONE.test(err.message)) throw err;
+    await _ensureInjected(tabId);
+    return chrome.tabs.sendMessage(tabId, { type: "step:execute", payload });
+  }
+}
+
 // ── Message bus ───────────────────────────────────────────────────────────────
 /** @type {Map<string, (payload: any, sender: chrome.runtime.MessageSender) => Promise<any>>} */
 const _handlers = new Map();
@@ -832,15 +868,10 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   const useLlm = config.useLlm !== false;
 
   // ── Layer 1 & 2: run in-page smart-extractor ──────────────────────────────
-  const l12Resp = await chrome.tabs
-    .sendMessage(tabId, {
-      type: "step:execute",
-      payload: {
-        type: "AUTO_EXTRACT",
-        config: { confidenceThreshold: threshold },
-      },
-    })
-    .catch((err) => ({ ok: false, error: err.message }));
+  const l12Resp = await _sendToPage(tabId, {
+    type: "AUTO_EXTRACT",
+    config: { confidenceThreshold: threshold },
+  }).catch((err) => ({ ok: false, error: err.message }));
 
   if (!l12Resp?.ok) {
     throw new Error(
@@ -1520,9 +1551,9 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
     let found = null;
     try {
       // Pre-collect ALL element data upfront so templates can use {{item.href}}, {{item.text}} etc.
-      const r = await chrome.tabs.sendMessage(tabId, {
-        type: "step:execute",
-        payload: { type: "QUERY_ELEMENTS", config: { selector } },
+      const r = await _sendToPage(tabId, {
+        type: "QUERY_ELEMENTS",
+        config: { selector },
       });
       if (r?.ok && Array.isArray(r.result)) found = r.result;
     } catch (e) {
@@ -1606,13 +1637,33 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
     };
 
     if (ltype === "paginate" && i > 0 && selector) {
+      // PAGINATE, not CLICK. A click past the last page matches nothing and
+      // reports success, so the loop used to re-scrape the final page until
+      // "max pages" ran out — duplicate rows, and no sign of a problem (the
+      // dedup in the exporter hid the evidence too). PAGINATE says whether
+      // there was another page.
+      let paged;
       try {
-        await chrome.tabs.sendMessage(tabId, {
-          type: "step:execute",
-          payload: { type: "CLICK", config: { selector, retries: 3 } },
+        paged = await _executePaginate(tabId, {
+          selector,
+          settleMs: step.config.settleMs,
+          requireChange: step.config.requireChange,
         });
-        await _sleep(1500);
-      } catch {
+      } catch (e) {
+        _broadcastLog(
+          "warn-log",
+          `Loop: pagination failed on page ${i + 1} — ${e.message}`,
+          runId,
+        );
+        break;
+      }
+      if (paged.exhausted) {
+        const why = paged.reason || "no further pages";
+        _broadcastLog(
+          "info-log",
+          `Loop: stopped after ${i} page${i === 1 ? "" : "s"} — ${why}.`,
+          runId,
+        );
         break;
       }
     }
@@ -1634,10 +1685,7 @@ async function _executeIfElse(step, tabId, runId, parentCtx = {}) {
   let met = false;
   try {
     const resolved = _resolveConfig(step, parentCtx);
-    const r = await chrome.tabs.sendMessage(tabId, {
-      type: "step:execute",
-      payload: resolved,
-    });
+    const r = await _sendToPage(tabId, resolved);
     met = r?.result?.conditionMet === true;
   } catch {}
   _broadcastLog(
@@ -1651,6 +1699,107 @@ async function _executeIfElse(step, tabId, runId, parentCtx = {}) {
     runId,
     parentCtx,
   );
+}
+
+/** How long a navigation may take before the run stops waiting for it. */
+const NAV_TIMEOUT_MS = 30000;
+
+/**
+ * Wait for a tab to finish loading.
+ *
+ * NAVIGATE used to `_sleep(3000)` and hope. On a slow site the next step ran
+ * against a blank page and extracted nothing; on a fast one every navigation
+ * cost three seconds, which inside a loop over 200 links is ten minutes of
+ * doing nothing.
+ *
+ * Polling rather than chrome.tabs.onUpdated: the listener has to be added
+ * before the navigation and removed on every exit path, and a service worker
+ * that is torn down mid-wait leaks it. A poll has no such state.
+ *
+ * @returns {Promise<boolean>} false if the timeout was reached first
+ */
+async function _waitForTabLoad(tabId, timeoutMs = NAV_TIMEOUT_MS) {
+  // Chrome does not flip `status` to "loading" synchronously with the
+  // tabs.update call, so an immediate first poll can still see the *previous*
+  // page sitting at "complete" and return before anything has moved.
+  await _sleep(150);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    let tab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      return false; // the tab is gone; the caller's next step will say so
+    }
+    if (tab?.status === "complete") return true;
+    await _sleep(150);
+  }
+  return false;
+}
+
+/**
+ * Turn to the next page, and report whether there was one.
+ *
+ * Split across two messages on purpose. Clicking a real `<a href>` navigates
+ * the tab: the content script is destroyed with the document, its reply is
+ * never delivered, and Chrome surfaces "the message channel closed before a
+ * response was received". A page-side step that both decides and clicks
+ * therefore fails on exactly the sites pagination is for. So the page answers
+ * the question first, the worker performs the click, and losing the page after
+ * it is the expected outcome rather than an error.
+ *
+ * @returns {Promise<{paginated: boolean, exhausted: boolean, reason: string}>}
+ */
+async function _executePaginate(tabId, config = {}) {
+  const selector = String(config.selector || "").trim();
+  if (!selector) throw new Error("Paginate: no Next selector configured.");
+  const settleMs =
+    Number(config.settleMs) >= 0 ? Number(config.settleMs) : 1500;
+
+  const probe = await _sendToPage(tabId, {
+    type: "PAGINATE_PROBE",
+    config: { selector },
+  });
+  if (!probe?.ok) throw new Error(probe?.error || "Paginate: probe failed");
+  if (probe.result.exhausted) {
+    return { paginated: false, exhausted: true, reason: probe.result.reason };
+  }
+  const before = probe.result.fingerprint;
+
+  try {
+    // Deliberately not _sendToPage: a lost reply here means the click
+    // navigated, and re-sending it would turn a second page.
+    await chrome.tabs.sendMessage(tabId, {
+      type: "step:execute",
+      payload: { type: "PAGINATE", config: { selector } },
+    });
+  } catch (err) {
+    // The click took the content script with it, which is success. Anything
+    // else is not.
+    if (!_GONE.test(err.message)) throw err;
+  }
+
+  await _waitForTabLoad(tabId, NAV_TIMEOUT_MS);
+  if (settleMs > 0) await _sleep(settleMs);
+
+  if (config.requireChange) {
+    // For a paginator whose Next button is always present and always enabled —
+    // a common single-page-app shape — an unchanged page is the only signal
+    // that the pages have run out.
+    const after = await _sendToPage(tabId, {
+      type: "PAGINATE_PROBE",
+      config: { selector },
+    }).catch(() => null);
+    if (after?.ok && after.result.fingerprint === before) {
+      return {
+        paginated: false,
+        exhausted: true,
+        reason: "the page did not change after clicking Next",
+      };
+    }
+  }
+
+  return { paginated: true, exhausted: false, reason: "" };
 }
 
 /**
@@ -1675,13 +1824,40 @@ async function _dispatchStep(step, tabId, runId, ctx) {
     case "NAVIGATE": {
       _assertOriginAllowed(step.config.url, runState, step.type);
       await chrome.tabs.update(tabId, { url: step.config.url });
-      await _sleep(step.config.wait ? 3000 : 800);
+      if (step.config.wait === false) {
+        // The user asked not to wait; still give the navigation a beat to
+        // commit, or the next step runs against the page being replaced.
+        await _sleep(400);
+        return;
+      }
+      const timeoutMs = Number(step.config.timeoutMs) || NAV_TIMEOUT_MS;
+      const loaded = await _waitForTabLoad(tabId, timeoutMs);
+      if (!loaded) {
+        _broadcastLog(
+          "warn-log",
+          `${step.type}: the page was still loading after ${Math.round(timeoutMs / 1000)}s — continuing anyway.`,
+          runId,
+        );
+      }
       return;
     }
 
-    case "WAIT":
-      await _sleep(step.config.ms || 1000);
+    case "WAIT": {
+      const waitMode = step.config.mode || "fixed";
+      if (waitMode === "fixed") {
+        await _sleep(Number(step.config.ms) || 1000);
+        return;
+      }
+      // Every other mode needs to watch the DOM, so it belongs to the page.
+      // The content script has implemented them since the beginning; nothing
+      // had ever sent them there, which made them unreachable.
+      await _ensureInjected(tabId);
+      const waitResp = await _sendToPage(tabId, step);
+      if (!waitResp?.ok) {
+        throw new Error(waitResp?.error || `WAIT (${waitMode}) failed`);
+      }
       return;
+    }
 
     case "SCREENSHOT":
       await _captureScreenshot(tabId, step.config, runId);
@@ -1746,6 +1922,14 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       await _doExport(runId, step.config);
       return;
 
+    case "PAGINATE": {
+      const paged = await _executePaginate(tabId, step.config);
+      if (paged.exhausted) {
+        _broadcastLog("info-log", `Paginate: ${paged.reason}`, runId);
+      }
+      return;
+    }
+
     case "LOOP":
       await _executeLoop(step, tabId, runId, ctx);
       return;
@@ -1755,10 +1939,7 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       return;
 
     default: {
-      const resp = await chrome.tabs.sendMessage(tabId, {
-        type: "step:execute",
-        payload: step,
-      });
+      const resp = await _sendToPage(tabId, step);
       if (!resp?.ok) throw new Error(resp?.error || "Step failed");
 
       if (step.type === "EXTRACT" && Array.isArray(resp.result)) {
@@ -2016,22 +2197,37 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
   // Testing a single step is the other path that needs the page set up (C-09).
   await _ensureInjected(targetTabId);
 
-  if (resolvedStep.type === "WEBSITE" || resolvedStep.type === "NAVIGATE") {
-    await chrome.tabs.update(targetTabId, { url: resolvedStep.config.url });
-    return { navigated: true, url: resolvedStep.config.url };
+  if (resolvedStep.type === "PAGINATE") {
+    // Same helper the run uses, rather than a second copy that drifts (B-27).
+    return _executePaginate(targetTabId, resolvedStep.config);
   }
 
-  // Suppress the giant red error log output natively by catching the error locally and wrapping it nicely!
+  if (resolvedStep.type === "WEBSITE" || resolvedStep.type === "NAVIGATE") {
+    await chrome.tabs.update(targetTabId, { url: resolvedStep.config.url });
+    // Wait the same way a run does. Returning the moment the tab was told to
+    // navigate meant testing a step reported success against the page being
+    // replaced, so "Test step" and "Run" disagreed about what the step did —
+    // the same drift between two copies of a dispatch that B-27 was about.
+    const loaded =
+      resolvedStep.config.wait === false
+        ? false
+        : await _waitForTabLoad(
+            targetTabId,
+            Number(resolvedStep.config.timeoutMs) || NAV_TIMEOUT_MS,
+          );
+    return { navigated: true, url: resolvedStep.config.url, loaded };
+  }
+
+  // _sendToPage puts the content script back if the page has navigated since
+  // it was injected; only a tab that refuses injection outright reaches the
+  // message below.
   let resp;
   try {
-    resp = await chrome.tabs.sendMessage(targetTabId, {
-      type: "step:execute",
-      payload: resolvedStep,
-    });
+    resp = await _sendToPage(targetTabId, resolvedStep);
   } catch (err) {
-    if (err.message.includes("Receiving end does not exist")) {
+    if (_GONE.test(err.message)) {
       throw new Error(
-        "Receiving end does not exist. Please refresh the web page.",
+        "Could not reach this page. Reload the tab and try again.",
       );
     }
     throw err;

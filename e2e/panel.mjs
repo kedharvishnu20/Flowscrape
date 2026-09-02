@@ -109,8 +109,24 @@ test("clicking a palette item puts a step on the board", async () => {
 });
 
 test("the board survives a reload, because the step was saved", async () => {
+  // Wait for the write to land before reloading. saveState() is fire-and-forget
+  // from the click handler, so reloading straight away raced it and failed
+  // intermittently — on timing, not on behaviour, which is the worst kind of
+  // red.
+  await env.panel.waitForFunction(
+    () =>
+      new Promise((resolve) => {
+        chrome.storage.local.get("fs_active_pipeline", (v) =>
+          resolve((v.fs_active_pipeline?.steps ?? []).length > 0),
+        );
+      }),
+    null,
+    { timeout: 10000 },
+  );
   await env.panel.reload();
-  await env.panel.locator(".node-card").first().waitFor({ timeout: 5000 });
+  // Generous: this is a cold panel boot, and it shares the machine with
+  // whatever else the suite is running.
+  await env.panel.locator(".node-card").first().waitFor({ timeout: 20000 });
   assert.equal(await env.panel.locator(".node-card").count(), 1);
 });
 

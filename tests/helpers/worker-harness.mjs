@@ -14,14 +14,38 @@ if (!globalThis.crypto?.subtle) globalThis.crypto = webcrypto;
 /** Everything the mocks observed, cleared between tests with reset(). */
 export const calls = {
   tabUpdates: [],
+  tabGets: [],
   contentMessages: [],
   runtimeMessages: [],
   downloads: [],
   scriptingRegistered: [],
+  injections: [],
 };
 
 export function reset() {
   for (const key of Object.keys(calls)) calls[key].length = 0;
+  _tabStatuses = ["complete"];
+  _onInject = () => {};
+}
+
+/**
+ * The `status` values chrome.tabs.get hands back, consumed in order; the final
+ * entry repeats forever.
+ * @type {string[]}
+ */
+let _tabStatuses = ["complete"];
+
+/** Called when the worker injects the content script. Tests may replace it. */
+let _onInject = () => {};
+
+/** @param {() => void} fn */
+export function onInject(fn) {
+  _onInject = fn;
+}
+
+/** @param {string[]} statuses */
+export function setTabStatuses(statuses) {
+  _tabStatuses = statuses.slice();
 }
 
 function storageArea() {
@@ -72,7 +96,13 @@ globalThis.chrome = {
       calls.tabUpdates.push({ tabId, ...props });
     },
     async get() {
-      return { windowId: 1, url: "https://shop.test/" };
+      calls.tabGets.push(Date.now());
+      // A real tab reports "loading" until the document is ready. Tests that
+      // care set _tabStatuses to the sequence they want to observe; the last
+      // entry repeats, so an always-loading tab is ["loading"].
+      const status =
+        _tabStatuses.length > 1 ? _tabStatuses.shift() : _tabStatuses[0];
+      return { windowId: 1, url: "https://shop.test/", status };
     },
     async sendMessage(tabId, msg) {
       calls.contentMessages.push(msg);
@@ -97,6 +127,11 @@ globalThis.chrome = {
       return [];
     },
     async executeScript() {
+      calls.injections.push(Date.now());
+      // Injecting really does put the content script back, so a test that
+      // simulates a navigation can distinguish "the worker re-injected" from
+      // "the worker gave up".
+      _onInject();
       return [];
     },
   },

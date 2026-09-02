@@ -6,13 +6,13 @@ tab, and export the results.
 
 No build step. No bundler. Plain ES modules, loaded directly by Chrome.
 
-> **Status.** A full audit found 129 issues; 126 are fixed and three are left
+> **Status.** A full audit found 135 issues; 132 are fixed and three are left
 > alone on purpose (three subsystems that work but that nothing calls — the
 > reasoning is in the audit). Every fix landed with regression tests that were
-> run against the pre-fix code first to confirm they failed: 451 tests, from
-> zero, plus 32 end-to-end checks in a real Chromium with the extension loaded —
-> which is how the last three findings were caught, including an `EXPORT` that
-> had never downloaded anything. [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) is the inventory,
+> run against the pre-fix code first to confirm they failed: 501 tests, from
+> zero, plus 42 end-to-end checks in a real Chromium with the extension loaded —
+> which is how four findings were caught, among them an `EXPORT` that had never
+> downloaded anything and page steps that failed after every navigation. [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) is the inventory,
 > [`CHANGELOG.md`](CHANGELOG.md) the summary, and
 > [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explains why the parts are
 > shaped the way they are.
@@ -32,8 +32,8 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 477 tests, ~9s, no browser needed
-npm run e2e     # 35 checks in a real Chromium with the extension loaded
+npm test        # 501 tests, ~30s, no browser needed
+npm run e2e     # 42 checks in a real Chromium with the extension loaded
 npm run check   # parses every source file as an ES module
 npm run format  # prettier; `npm run format:check` in CI
 ```
@@ -136,8 +136,8 @@ script-gen/
   node-emitter.js              AST → Node (playwright)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         477 tests; node:test, jsdom, fake-indexeddb
-e2e/                           35 checks against a real Chromium
+tests/                         501 tests; node:test, jsdom, fake-indexeddb
+e2e/                           42 checks against a real Chromium
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, architecture, manual, template guide
 examples/                      Pipeline JSON you can import

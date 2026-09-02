@@ -454,7 +454,7 @@ Used for nested execution flows. Important behavior:
 - creates `liveCtx` with `extracted` object
 - resolves template values with `_resolveConfig`
 - emits status messages per step
-- executes special cases in SW for `WEBSITE`, `NAVIGATE`, `WAIT`, `SCREENSHOT`, `API`, `EXPORT`, `LOOP`, `IF_ELSE`
+- executes special cases in SW for `WEBSITE`, `NAVIGATE`, `WAIT` (fixed mode only), `PAGINATE`, `SCREENSHOT`, `API`, `EXPORT`, `LOOP`, `IF_ELSE`
 - sends normal steps to content runtime with `step:execute`
 - pushes extraction rows to row buffer
 
@@ -571,24 +571,22 @@ Routes service-worker messages into `_handleEvent(...)`.
 
 `_executeStep(step)` supports:
 
-- `WEBSITE`
-- `NAVIGATE`
+- `WEBSITE` and `NAVIGATE` are rejected here: the service worker drives the tab
 - `CLICK`
-- `SCROLL`
-- `WAIT`
+- `SCROLL` — `pixel`, `percent`, `selector`, and `infinite` (scroll until the page stops growing)
+- `WAIT` — `fixed`, `selector-visible`, `selector-gone`, `DOM-stable`
 - `EXTRACT`
-- `SCREENSHOT`
 - `FILL`
 - `TYPE`
 - `HOVER`
 - `SELECT`
 - `KEYBOARD`
 - `DRAG_DROP`
-- `LOOP`
 - `IF_ELSE`
 - `EXPORT`
-- `API` is rejected here because it belongs to the background runtime
-- `PAGINATE`
+- `SCREENSHOT`, `LOOP` and `API` are rejected here: they belong to the background runtime
+- `PAGINATE` — clicks the Next control and reports whether there was a next page
+- `PAGINATE_PROBE` — inspects the Next control without clicking it
 - `QUERY_COUNT`
 - `QUERY_ELEMENTS`
 

@@ -4,11 +4,14 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 126 findings — 9 blocker · 26 high · 63 medium · 28 low.
+**Totals:** 135 findings — 13 blocker · 29 high · 64 medium · 29 low. The
+original audit recorded 126; four blockers were found while fixing them (A-10 …
+A-13, three of the four in a real browser) and section J adds five capability
+gaps found by reading every step type against its implementation.
 
 | Section                         | Findings |
 | ------------------------------- | -------- |
-| A · Blockers                    | 9        |
+| A · Blockers                    | 13       |
 | B · Logic & correctness         | 34       |
 | C · Security & privacy          | 12       |
 | D · Data integrity & edge cases | 14       |
@@ -17,6 +20,7 @@
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
+| J · Capability gaps             | 5        |
 
 ---
 
@@ -122,18 +126,19 @@ decision:
 | H-12 | _this batch_ | `CONTRIBUTING.md`, `CHANGELOG.md` and `docs/ARCHITECTURE.md` — the last had ten decisions in it that were only recorded in module docblocks, if anywhere |
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
+| **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
+| J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 126 of 129 findings fixed; A-05, A-06 and A-07 left by
-decision, as set out above. The count grew from the original 126 because two
+**Still open: nothing.** 132 of 135 findings fixed; A-05, A-06 and A-07 left by
+decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
-audit rather than fixed silently: A-10 (a cached IndexedDB failure), A-11 (PDF
-stream framing) and A-12 (`EXPORT` downloading nothing at all). The last two came
-from running the code in a real browser, which is why `npm run e2e` exists.
-
-The four **Correction** paragraphs in the sections below mark entries that were
-overstated or wrong when written. They are left in place, corrected, rather than
-edited into looking right.
+audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
+stream framing), A-12 (`EXPORT` downloading nothing at all) and A-13 (every page
+step after a navigation failing) — and because section J records five
+capabilities the steps advertised and did not have. Three of the four new
+blockers came from running the code in a real browser, which is why
+`npm run e2e` exists.
 
 The four **Correction** paragraphs in the sections below mark entries that were
 overstated or wrong when written. They are left in place, corrected, rather than
@@ -273,6 +278,18 @@ It survived 442 unit tests because `tests/helpers/worker-harness.mjs` defined `U
 Worse, the code was deliberate: the comment above it read _"A Blob URL, not a data: URL … a large export could exceed what a data: URL can carry."_ The `data:` route was removed in favour of one that cannot run at all. Chrome's downloads API takes a `data:` URL well into the tens of megabytes — verified at 20 MB in the e2e suite — and a Blob URL that cannot be created carries nothing.
 
 Fixed by encoding to a `data:` URL in chunks (spreading a large array into `String.fromCharCode` throws), with the BOM inside the encoded bytes rather than dropped into the URL raw, and a stated 64 MB ceiling.
+
+### A-13 · BLOCKER · Every page step after a navigation fails
+
+_Not in the original audit — found by running a paginating pipeline in Chromium._
+
+Content scripts are injected on demand rather than declared for every page (the C-09 fix), and a content script is destroyed with the document that hosts it. Injection happened once, when the run started. So the first navigation in a run — a `NAVIGATE`, a `PAGINATE`, a `CLICK` that follows a link — left every subsequent page step talking to nothing, and each failed with Chrome's `Could not establish connection. Receiving end does not exist.`
+
+That is most of what a scraper does. A pipeline confined to one page worked; anything that turned a page collected the first page and then logged one error per step until the run ended. The paginating e2e check paginated all three pages correctly and came back with one row, which is what exposed it.
+
+None of the 500 unit tests could see it: they mock `chrome.tabs`, and a mocked tab never navigates. The harness now models injection — a test can take the content script away and see whether the worker puts it back.
+
+Fixed with `_sendToPage`, which sends optimistically, and on Chrome's "no receiver" errors re-injects and retries once. `_ensureInjected` pings before injecting, so a retry cannot double-register the listener. The one send deliberately excluded is the pagination click itself: a lost reply there means the click navigated, and re-sending it would turn a second page.
 
 ---
 
@@ -819,6 +836,101 @@ The README's quick-start instructs "Load unpacked → select the `flowscrape-v3/
 ### I-06 · LOW · No `package.json` at the repository root
 
 The extension needs no build, but a root manifest would give the project a home for lint/test scripts and a canonical version number.
+
+---
+
+# J. Capability gaps — what the steps could not do
+
+The A–I findings are about things that were wrong. These are about things that
+were missing: a step whose configuration promises a capability the code does not
+have is the same lie told in a different place, and it costs the user longer,
+because a wrong result looks like a working one.
+
+They were found by reading all 21 step types against their implementations,
+after the audit was closed.
+
+### J-01 · BLOCKER · `WAIT` can only sleep; its other modes are unreachable
+
+`content/injector.js`'s `_stepWait` has handled `selector-visible` and
+`DOM-stable` since the first commit. Nothing had ever sent it either one: the
+service worker's `WAIT` case was `await _sleep(step.config.ms || 1000); return;`,
+so the step never left the worker and the page code could not be reached. Both
+script emitters emitted `page.waitForSelector` for a mode the extension itself
+could not produce.
+
+The only wait the product could perform was the one that is wrong on a page that
+loads its content asynchronously, which is all of them. A fixed wait is a guess:
+too short and the next step reads an empty page and reports success; too long and
+every iteration of a loop pays for it.
+
+Fixed: `fixed` still sleeps in the worker, where it needs no page and cannot be
+broken by a closed tab; every other mode is forwarded. `selector-gone` was added
+for spinners and overlays, and `selector-visible` now checks that the element is
+actually rendered — an element that exists but is `display:none` is the exact
+case that makes an existence check resolve early and hand the next step nothing.
+A misconfigured wait throws instead of falling back to a sleep.
+
+### J-02 · HIGH · `SCROLL` cannot scrape an infinite feed
+
+Three modes — pixel, percent, to-element — each performing exactly one scroll.
+Scraping a lazy-loaded list therefore meant stacking a guessed number of SCROLL
+steps and hoping the network kept up with them.
+
+Fixed with an `infinite` mode that scrolls to the bottom until the page stops
+growing. It is bounded by a scroll limit and reports whether it stopped because
+the feed ended or because it ran out of scrolls, so a truncated scrape is
+visible rather than silent. Given an item selector it measures growth in items
+rather than page height, which is more reliable on a feed that swaps
+placeholders for cards.
+
+### J-03 · BLOCKER · `PAGINATE` was a click with a different name
+
+`case "PAGINATE": return _stepClick(config, context);`
+
+Past the last page the click matched nothing, `_stepClick` reported
+`clicked: 0` without failing, and a `LOOP` in paginate mode ran its body the
+full "max pages" count regardless. A site with 3 pages and a loop set to 10
+scraped page 3 eight times. The duplicate rows were then removed by the
+exporter's dedup, so the run looked correct and simply took longer than it
+should have.
+
+Fixed by making PAGINATE answer the question it is named for. A Next control
+that is absent, `disabled`, `aria-disabled`, styled disabled, hidden, or an
+anchor with no `href` means the last page; the loop stops there and says why.
+For a paginator whose Next button is never disabled — common in single-page
+apps — `requireChange` compares a fingerprint of the page before and after.
+
+The step is split across two messages, which is not incidental: clicking a real
+`<a href>` navigates, the content script is destroyed with the document, and its
+reply never arrives. A page-side step that both decides and clicks therefore
+fails on precisely the sites pagination exists for. So the page answers first,
+the worker clicks, and losing the page afterwards is the expected outcome.
+
+### J-04 · HIGH · `NAVIGATE` slept three seconds and hoped
+
+`await chrome.tabs.update(tabId, {url}); await _sleep(config.wait ? 3000 : 800);`
+
+A slow page was scraped before it existed. A fast one cost three seconds every
+time, which inside a loop over 200 links is ten minutes of waiting for nothing.
+The "Wait for page load" toggle chose between two sleeps; neither waited for a
+page load.
+
+Fixed: the run polls the tab's status until Chrome reports it complete, with a
+configurable ceiling, and logs when it gives up. Testing a single step from the
+panel now waits the same way, so "Test step" and "Run" no longer disagree about
+what the step did.
+
+### J-05 · MEDIUM · Seven step types had no configuration UI
+
+`generateConfigHtml` had a block for 14 types and a fallback that looped over the
+config object rendering raw key names as labels. So WAIT offered a box labelled
+"ms", DRAG_DROP offered "source" and "target", SCREENSHOT offered "quality", and
+SELECT offered "value" with no indication of what it was matched against or what
+happened when nothing matched. The steps were configurable in principle and
+unusable in practice.
+
+All seven now have their own block, each stating what the step does, what the
+value means, and what happens when it fails.
 
 ---
 

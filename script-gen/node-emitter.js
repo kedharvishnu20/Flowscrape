@@ -67,13 +67,31 @@ function _emitNodeStep(step) {
       return _apiNode(config);
     case "CLICK":
       return [`await page.click('${esc(config.selector ?? "")}');`, ""];
-    case "WAIT":
-      if (config.mode === "selector-visible")
+    case "WAIT": {
+      const timeout = Number(config.timeout) || 15000;
+      if (config.mode === "selector-visible") {
         return [
-          `await page.waitForSelector('${esc(config.selector ?? "")}');`,
+          `await page.waitForSelector('${esc(config.selector ?? "")}', { state: 'visible', timeout: ${timeout} });`,
           "",
         ];
+      }
+      if (config.mode === "selector-gone") {
+        return [
+          `await page.waitForSelector('${esc(config.selector ?? "")}', { state: 'hidden', timeout: ${timeout} });`,
+          "",
+        ];
+      }
+      if (config.mode === "DOM-stable") {
+        // Playwright has no "the DOM stopped changing"; network idle is the
+        // closest thing it offers, and is what the mode is used for in
+        // practice — waiting out a search or a filter.
+        return [
+          `await page.waitForLoadState('networkidle', { timeout: ${timeout} });`,
+          "",
+        ];
+      }
       return [`await sleep(${config.ms ?? 1000});`, ""];
+    }
     case "EXTRACT":
       return _extractNode(config);
     case "FORM_FILL":
@@ -100,6 +118,22 @@ function _emitNodeStep(step) {
           "",
         ];
       }
+      if (config.mode === "infinite" || config.mode === "bottom") {
+        const maxScrolls = Number(config.maxScrolls) || 50;
+        const settle = Number(config.settleMs) || 1200;
+        return [
+          `// Scroll until the page stops growing, or ${maxScrolls} scrolls.`,
+          `let _lastHeight = 0;`,
+          `for (let i = 0; i < ${maxScrolls}; i++) {`,
+          `  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));`,
+          `  await sleep(${settle});`,
+          `  const _h = await page.evaluate(() => document.documentElement.scrollHeight);`,
+          `  if (_h === _lastHeight) break;`,
+          `  _lastHeight = _h;`,
+          `}`,
+          "",
+        ];
+      }
       return [
         `await page.evaluate(() => window.scrollBy(0, ${amount}));`,
         `await sleep(500);`,
@@ -120,6 +154,22 @@ function _emitNodeStep(step) {
         lines.push(`  const el = elements[i];`);
       } else {
         lines.push(`for (let i = 0; i < ${config.max ?? 10}; i++) {`);
+      }
+      if (config.type === "paginate" && config.selector) {
+        // The emitted loop used to ignore paginate mode entirely: it ran the
+        // body N times without ever clicking Next, so an exported script
+        // scraped page one N times over.
+        lines.push(
+          `  if (i > 0) {`,
+          `    const _next = page.locator('${esc(config.selector)}').first();`,
+          `    if ((await _next.count()) === 0 || !(await _next.isEnabled())) {`,
+          `      console.log(\`Pagination: stopped after \${i} page(s).\`);`,
+          `      break;`,
+          `    }`,
+          `    await _next.click();`,
+          `    await page.waitForLoadState('networkidle');`,
+          `  }`,
+        );
       }
       for (const child of step.children ?? []) {
         lines.push(..._emitNodeStep(child).map((l) => "  " + l));
@@ -174,12 +224,25 @@ function _emitNodeStep(step) {
         "",
       ];
 
-    case "PAGINATE":
+    case "PAGINATE": {
+      // A bare click was what this emitted. Past the last page it clicks
+      // nothing and reports success — the same defect the extension's PAGINATE
+      // step had. `break` is not emitted here because a top-level PAGINATE has
+      // no loop to break out of; a paginating LOOP emits its own (see below).
+      const sel = esc(config.selector ?? "");
       return [
-        `await page.click('${esc(config.selector)}');`,
-        `await page.waitForLoadState('networkidle');`,
+        `{`,
+        `  const _next = page.locator('${sel}').first();`,
+        `  if ((await _next.count()) > 0 && (await _next.isEnabled())) {`,
+        `    await _next.click();`,
+        `    await page.waitForLoadState('networkidle');`,
+        `  } else {`,
+        `    console.log('Pagination: no further pages.');`,
+        `  }`,
+        `}`,
         "",
       ];
+    }
 
     case "DRAG_DROP":
       return [

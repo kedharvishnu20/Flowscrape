@@ -123,14 +123,30 @@ function _emitStep(step) {
         `await page.wait_for_load_state("networkidle")`,
         "",
       ];
-    case "WAIT":
+    case "WAIT": {
+      const timeout = Number(config.timeout) || 15000;
       if (config.mode === "selector-visible") {
         return [
-          `await page.wait_for_selector("${_escStr(config.selector ?? "")}")`,
+          `await page.wait_for_selector("${_escStr(config.selector ?? "")}", state="visible", timeout=${timeout})`,
+          "",
+        ];
+      }
+      if (config.mode === "selector-gone") {
+        return [
+          `await page.wait_for_selector("${_escStr(config.selector ?? "")}", state="hidden", timeout=${timeout})`,
+          "",
+        ];
+      }
+      if (config.mode === "DOM-stable") {
+        // Playwright has no "the DOM stopped changing"; network idle is the
+        // closest equivalent, and what the mode is used for in practice.
+        return [
+          `await page.wait_for_load_state("networkidle", timeout=${timeout})`,
           "",
         ];
       }
       return [`await asyncio.sleep(${(config.ms ?? 1000) / 1000})`, ""];
+    }
     case "EXTRACT":
       return _emitExtract(config);
     case "FORM_FILL":
@@ -154,6 +170,22 @@ function _emitStep(step) {
           "",
         ];
       }
+      if (config.mode === "infinite" || config.mode === "bottom") {
+        const maxScrolls = Number(config.maxScrolls) || 50;
+        const settle = (Number(config.settleMs) || 1200) / 1000;
+        return [
+          `# Scroll until the page stops growing, or ${maxScrolls} scrolls.`,
+          `_last_height = 0`,
+          `for _ in range(${maxScrolls}):`,
+          `    await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")`,
+          `    await asyncio.sleep(${settle})`,
+          `    _h = await page.evaluate("document.documentElement.scrollHeight")`,
+          `    if _h == _last_height:`,
+          `        break`,
+          `    _last_height = _h`,
+          "",
+        ];
+      }
       return [
         `await page.evaluate("window.scrollBy(0, ${amount})")`,
         `await asyncio.sleep(0.5)`,
@@ -171,6 +203,20 @@ function _emitStep(step) {
         lines.push(`for i, el in enumerate(elements[:${config.max ?? 10}]):`);
       } else {
         lines.push(`for i in range(${config.max ?? 10}):`);
+      }
+      if (config.type === "paginate" && config.selector) {
+        // The emitted loop ignored paginate mode entirely: it ran the body N
+        // times without ever clicking Next, so the script scraped page one N
+        // times over.
+        lines.push(
+          `    if i > 0:`,
+          `        _next = page.locator("${_escStr(config.selector)}").first`,
+          `        if await _next.count() == 0 or not await _next.is_enabled():`,
+          `            print(f"Pagination: stopped after {i} page(s).")`,
+          `            break`,
+          `        await _next.click()`,
+          `        await page.wait_for_load_state("networkidle")`,
+        );
       }
       for (const child of step.children ?? []) {
         lines.push(..._emitStep(child).map((l) => "    " + l));
@@ -236,13 +282,23 @@ function _emitStep(step) {
         "",
       ];
 
-    case "PAGINATE":
+    case "PAGINATE": {
+      // A bare click was what this emitted, so past the last page the script
+      // carried on believing it had turned one. `break` is not emitted here:
+      // a top-level PAGINATE has no loop to leave. A paginating LOOP emits
+      // its own.
+      const sel = _escStr(config.selector ?? "");
       return [
         `# PAGINATE: ${config.selector ?? ""}`,
-        `await page.click("${_escStr(config.selector ?? "")}")`,
-        `await page.wait_for_load_state("networkidle")`,
+        `_next = page.locator("${sel}").first`,
+        `if await _next.count() > 0 and await _next.is_enabled():`,
+        `    await _next.click()`,
+        `    await page.wait_for_load_state("networkidle")`,
+        `else:`,
+        `    print("Pagination: no further pages.")`,
         "",
       ];
+    }
 
     case "DRAG_DROP":
       return [

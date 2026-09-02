@@ -1652,6 +1652,19 @@ function generateConfigHtml(step) {
       c.url || "",
     );
     html += toggle(step, "wait", "Wait for page load");
+    if (c.wait !== false) {
+      html += field(
+        step,
+        "timeoutMs",
+        "Give up waiting after (ms)",
+        "number",
+        c.timeoutMs ?? 30000,
+      );
+      html += hint(
+        "The run polls until the tab reports it has finished loading, then " +
+          "moves on. Past this it continues anyway and says so in the log.",
+      );
+    }
     html += toggle(
       step,
       "optional",
@@ -1875,9 +1888,35 @@ function generateConfigHtml(step) {
       <option value="pixel"   ${(c.mode || "pixel") === "pixel" ? "selected" : ""}>Pixel (scroll by amount)</option>
       <option value="percent" ${c.mode === "percent" ? "selected" : ""}>Percent of page</option>
       <option value="selector"${c.mode === "selector" ? "selected" : ""}>To element (selector)</option>
+      <option value="infinite"${c.mode === "infinite" ? "selected" : ""}>Infinite — load everything</option>
     </select>`;
     if (c.mode === "selector") {
       html += selectorRow(step, "selector");
+    } else if (c.mode === "infinite") {
+      html += hint(
+        "Scrolls to the bottom over and over until the page stops growing — " +
+          "for feeds and 'load more' lists. One step replaces a stack of them.",
+      );
+      html += field(
+        step,
+        "maxScrolls",
+        "Stop after this many scrolls",
+        "number",
+        c.maxScrolls ?? 50,
+      );
+      html += field(
+        step,
+        "settleMs",
+        "Wait after each scroll (ms)",
+        "number",
+        c.settleMs ?? 1200,
+      );
+      html += `<label>Item selector <span style="color:var(--text-dim);font-weight:400;">(optional)</span></label>`;
+      html += selectorRow(step, "selector");
+      html += hint(
+        "Given one, growth is measured in items rather than page height — " +
+          "more reliable on a feed that swaps placeholders for cards.",
+      );
     } else {
       html += field(step, "amount", "Amount", "number", c.amount ?? 500);
     }
@@ -2089,6 +2128,178 @@ function generateConfigHtml(step) {
     return html;
   }
 
+  // ── WAIT ──
+  if (step.type === "WAIT") {
+    const wmode = c.mode || "fixed";
+    html += `<label>Wait for</label>
+    <select id="cfg-${step.id}-mode" data-id="${step.id}" data-key="mode" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="fixed"            ${wmode === "fixed" ? "selected" : ""}>A fixed time</option>
+      <option value="selector-visible" ${wmode === "selector-visible" ? "selected" : ""}>An element to appear</option>
+      <option value="selector-gone"    ${wmode === "selector-gone" ? "selected" : ""}>An element to disappear</option>
+      <option value="DOM-stable"       ${wmode === "DOM-stable" ? "selected" : ""}>The page to stop changing</option>
+    </select>`;
+    if (wmode === "fixed") {
+      html += field(step, "ms", "Wait (ms)", "number", c.ms ?? 1000);
+      html += hint(
+        "A fixed wait is a guess. If you are waiting for something specific, " +
+          "the modes above wait exactly as long as it takes and no longer.",
+      );
+    } else if (wmode === "DOM-stable") {
+      html += hint(
+        "Waits until no elements have been added or removed for half a " +
+          "second — useful after a search or a filter, when you do not know " +
+          "which element to watch.",
+      );
+      html += field(
+        step,
+        "timeout",
+        "Give up after (ms)",
+        "number",
+        c.timeout ?? 15000,
+      );
+    } else {
+      html += selectorRow(step, "selector");
+      html += hint(
+        wmode === "selector-visible"
+          ? "An element that exists but is hidden does not count as appeared."
+          : "Use this for a loading spinner or an overlay you need gone.",
+      );
+      html += field(
+        step,
+        "timeout",
+        "Give up after (ms)",
+        "number",
+        c.timeout ?? 15000,
+      );
+      html += hint("Past the timeout the step fails, rather than continuing.");
+    }
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
+  // ── PAGINATE ──
+  if (step.type === "PAGINATE") {
+    html += `<label>Next-page control</label>`;
+    html += selectorRow(step, "selector");
+    html += hint(
+      "Clicks it, and reports whether there was another page. A missing, " +
+        "disabled or hrefless control means the last page — a loop around " +
+        "this step stops there instead of re-scraping it.",
+    );
+    html += field(
+      step,
+      "settleMs",
+      "Wait for the next page (ms)",
+      "number",
+      c.settleMs ?? 1500,
+    );
+    html += toggle(
+      step,
+      "requireChange",
+      "Also stop if the page did not change after the click",
+    );
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
+  // ── HOVER ──
+  if (step.type === "HOVER") {
+    html += selectorRow(step, "selector");
+    html += hint(
+      "Fires the pointer and mouse events a real hover fires, so menus and " +
+        "tooltips that only exist on hover open before the next step runs.",
+    );
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
+  // ── SELECT ──
+  if (step.type === "SELECT") {
+    html += `<label>Dropdown</label>`;
+    html += selectorRow(step, "selector");
+    html += field(step, "value", "Option to choose", "text", c.value || "");
+    html += hint(
+      "Matched against each option's value first, then its visible label, " +
+        "ignoring case. No match fails the step rather than clearing the " +
+        "dropdown. Templates work here: {{item.text}}.",
+    );
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
+  // ── DRAG_DROP ──
+  if (step.type === "DRAG_DROP") {
+    html += `<label>Drag this</label>`;
+    html += selectorRow(step, "source");
+    html += `<label>Onto this</label>`;
+    html += selectorRow(step, "target");
+    html += hint(
+      "Uses HTML5 drag events. Canvas and pointer-based editors that do not " +
+        "listen for them will not respond.",
+    );
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
+  // ── SCREENSHOT ──
+  if (step.type === "SCREENSHOT") {
+    html += field(
+      step,
+      "quality",
+      "JPEG quality (1-100)",
+      "number",
+      c.quality ?? 100,
+    );
+    html += hint(
+      "Captures the visible part of the tab, not the whole page. Shots are " +
+        "held in memory during the run and saved with the export; a run that " +
+        "fills the buffer keeps going and says how many it dropped.",
+    );
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
+  // ── API_SNIFFER ──
+  if (step.type === "API_SNIFFER") {
+    html += hint(
+      "Records the XHR and fetch calls the page makes, from the moment the " +
+        "run starts until it ends — the step itself does nothing, so its " +
+        "position in the pipeline does not matter. Captured requests appear " +
+        "in the run monitor and in the export.",
+    );
+    html += toggle(step, "enabled", "Record network requests during this run");
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
   // ── Generic fallback ──
   for (const [key, value] of Object.entries(c)) {
     if (typeof value === "boolean") {
@@ -2141,6 +2352,19 @@ function selectorRow(step, key) {
         style="background:var(--bg-hover);color:var(--text-main);font-size:16px;" title="Pick element">🎯</button>
     </div>`;
 }
+/**
+ * A line of explanation under a control.
+ *
+ * Several step types had no configuration UI of their own and fell through to
+ * a loop over the config object that rendered raw key names as labels: a WAIT
+ * card offered a box labelled "ms", DRAG_DROP offered "source" and "target".
+ * The values were editable, so the steps were configurable in principle and
+ * unusable in practice.
+ */
+function hint(text) {
+  return `<p style="font-size:11px;color:var(--text-dim);margin:-4px 0 10px;">${esc(text)}</p>`;
+}
+
 function toggle(step, key, label) {
   const checked = step.config[key] ? "checked" : "";
   return `<div class="toggle-wrap">

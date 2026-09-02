@@ -41,14 +41,14 @@ export const STEP_TYPES = Object.freeze({
     cat: "Action",
     desc: "Open website",
     runsIn: "background",
-    def: { url: "https://", wait: true },
+    def: { url: "https://", wait: true, timeoutMs: 30000 },
   },
   NAVIGATE: {
     icon: "🌐",
     cat: "Action",
     desc: "Go to URL",
     runsIn: "background",
-    def: { url: "https://", wait: true },
+    def: { url: "https://", wait: true, timeoutMs: 30000 },
   },
   CLICK: {
     icon: "🖱️",
@@ -91,7 +91,13 @@ export const STEP_TYPES = Object.freeze({
     cat: "Action",
     desc: "Scroll page",
     runsIn: "page",
-    def: { mode: "pixel", amount: 500 },
+    def: {
+      mode: "pixel",
+      amount: 500,
+      maxScrolls: 50,
+      settleMs: 1200,
+      selector: "",
+    },
   },
   KEYBOARD: {
     icon: "⌨",
@@ -121,9 +127,12 @@ export const STEP_TYPES = Object.freeze({
   WAIT: {
     icon: "⏳",
     cat: "Flow",
-    desc: "Wait (ms)",
+    desc: "Wait for time or element",
+    // "background" is the fixed-time case, which is most of them and needs no
+    // page at all. The other modes watch the DOM, so _dispatchStep forwards
+    // those to the content script.
     runsIn: "background",
-    def: { ms: 1000 },
+    def: { mode: "fixed", ms: 1000, selector: "", timeout: 15000 },
   },
   IF_ELSE: {
     icon: "🔀",
@@ -144,9 +153,9 @@ export const STEP_TYPES = Object.freeze({
   PAGINATE: {
     icon: "📄",
     cat: "Flow",
-    desc: "Pagination click",
+    desc: "Next page",
     runsIn: "page",
-    def: { selector: "" },
+    def: { selector: "", settleMs: 1500, requireChange: false },
   },
 
   // ── Data ──────────────────────────────────────────────────────────────────
@@ -247,6 +256,14 @@ export const STEP_TYPES = Object.freeze({
     icon: "🔎",
     cat: "Data",
     desc: "Read matching elements for loop templates",
+    runsIn: "page",
+    def: { selector: "" },
+    internal: true,
+  },
+  PAGINATE_PROBE: {
+    icon: "📄",
+    cat: "Flow",
+    desc: "Inspect the Next control without clicking it",
     runsIn: "page",
     def: { selector: "" },
     internal: true,

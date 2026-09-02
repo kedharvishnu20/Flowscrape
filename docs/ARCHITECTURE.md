@@ -125,6 +125,13 @@ in the page's own world and forwards bodies, so it is scoped to an active
 steps and robots.txt. Host access and running code in pages are different
 things, and only the second was the problem.
 
+The corollary took a while to surface. A content script is destroyed with the
+document that hosts it, and a run injected once, at the start — so every page
+step after the run's first navigation was talking to nothing [A-13]. On-demand
+injection is not a one-time setup step; it is a precondition of every message to
+a page. `_sendToPage` sends optimistically and, on Chrome's "no receiver"
+errors, injects and retries once.
+
 ---
 
 ## 7. The ethics gates run twice, on purpose
@@ -190,3 +197,23 @@ defects are still fixed as defects [B-19, B-33, B-34].
 
 Everything else the audit called dead has since been deleted or wired up. The
 table is in the audit's status section.
+
+---
+
+## 11. A step that navigates cannot report from the page it left
+
+`PAGINATE` is two messages: the page inspects the Next control and answers, then
+the worker performs the click.
+
+Doing both in the page is the obvious design and it cannot work. Clicking a real
+`<a href>` navigates; the content script is destroyed with the document before
+it can reply; Chrome reports "the message channel closed before a response was
+received"; the step fails. On exactly the sites pagination is for.
+
+So the decision is made where the DOM is, and the act that destroys the DOM is
+performed from the worker, which survives it. A lost reply to the click is the
+expected outcome rather than an error — and that one send is deliberately not
+retried, because re-sending it would turn a second page [J-03].
+
+The same shape applies to any step that navigates. `NAVIGATE` waits on the
+tab's load state from the worker rather than on anything in the page [J-04].

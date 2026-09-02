@@ -63,11 +63,69 @@ const CONTROLLED = `<!doctype html><html><body>
   </script>
 </body></html>`;
 
+// A page whose content arrives late, and a feed that grows as you scroll. Both
+// are what the WAIT and SCROLL steps exist for, and neither can be simulated in
+// jsdom: there is no layout, so nothing is ever really below the fold.
+const LAZY = `<!doctype html><html><body>
+  <div id="feed"></div>
+  <div id="late-host"></div>
+  <script>
+    // A results panel that shows up after a moment, hidden first — the shape
+    // that makes "wait until it exists" the wrong check.
+    var late = document.createElement('div');
+    late.className = 'results';
+    late.style.display = 'none';
+    late.textContent = 'Results';
+    document.getElementById('late-host').appendChild(late);
+    setTimeout(function () { late.style.display = 'block'; }, 700);
+
+    // Ten items per screenful, four screenfuls, then nothing more.
+    var pages = 0;
+    function grow() {
+      if (pages >= 4) return;
+      pages++;
+      var feed = document.getElementById('feed');
+      for (var i = 0; i < 10; i++) {
+        var d = document.createElement('div');
+        d.className = 'post';
+        d.style.height = '120px';
+        d.textContent = 'post ' + (pages * 10 + i);
+        feed.appendChild(d);
+      }
+    }
+    grow();
+    window.addEventListener('scroll', function () {
+      if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 50) {
+        setTimeout(grow, 100);
+      }
+    });
+  </script>
+</body></html>`;
+
+/** Page N of a three-page list; page 3's Next button is disabled. */
+const paged = (n) => `<!doctype html><html><body>
+  <h1 id="title">Page ${n}</h1>
+  <div class="row">item ${n}a</div>
+  <div class="row">item ${n}b</div>
+  ${
+    n < 3
+      ? `<a class="next" href="/page/${n + 1}">Next</a>`
+      : `<button class="next" disabled>Next</button>`
+  }
+</body></html>`;
+
 let env;
 let site;
 
 test.before(async () => {
-  site = await startSite({ "/": PRODUCTS, "/controlled": CONTROLLED });
+  site = await startSite({
+    "/": PRODUCTS,
+    "/controlled": CONTROLLED,
+    "/lazy": LAZY,
+    "/page/1": paged(1),
+    "/page/2": paged(2),
+    "/page/3": paged(3),
+  });
   env = await launch();
 });
 
@@ -425,4 +483,184 @@ test("PDF_EXTRACTION reads a PDF over HTTP", async () => {
   );
   assert.match(out.text, /Quarterly Report/);
   assert.match(out.text, /42 million/);
+});
+
+// ── the steps that only a real browser can prove ─────────────────────────────
+
+test("WAIT for an element waits for it to become visible, not merely to exist", async () => {
+  // The element is in the DOM from the first paint and display:none for 700ms.
+  // A wait that only checks existence returns at once, and whatever runs next
+  // reads an empty panel — which is the failure this mode is meant to prevent.
+  const { page, tabId } = await onSite("/lazy");
+  const t0 = Date.now();
+  const res = await env.send("step:execute", {
+    step: step("WAIT", {
+      mode: "selector-visible",
+      selector: ".results",
+      timeout: 5000,
+    }),
+    tabId,
+  });
+  const elapsed = Date.now() - t0;
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.ok(elapsed > 500, `returned after ${elapsed}ms — it did not wait`);
+  assert.ok(elapsed < 4000, `took ${elapsed}ms — it waited too long`);
+  await page.close();
+});
+
+test("a WAIT that never comes true fails the step", async () => {
+  const { page, tabId } = await onSite("/lazy");
+  const res = await env.send("step:execute", {
+    step: step("WAIT", {
+      mode: "selector-visible",
+      selector: ".never",
+      timeout: 800,
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, false, "a wait that timed out is not a success");
+  await page.close();
+});
+
+test("infinite scroll loads a lazy feed to the end", async () => {
+  const { page, tabId } = await onSite("/lazy");
+  const before = await page.locator(".post").count();
+  assert.equal(before, 10, "the page starts with one screenful");
+
+  const res = await env.send("step:execute", {
+    step: step("SCROLL", {
+      mode: "infinite",
+      maxScrolls: 15,
+      settleMs: 400,
+      selector: ".post",
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.result.exhausted, true, "it reached the end of the feed");
+
+  const after = await page.locator(".post").count();
+  assert.equal(after, 40, `loaded ${after} posts of 40`);
+  await page.close();
+});
+
+test("PAGINATE turns the page, and knows when it cannot", async () => {
+  const { page, tabId } = await onSite("/page/1");
+
+  const first = await env.send("step:execute", {
+    step: step("PAGINATE", { selector: ".next", settleMs: 600 }),
+    tabId,
+  });
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.equal(first.result.exhausted, false);
+  assert.equal(await page.locator("#title").textContent(), "Page 2");
+
+  await page.goto(site.url("/page/3"));
+  const last = await env.send("step:execute", {
+    step: step("PAGINATE", { selector: ".next", settleMs: 300 }),
+    tabId,
+  });
+  assert.equal(last.ok, true, JSON.stringify(last));
+  assert.equal(
+    last.result.exhausted,
+    true,
+    "the disabled Next button is the last page",
+  );
+  await page.close();
+});
+
+test("a paginating pipeline scrapes each page once and stops", async () => {
+  // The whole point of the PAGINATE change: max is 10, there are 3 pages, and
+  // the run has to stop at 3 rather than re-scraping page 3 seven more times.
+  const { page, tabId } = await onSite("/page/1");
+
+  const started = await env.send("pipeline:start", {
+    tabId,
+    targetOrigin: site.origin,
+    pipeline: {
+      name: "paged",
+      steps: [
+        {
+          id: "loop",
+          type: "LOOP",
+          config: { type: "paginate", selector: ".next", max: 10 },
+          children: [
+            step("EXTRACT", { fields: [{ name: "page", selector: "#title" }] }),
+          ],
+        },
+      ],
+    },
+  });
+  assert.equal(started.ok, true, JSON.stringify(started));
+  const runId = started.result.runId;
+
+  let rows = [];
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    const dl = await env.send("data:download", { runId });
+    if (dl.ok && dl.result.rows?.length >= 3) {
+      rows = dl.result.rows;
+      break;
+    }
+  }
+  // Give a wrong implementation time to over-run before counting.
+  await new Promise((r) => setTimeout(r, 1500));
+  const dl = await env.send("data:download", { runId });
+  rows = dl.result?.rows ?? rows;
+
+  assert.equal(
+    rows.length,
+    3,
+    `scraped ${rows.length} pages; the site has 3 (max was 10)`,
+  );
+  assert.deepEqual(
+    rows.map((r) => r.page),
+    ["Page 1", "Page 2", "Page 3"],
+    "each page once, in order",
+  );
+  await page.close();
+});
+
+test("NAVIGATE returns as soon as the page is loaded", async () => {
+  const { page, tabId } = await onSite("/page/1");
+  const t0 = Date.now();
+  const res = await env.send("step:execute", {
+    step: step("NAVIGATE", { url: site.url("/page/2"), wait: true }),
+    tabId,
+  });
+  const elapsed = Date.now() - t0;
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.ok(
+    elapsed < 2500,
+    `a local page took ${elapsed}ms — the fixed 3s sleep is still there`,
+  );
+  assert.equal(await page.locator("#title").textContent(), "Page 2");
+  await page.close();
+});
+
+test("a page step works after the run has navigated away", async () => {
+  // The bug the paginating check above found. Content scripts are injected on
+  // demand and die with their document, and only the start of a run injected
+  // them — so every page step after any navigation failed with Chrome's
+  // "Receiving end does not exist". Nothing in 500 unit tests could see it:
+  // they mock chrome.tabs, and a mocked tab never navigates.
+  const { page, tabId } = await onSite("/page/1");
+
+  const nav = await env.send("step:execute", {
+    step: step("NAVIGATE", { url: site.url("/page/2"), wait: true }),
+    tabId,
+  });
+  assert.equal(nav.ok, true, JSON.stringify(nav));
+
+  const res = await env.send("step:execute", {
+    step: step("EXTRACT", { fields: [{ name: "t", selector: "#title" }] }),
+    tabId,
+  });
+  assert.equal(
+    res.ok,
+    true,
+    `the step could not reach the new page: ${JSON.stringify(res)}`,
+  );
+  assert.deepEqual(res.result, [{ t: "Page 2" }]);
+  await page.close();
 });

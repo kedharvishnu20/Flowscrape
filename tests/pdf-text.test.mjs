@@ -257,3 +257,59 @@ test("what the step returns is the text, not a promise of it", () => {
   assert.match(fn, /truncated: result\.truncated/);
   assert.match(fn, /warnings: result\.warnings/);
 });
+
+// ── framing, which is where a real PDF broke it ──────────────────────────────
+
+test("a stream is framed by /Length, not by the next endstream", async () => {
+  // Binary font programs contain byte sequences that look like `stream\n`.
+  // Searching for a delimiter finds those; /Length does not.
+  const body = "BT (Framed by length) Tj ET";
+  const pdf = buildPdf([
+    `<< /Length ${body.length} >>\nstream\n${body}\nendstream`,
+  ]);
+  const r = await extractPdfText(pdf);
+  assert.equal(r.pages[0].text, "Framed by length");
+});
+
+test("the closing endstream is not mistaken for another stream header", async () => {
+  // `endstream` ends in `stream`. A scan that does not exclude it restarts
+  // inside the next object's bytes, and every later stream is framed wrongly —
+  // which is exactly what emptied a Chrome-printed PDF.
+  const src = await readFile(
+    new URL("../utils/pdf-text.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /\(\?<!end\)stream/, "the lookbehind is load-bearing");
+  assert.match(
+    src,
+    /re\.lastIndex = end \+ "endstream"\.length;/,
+    "and the cursor clears the token it just consumed",
+  );
+
+  const a = "BT (First) Tj ET";
+  const b = "BT (Second) Tj ET";
+  const pdf = buildPdf([
+    `<< /Length ${a.length} >>\nstream\n${a}\nendstream`,
+    `<< /Length ${b.length} >>\nstream\n${b}\nendstream`,
+  ]);
+  const r = await extractPdfText(pdf);
+  assert.equal(r.pageCount, 2, "the second stream was lost to the mis-scan");
+  assert.deepEqual(
+    r.pages.map((p) => p.text),
+    ["First", "Second"],
+  );
+});
+
+test("a wrong /Length falls back to the delimiter", async () => {
+  const body = "BT (Bad length) Tj ET";
+  const pdf = buildPdf([`<< /Length 99999 >>\nstream\n${body}\nendstream`]);
+  const r = await extractPdfText(pdf);
+  assert.equal(r.pages[0].text, "Bad length", "it did not run off the end");
+});
+
+test("an indirect /Length falls back to the delimiter", async () => {
+  const body = "BT (Indirect) Tj ET";
+  const pdf = buildPdf([`<< /Length 7 0 R >>\nstream\n${body}\nendstream`]);
+  const r = await extractPdfText(pdf);
+  assert.equal(r.pages[0].text, "Indirect");
+});

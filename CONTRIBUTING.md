@@ -7,6 +7,7 @@ npm install     # jsdom + fake-indexeddb + prettier, for the tooling only
 npm test        # node:test, no browser needed
 npm run check   # parses every source file as an ES module
 npm run format  # prettier
+npm run e2e     # loads the extension in a real Chromium and drives it
 ```
 
 The extension itself has no dependencies and nothing to build. `npm install` is
@@ -76,6 +77,22 @@ aborts the whole file and every later test disappears instead of failing.
 Some things need a fresh process (module-level caches, for instance). `node:test`
 gives each file its own, so put those in their own file and say why at the top.
 
+### And then run it in a browser
+
+`npm run e2e` launches Chromium with the extension loaded, serves a small site
+over real HTTP, and drives actual steps against it. The unit tests mock `chrome`,
+jsdom the DOM and fake IndexedDB — they prove the logic, and they cannot prove
+Chrome will load the manifest or that a step reaches a page.
+
+That distinction is not theoretical. The PDF reader passed 18 hand-built
+fixtures and returned nothing at all for a PDF Chrome had printed, because
+`endstream` ends in `stream` and the scan matched the tail of the token it had
+just consumed (A-11). No fixture I would have thought to write catches that. A
+real file does, immediately.
+
+Add an e2e check for anything that crosses a boundary the unit tests fake:
+injection, messaging, storage, a real file format.
+
 ## Structure
 
 Every module opens with a docblock: what it is, what it depends on, and — where
@@ -83,7 +100,7 @@ it matters — why it is built the way it is. Several record a decision that loo
 wrong until you know the constraint. Keep that up; the docblocks that were left
 to drift are what made this codebase hard to trust.
 
-`docs/ISSUE_AUDIT.md` is the inventory: 126 findings, what is fixed, what is
+`docs/ISSUE_AUDIT.md` is the inventory: 128 findings, what is fixed, what is
 open, and what was left alone on purpose. Read it before trusting any claim
 about how something works.
 

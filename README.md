@@ -9,8 +9,8 @@ No build step. No bundler. Plain ES modules, loaded directly by Chrome.
 > **Status.** A full audit found 127 issues; 124 are fixed and three are left
 > alone on purpose (three subsystems that work but that nothing calls — the
 > reasoning is in the audit). Every fix landed with regression tests that were
-> run against the pre-fix code first to confirm they failed: 442 tests, from
-> zero. [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) is the inventory,
+> run against the pre-fix code first to confirm they failed: 446 tests, from
+> zero, plus 17 end-to-end checks in a real Chromium with the extension loaded. [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) is the inventory,
 > [`CHANGELOG.md`](CHANGELOG.md) the summary, and
 > [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explains why the parts are
 > shaped the way they are.
@@ -30,7 +30,8 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 442 tests, ~9s, no browser needed
+npm test        # 446 tests, ~9s, no browser needed
+npm run e2e     # 17 checks in a real Chromium with the extension loaded
 npm run check   # parses every source file as an ES module
 npm run format  # prettier; `npm run format:check` in CI
 ```
@@ -132,7 +133,8 @@ script-gen/
   node-emitter.js              AST → Node (playwright)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         442 tests; node:test, jsdom, fake-indexeddb
+tests/                         446 tests; node:test, jsdom, fake-indexeddb
+e2e/                           17 checks against a real Chromium
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, architecture, manual, template guide
 examples/                      Pipeline JSON you can import

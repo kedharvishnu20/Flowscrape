@@ -120,12 +120,18 @@ decision:
 | B-28, G-05 | _this batch_ | `utils/pdf-text.js` reads PDFs in the worker with no dependencies; both "use an MCP tool" messages are gone, one of which named a tool that never existed |
 | C-09, F-01, F-02, F-04, F-07, F-09, B-33, B-34 | _this batch_ | Content scripts injected on demand instead of running on every page; the dead half resolved module by module; rate limiting actually paces a run; captcha polling loops; sticky and round-robin get separate cursors |
 | H-12 | _this batch_ | `CONTRIBUTING.md`, `CHANGELOG.md` and `docs/ARCHITECTURE.md` — the last had ten decisions in it that were only recorded in module docblocks, if anywhere |
+| **A-11** | _this batch_ | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 124 of 127 findings fixed; A-05, A-06 and A-07 left by
-decision, as set out above. The count is 127 rather than the original 126
-because A-10 was found while writing a regression test for D-12 and added to the
-audit rather than fixed silently.
+**Still open: nothing.** 125 of 128 findings fixed; A-05, A-06 and A-07 left by
+decision, as set out above. The count grew from the original 126 because two
+findings were discovered while testing the fixes for others and added to the
+audit rather than fixed silently: A-10 (a cached IndexedDB failure) and A-11 (the
+PDF stream framing).
+
+The four **Correction** paragraphs in the sections below mark entries that were
+overstated or wrong when written. They are left in place, corrected, rather than
+edited into looking right.
 
 The four **Correction** paragraphs in the sections below mark entries that were
 overstated or wrong when written. They are left in place, corrected, rather than
@@ -243,6 +249,16 @@ _Not in the original audit — found while writing the regression test for D-12.
 `openDB()` caches its promise so concurrent callers share a connection, and `req.onerror` clears that cache on failure. But `indexedDB.open` can throw **synchronously** — storage disabled by policy, a private window, a worker torn down mid-call — and that throw never reaches `onerror`. The rejected promise therefore stayed cached, and every subsequent row write, cursor save and read failed with the original error for as long as the service worker lived. The run kept going and persisted nothing.
 
 Fixed by catching the synchronous throw and un-caching the attempt on any rejection, however it arrived.
+
+### A-11 · HIGH · The PDF reader loses every stream after the first
+
+_Not in the original audit — found by running `utils/pdf-text.js` against a PDF that Chrome printed, in the end-to-end suite._
+
+`_readStreams` scanned for `/stream\r?\n/` and then set the cursor to the closing `endstream`. **`endstream` ends in `stream`**, so the very next search matched the tail of the token just consumed, restarted inside the following object's compressed bytes, and framed every later stream wrongly. Their inflate then failed, which cost the `/ToUnicode` CMaps, and a real PDF came back with no text and a "font ships no /ToUnicode map" note that was not true.
+
+It also ignored `/Length` entirely, framing streams by the next `endstream` — which is wrong for binary font programs whose bytes contain that sequence.
+
+Fixed with a negative lookbehind on the scan, a cursor that clears the whole `endstream` token, and `/Length` honoured where the dictionary states it directly (falling back to the delimiter for a wrong or indirect length). The hand-built fixtures in `tests/pdf-text.test.mjs` all passed throughout — this needed a PDF a real writer produced.
 
 ---
 

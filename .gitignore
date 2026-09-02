@@ -1,2 +1,5 @@
 bin/
 node_modules/
+
+# Playwright's browser download; this repo uses the pre-installed one
+test-results/

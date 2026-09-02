@@ -99,30 +99,61 @@ async function _inflate(bytes) {
 async function _readStreams(raw) {
   const streams = [];
   // `stream` is followed by CRLF or LF, then the bytes, then `endstream`.
-  const re = /stream\r?\n/g;
+  //
+  // The lookbehind is load-bearing: `endstream` ends in `stream`, so a plain
+  // /stream\r?\n/ matches the tail of the very token that closes a stream. The
+  // cursor then restarted inside the next object's binary body, every later
+  // stream was framed wrongly, and their inflate failed — which cost the
+  // /ToUnicode maps and left a Chrome-printed PDF with no text at all.
+  const re = /(?<!end)stream\r?\n/g;
   let m;
   while ((m = re.exec(raw)) !== null) {
     const start = m.index + m[0].length;
-    const end = raw.indexOf("endstream", start);
-    if (end === -1) break;
 
     // The dictionary is whatever precedes this stream back to the object head.
     const objStart = raw.lastIndexOf(" obj", m.index);
     const dict = objStart === -1 ? "" : raw.slice(objStart, m.index);
 
-    // The EOL that separates the data from `endstream` is not part of the
-    // stream. Feeding it to the inflater makes every compressed stream fail.
+    // Take exactly /Length bytes where the dictionary states one directly.
+    //
+    // Searching for the next "endstream" is not good enough, and neither is
+    // trusting this regex to land only on real stream headers: compressed font
+    // programs and CMaps are arbitrary bytes, and they contain sequences that
+    // look exactly like `stream\n`. Scanning without /Length made every stream
+    // after the first binary one start in the wrong place, so their inflate
+    // failed and the /ToUnicode maps were lost — which is why a Chrome-printed
+    // PDF came back with no text at all. Found by running the reader against a
+    // real PDF rather than a hand-built fixture.
+    const declared = dict.match(/\/Length\s+(\d+)(?!\s+\d+\s+R)/);
+    let end;
+    if (declared) {
+      end = start + Number(declared[1]);
+      // A wrong /Length (or one this simple parser mis-attributed) must not run
+      // past the file or swallow the rest of it.
+      if (end > raw.length || !/^\s*endstream/.test(raw.slice(end, end + 20))) {
+        end = raw.indexOf("endstream", start);
+      }
+    } else {
+      // /Length is an indirect reference, which needs the xref table to
+      // resolve. Fall back to the delimiter.
+      end = raw.indexOf("endstream", start);
+    }
+    if (end === -1) break;
+
     let data = raw.slice(start, end).replace(/\r?\n$/, "");
     if (/\/Filter\s*(\[[^\]]*\])?\s*\/?[^>]*FlateDecode/.test(dict)) {
       const inflated = await _inflate(_bytesOf(data));
       if (!inflated) {
-        re.lastIndex = end;
-        continue; // compressed with something we cannot read
+        // Compressed with something we cannot read, or a mis-framed stream.
+        re.lastIndex = end + "endstream".length;
+        continue;
       }
       data = _latin1(inflated);
     }
     streams.push({ dict, data });
-    re.lastIndex = end;
+    // Past the real end, so a `stream\n` inside the bytes just consumed cannot
+    // be mistaken for the start of another one.
+    re.lastIndex = end + "endstream".length;
   }
   return streams;
 }

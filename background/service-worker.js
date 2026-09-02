@@ -33,6 +33,8 @@ import { logger } from "../utils/logger.js";
 import { extractPdfText } from "../utils/pdf-text.js";
 import { ALL_STEP_TYPES } from "../utils/step-types.js";
 import { applyTransforms } from "../utils/value-transforms.js";
+import { evaluateCondition } from "../utils/conditions.js";
+import { matchesSnifferFilter } from "../utils/sniffer-filter.js";
 import { initSessionKey } from "./api-key-manager.js";
 import { setApiKey } from "./api-key-manager.js";
 import {
@@ -620,9 +622,17 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
   const { pipeline, tabId } = payload;
   if (!pipeline) throw new Error("No pipeline provided");
 
-  const enableSniffer = (pipeline.steps || []).some(
+  // The sniffer is a run-wide capture rather than a step that executes, so its
+  // filter comes off the step's config once, here, rather than being consulted
+  // per request from a step that has long since finished.
+  const snifferStep = (pipeline.steps || []).find(
     (s) => s.type === "API_SNIFFER",
   );
+  const enableSniffer = Boolean(snifferStep);
+  const snifferFilter = {
+    urlFilter: snifferStep?.config?.urlFilter ?? "",
+    methods: snifferStep?.config?.methods ?? "",
+  };
 
   const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const runState = {
@@ -631,6 +641,7 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
     runId,
     tabId: tabId ?? sender.tab?.id,
     enableSniffer,
+    snifferFilter,
     targetOrigin: payload.targetOrigin ?? null,
     allowedOrigins: collectDeclaredOrigins(
       pipeline.steps ?? [],
@@ -700,11 +711,43 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
   };
 });
 
+/**
+ * Runs whose sniffer filter has already been reported as broken.
+ *
+ * A busy page makes hundreds of requests. Without this, one bad pattern would
+ * log one line per request and bury everything else in the run monitor.
+ * @type {Set<string>}
+ */
+const _snifferFilterWarned = new Set();
+
 _registerHandler("network:sniff", async (payload, sender) => {
   const tabId = sender.tab?.id;
   if (!tabId) return { ok: false };
   for (const [runId, rs] of _runStates.entries()) {
     if (rs.tabId === tabId && rs.active && rs.enableSniffer) {
+      // Filtered before it is stored, not after: the capture buffer is bounded
+      // (D-10), so on a busy site the analytics beacons, fonts and ad auctions
+      // could push the four calls you wanted out of it before the run ended.
+      try {
+        if (
+          !matchesSnifferFilter(
+            { url: payload.url, method: payload.method },
+            rs.snifferFilter ?? {},
+          )
+        ) {
+          break;
+        }
+      } catch (err) {
+        if (!_snifferFilterWarned.has(runId)) {
+          _snifferFilterWarned.add(runId);
+          _broadcastLog(
+            "warn-log",
+            `API_SNIFFER: ${err.message} — recording everything instead.`,
+            runId,
+          );
+        }
+      }
+
       const entry = {
         timestamp: Date.now(),
         method: payload.method,
@@ -733,9 +776,118 @@ _registerHandler("network:sniff", async (payload, sender) => {
 
 // ── Step execution helpers ─────────────────────────────────────────────────────
 
-async function _captureScreenshot(tabId, config = {}, runId) {
-  const runState = _runStates.get(runId);
-  if (!runState) return;
+/**
+ * How tall a stitched full-page shot may get, in CSS pixels.
+ *
+ * An infinite feed has no bottom, so "capture until the page ends" is a loop
+ * that never returns. Past this the shot is truncated and says so.
+ */
+const FULL_PAGE_MAX_HEIGHT = 20000;
+
+/**
+ * Chrome caps captureVisibleTab at MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND,
+ * which is 2 — a limit found by taking a full-page screenshot in a real
+ * browser, where the second strip came back
+ * "This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota."
+ * Nothing in the unit suite could see it: the mocked captureVisibleTab has no
+ * quota, so stitching four strips looked instantaneous and free.
+ */
+const CAPTURE_MIN_INTERVAL_MS = 550;
+let _lastCaptureAt = 0;
+
+/** Take one photograph of whatever is currently on screen. */
+async function _captureViewport(windowId, config) {
+  // Paced rather than retried-on-failure: a quota error costs a round trip and
+  // the retry has to wait anyway, so waiting first is strictly cheaper. It does
+  // mean a tall page takes about half a second per screenful, which the panel
+  // says.
+  const since = Date.now() - _lastCaptureAt;
+  if (since < CAPTURE_MIN_INTERVAL_MS) {
+    await _sleep(CAPTURE_MIN_INTERVAL_MS - since);
+  }
+  // format decides whether quality means anything: Chrome ignores it for PNG,
+  // so the UI's quality control did nothing at all (B-30). Anything below 100
+  // now selects JPEG, where the number is real; 100 keeps lossless PNG.
+  const rawQuality = Number(config.quality);
+  const quality = Number.isFinite(rawQuality)
+    ? Math.max(1, Math.min(100, Math.round(rawQuality)))
+    : 100;
+  const format = quality >= 100 ? "png" : "jpeg";
+  const opts = format === "png" ? { format } : { format, quality };
+  let dataUrl;
+  try {
+    dataUrl = await chrome.tabs.captureVisibleTab(windowId, opts);
+  } catch (err) {
+    // Another extension, or another run, can have spent the quota in the same
+    // second. One patient retry rather than failing the step.
+    if (!/quota|MAX_CAPTURE/i.test(err.message)) throw err;
+    await _sleep(CAPTURE_MIN_INTERVAL_MS);
+    dataUrl = await chrome.tabs.captureVisibleTab(windowId, opts);
+  }
+  _lastCaptureAt = Date.now();
+  return { dataUrl, format, quality };
+}
+
+/**
+ * Join captured strips into one tall image, and optionally crop it.
+ *
+ * Needs OffscreenCanvas and createImageBitmap, which a service worker has and
+ * Node does not — so this path is proven in the e2e suite against a real
+ * Chromium rather than in the unit tests. Mocking a canvas would mean asserting
+ * against something more capable than the runtime, which is exactly what hid
+ * A-12 for four hundred tests.
+ *
+ * @param {{dataUrl: string, top: number}[]} strips - `top` in device pixels
+ * @param {{width: number, height: number, mime: string, crop?: object}} out
+ * @returns {Promise<string>} a data: URL
+ */
+async function _stitchStrips(strips, out) {
+  if (
+    typeof OffscreenCanvas !== "function" ||
+    typeof createImageBitmap !== "function"
+  ) {
+    throw new Error("This browser cannot join screenshots together.");
+  }
+  const canvas = new OffscreenCanvas(out.width, out.height);
+  const ctx = canvas.getContext("2d");
+
+  for (const strip of strips) {
+    const blob = await (await fetch(strip.dataUrl)).blob();
+    const bitmap = await createImageBitmap(blob);
+    // Drawn at its scroll offset. The last strip overlaps the one before it
+    // wherever the page did not have a full viewport left to scroll — which is
+    // most pages — so it must be drawn over, not appended.
+    ctx.drawImage(bitmap, 0, strip.top);
+    bitmap.close?.();
+  }
+
+  let surface = canvas;
+  if (out.crop) {
+    const { x, y, width, height } = out.crop;
+    const cropped = new OffscreenCanvas(
+      Math.max(1, width),
+      Math.max(1, height),
+    );
+    cropped
+      .getContext("2d")
+      .drawImage(canvas, x, y, width, height, 0, 0, width, height);
+    surface = cropped;
+  }
+
+  const blob = await surface.convertToBlob({ type: out.mime });
+  return _bytesToDataUrl(new Uint8Array(await blob.arrayBuffer()), out.mime);
+}
+
+/**
+ * Capture the tab: the visible area, the whole page, or one element.
+ *
+ * `captureVisibleTab` photographs the viewport and nothing else, which is all
+ * this step could ever do. So "screenshot the page" gave you the top of it, and
+ * photographing one element was impossible — both under a control that said
+ * only "quality".
+ */
+async function _takeShot(tabId, config = {}, runId) {
+  const area = config.area || "viewport";
   try {
     // captureVisibleTab photographs whichever tab is active in the window, so
     // the target has to be the active one. It used to be activated
@@ -747,39 +899,173 @@ async function _captureScreenshot(tabId, config = {}, runId) {
       await chrome.tabs.update(tabId, { active: true });
       await _sleep(400);
     }
-
     const tab = await chrome.tabs.get(tabId);
-    // format decides whether quality means anything: Chrome ignores it for PNG,
-    // so the UI's quality control did nothing at all (B-30). Anything below 100
-    // now selects JPEG, where the number is real; 100 keeps lossless PNG.
-    const rawQuality = Number(config.quality);
-    const quality = Number.isFinite(rawQuality)
-      ? Math.max(1, Math.min(100, Math.round(rawQuality)))
-      : 100;
-    const format = quality >= 100 ? "png" : "jpeg";
-    const dataUrl = await chrome.tabs.captureVisibleTab(
-      tab.windowId,
-      format === "png" ? { format } : { format, quality },
-    );
-    // Held in memory until export, so it is bounded (D-10).
-    const kept = _pushCapture(
-      runState,
-      "screenshots",
-      { dataUrl, ts: Date.now(), ext: format === "png" ? "png" : "jpg" },
-      dataUrl.length,
-      CAPTURE_LIMITS.screenshotBytes,
-      CAPTURE_LIMITS.screenshotCount,
-      runId,
-    );
-    if (kept) {
-      _broadcastLog(
-        "info-log",
-        `Screenshot #${runState.screenshots.length} captured.`,
-        runId,
-      );
+
+    if (area === "full")
+      return { ...(await _captureFullPage(tab, config, runId)), area };
+    if (area === "element") {
+      return { ...(await _captureElement(tab, config, runId)), area };
     }
+    const { dataUrl, format } = await _captureViewport(tab.windowId, config);
+    return { dataUrl, ext: format === "png" ? "png" : "jpg", area };
   } catch (err) {
     throw new Error(`Screenshot failed: ${err.message}`);
+  }
+}
+
+/**
+ * Take a screenshot and keep it with the run.
+ *
+ * Split from _takeShot so that testing a single SCREENSHOT step can hand the
+ * image straight back. It could not be tested at all before: the step runs in
+ * the worker, but the test path forwarded everything it did not special-case
+ * to the page, where injector.js rejects SCREENSHOT by design (B-32). Pressing
+ * "Test" on a screenshot step therefore always failed.
+ */
+async function _captureScreenshot(tabId, config = {}, runId) {
+  const runState = _runStates.get(runId);
+  if (!runState) return;
+  const shot = await _takeShot(tabId, config, runId);
+
+  // Held in memory until export, so it is bounded (D-10).
+  const kept = _pushCapture(
+    runState,
+    "screenshots",
+    { dataUrl: shot.dataUrl, ts: Date.now(), ext: shot.ext, area: shot.area },
+    shot.dataUrl.length,
+    CAPTURE_LIMITS.screenshotBytes,
+    CAPTURE_LIMITS.screenshotCount,
+    runId,
+  );
+  if (kept) {
+    _broadcastLog(
+      "info-log",
+      `Screenshot #${runState.screenshots.length} captured (${shot.area}).`,
+      runId,
+    );
+  }
+}
+
+/** Walk the page a viewport at a time and join the strips. */
+async function _captureFullPage(tab, config, runId) {
+  const m = await _sendToPage(tab.id, { type: "PAGE_METRICS", config: {} });
+  if (!m?.ok) throw new Error(m?.error || "Could not measure the page");
+  const {
+    scrollHeight,
+    viewportHeight,
+    width,
+    dpr = 1,
+    scrollY = 0,
+  } = m.result;
+
+  let height = scrollHeight;
+  if (height > FULL_PAGE_MAX_HEIGHT) {
+    height = FULL_PAGE_MAX_HEIGHT;
+    _broadcastLog(
+      "warn-log",
+      `Screenshot: the page is ${scrollHeight}px tall — truncated to ${FULL_PAGE_MAX_HEIGHT}px. ` +
+        `An endless feed has no bottom to reach.`,
+      runId,
+    );
+  }
+
+  const shots = Math.ceil(height / viewportHeight);
+  if (shots > 4) {
+    _broadcastLog(
+      "info-log",
+      `Screenshot: ${shots} screenfuls to capture — Chrome allows about two a ` +
+        `second, so this will take roughly ${Math.ceil((shots * CAPTURE_MIN_INTERVAL_MS) / 1000)}s.`,
+      runId,
+    );
+  }
+
+  const strips = [];
+  let format = "png";
+  for (let top = 0; top < height; top += viewportHeight) {
+    const moved = await _sendToPage(tab.id, {
+      type: "SCROLL_TO",
+      config: { top },
+    });
+    if (!moved?.ok)
+      throw new Error(moved?.error || "Could not scroll the page");
+    // Where the page ran out of scroll, the strip shows a lower offset than
+    // asked for — draw it where it actually landed or the join is doubled.
+    const landed = Number(moved.result?.top ?? top);
+    const cap = await _captureViewport(tab.windowId, config);
+    format = cap.format;
+    strips.push({ dataUrl: cap.dataUrl, top: Math.round(landed * dpr) });
+  }
+
+  // Put the page back where the run had it: leaving it at the bottom breaks
+  // every step after this one that depends on what is on screen.
+  await _sendToPage(tab.id, {
+    type: "SCROLL_TO",
+    config: { top: scrollY },
+  }).catch(() => {});
+
+  const ext = format === "png" ? "png" : "jpg";
+  const mime = format === "png" ? "image/png" : "image/jpeg";
+  try {
+    const dataUrl = await _stitchStrips(strips, {
+      width: Math.round(width * dpr),
+      height: Math.round(height * dpr),
+      mime,
+    });
+    return { dataUrl, ext };
+  } catch (err) {
+    // Said plainly rather than passed off as a full-page shot: the first strip
+    // is the top of the page, which is what the old behaviour already gave.
+    _broadcastLog(
+      "warn-log",
+      `Screenshot: ${err.message} Keeping the first screenful only.`,
+      runId,
+    );
+    return { dataUrl: strips[0]?.dataUrl ?? "", ext };
+  }
+}
+
+/** Photograph one element, by cropping a capture to its box. */
+async function _captureElement(tab, config, runId) {
+  const box = await _sendToPage(tab.id, {
+    type: "ELEMENT_BOX",
+    config: { selector: config.selector || "" },
+  });
+  if (!box?.ok) throw new Error(box?.error || "Could not find that element");
+  const { x, y, width, height, dpr = 1 } = box.result;
+  if (!(width > 0 && height > 0)) {
+    throw new Error(
+      `The element matching "${config.selector}" has no size on screen.`,
+    );
+  }
+
+  const cap = await _captureViewport(tab.windowId, config);
+  const ext = cap.format === "png" ? "png" : "jpg";
+  const mime = cap.format === "png" ? "image/png" : "image/jpeg";
+  const view = box.result.viewport ?? {};
+  try {
+    const dataUrl = await _stitchStrips([{ dataUrl: cap.dataUrl, top: 0 }], {
+      // The canvas the crop is taken *from* is the whole capture, not the
+      // element: sizing it to the element would leave everything but the
+      // top-left corner of the viewport outside it, and the crop would come
+      // back blank for any element not at the very top of the page.
+      width: Math.round((view.width ?? width + x) * dpr),
+      height: Math.round((view.height ?? height + y) * dpr),
+      mime,
+      crop: {
+        x: Math.round(x * dpr),
+        y: Math.round(y * dpr),
+        width: Math.round(width * dpr),
+        height: Math.round(height * dpr),
+      },
+    });
+    return { dataUrl, ext };
+  } catch (err) {
+    _broadcastLog(
+      "warn-log",
+      `Screenshot: ${err.message} Keeping the whole visible area instead.`,
+      runId,
+    );
+    return { dataUrl: cap.dataUrl, ext };
   }
 }
 
@@ -1684,12 +1970,29 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
 }
 
 async function _executeIfElse(step, tabId, runId, parentCtx = {}) {
+  const resolved = _resolveConfig(step, parentCtx);
+  const condition = resolved.config.condition || "exists";
   let met = false;
+
   try {
-    const resolved = _resolveConfig(step, parentCtx);
+    // The page reports what it saw; the comparison happens here, against the
+    // one shared definition, so a numeric branch uses the same number reader
+    // EXTRACT does.
     const r = await _sendToPage(tabId, resolved);
-    met = r?.result?.conditionMet === true;
-  } catch {}
+    if (!r?.ok) throw new Error(r?.error || "could not read the page");
+    met = evaluateCondition(condition, r.result, resolved.config);
+  } catch (err) {
+    // This used to swallow everything into `met = false` and take ELSE, so a
+    // broken condition — a bad pattern, a non-numeric comparison value, a dead
+    // tab — was indistinguishable from an unmet one.
+    _broadcastLog(
+      "warn-log",
+      `IF_ELSE (${condition}) could not be evaluated: ${err.message} — taking the ELSE branch.`,
+      runId,
+    );
+    met = false;
+  }
+
   _broadcastLog(
     "info-log",
     `IF_ELSE: condition ${met ? "met → IF" : "not met → ELSE"} branch.`,
@@ -2280,6 +2583,13 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
 
   // Testing a single step is the other path that needs the page set up (C-09).
   await _ensureInjected(targetTabId);
+
+  if (resolvedStep.type === "SCREENSHOT") {
+    // Runs in the worker, so forwarding it to the page — which is what the
+    // fall-through did — reached injector.js's deliberate refusal and made
+    // "Test" fail on every screenshot step.
+    return _takeShot(targetTabId, resolvedStep.config, null);
+  }
 
   if (resolvedStep.type === "PAGINATE") {
     // Same helper the run uses, rather than a second copy that drifts (B-27).

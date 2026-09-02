@@ -51,9 +51,18 @@ test("the sniffer is registered only for a run that asked for it", () => {
     /if \(enableSniffer\) \{\s*\n\s*await _enableSniffer\(/,
     "registration must be conditional on an API_SNIFFER step being present",
   );
+  // Derived from the steps, not from a flag the panel sends: a payload the
+  // page could influence must not be able to turn the sniffer on (C-02). The
+  // step is now looked up rather than counted, because the run also needs its
+  // URL filter — so assert what it is derived from, not how.
   assert.match(
     swSrc,
-    /const enableSniffer = \(pipeline\.steps \|\| \[\]\)\.some\(/,
+    /const enableSniffer = Boolean\(snifferStep\)/,
+    "enableSniffer must come from the pipeline's own steps",
+  );
+  assert.match(
+    swSrc,
+    /const snifferStep = \(pipeline\.steps \|\| \[\]\)\.find\(\s*\(s\) => s\.type === "API_SNIFFER",/,
   );
 });
 

@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 137 findings — 13 blocker · 31 high · 64 medium · 29 low. The
+**Totals:** 142 findings — 13 blocker · 33 high · 67 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -20,7 +20,7 @@ gaps found by reading every step type against its implementation.
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
-| J · Capability gaps             | 7        |
+| J · Capability gaps             | 12       |
 
 ---
 
@@ -127,17 +127,19 @@ decision:
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
+| J-08 … J-12 | _this batch_ | IF_ELSE can ask about emptiness, numbers and patterns; KEYBOARD has a target and a repeat; the sniffer can be filtered; SCREENSHOT can capture the whole page or one element; and Detect Table stops returning a page's own labels as columns |
 | J-06, J-07 | _this batch_ | Extracted values are cleaned as they are read, in one module both emitters share; and PAGE_DATA reads the JSON-LD, microdata and Open Graph every site already publishes — the answer to "turn the page into JSON" for a single record |
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 134 of 137 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 139 of 142 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
 stream framing), A-12 (`EXPORT` downloading nothing at all) and A-13 (every page
-step after a navigation failing) — and because section J records seven
-capabilities the steps advertised and did not have. Three of the four new
+step after a navigation failing) — and because section J records twelve
+capabilities the steps advertised and did not have — the last of them, J-12,
+found by running the extension against a real website rather than a fixture. Three of the four new
 blockers came from running the code in a real browser, which is why
 `npm run e2e` exists.
 
@@ -1014,6 +1016,129 @@ but not the microdata reader — that is a hundred lines of DOM walking, and a
 second compact implementation would drift from the first. The emitted script
 says so at run time when it finds no JSON-LD, at the moment it matters, rather
 than differing in silence.
+
+### J-08 · HIGH · `IF_ELSE` could only compare text and attributes
+
+No "is this empty", no numeric comparison, no pattern match. So "only scrape
+items under £50" and "skip the row when the price is missing" — the two things
+a branch is most often for — could not be expressed at all.
+
+The comparisons now live in `utils/conditions.js`, and the split is deliberate:
+**the page reads the DOM and reports what it saw; the worker decides what that
+means.** A numeric branch needs the same number reader `EXTRACT` uses — one
+reading `"1.234,56"` as `1.234` would take the wrong path on every European
+price — and a classic content script cannot import it, so evaluating in the
+page would have meant a second parser drifting from the first.
+
+Two failures were folded in while doing it:
+
+- `_executeIfElse` swallowed every error into `met = false` and took the ELSE
+  branch, so a broken condition, a bad pattern and a dead tab were all
+  indistinguishable from a condition that was simply not met. It says which now.
+- Both script emitters handled `exists` and emitted
+  `if (true) { // TODO: impl extended condition … }` for everything else. The
+  exported script therefore took the IF branch unconditionally — it ran,
+  produced a file, and had silently ignored its own branching. The B-13 check
+  could not see it: it looks for `# TODO` in the Python output, and the Node
+  stub was a `//` comment. Every condition is emitted now, and one that cannot
+  be is a refusal rather than an always-true.
+
+### J-09 · MEDIUM · `KEYBOARD` typed at whatever had focus, once
+
+No target and no repeat. "Type into the search box and press Enter" needed a
+`CLICK` first, and worked only if that click happened to focus the right thing;
+pressing a key twice needed two steps. A selector focuses the element first —
+a key event dispatched at an input the page does not consider focused is
+ignored by most frameworks — and a selector matching nothing throws rather than
+falling back to `document.activeElement`, where the key lands on the page body
+and does nothing while the step reports success. Repeat is clamped, because a
+template can resolve to anything and 10,000 ArrowDowns locks the tab.
+
+### J-10 · MEDIUM · `API_SNIFFER` recorded everything
+
+On a real site that is analytics beacons, font files, session pings, ad auctions
+and image lazy-loads, with the four calls you wanted somewhere inside them. The
+capture buffer is bounded (D-10), so on a busy page the noise could push the
+signal out of it before the run finished. `utils/sniffer-filter.js` filters
+before the buffer, not after.
+
+The filter's syntax was decided by a test rather than by taste: the obvious
+spelling for a regular expression is `/…/`, and it is wrong here, because
+`/api/` is the single most likely substring anyone will type **and** valid regex
+syntax. Slashes would have silently reinterpreted the common case as a
+case-sensitive pattern — caught by asking for `/api/` against a mixed-case URL.
+So substrings keep the plain spelling and a regular expression says `re:`.
+
+### J-11 · MEDIUM · `SCREENSHOT` could only photograph the visible strip
+
+`captureVisibleTab` photographs the viewport and nothing else, so "screenshot
+the page" gave you the top of it and photographing one element was impossible —
+both under a control that said only "quality".
+
+A full-page shot walks the page a viewport at a time and joins the strips with
+`OffscreenCanvas`, puts the scroll position back (leaving the page at the bottom
+breaks every step after it that depends on what is on screen), and truncates
+past a cap, saying so — an endless feed has no bottom to reach. An element shot
+crops to the element's box, and fails when nothing matches rather than returning
+the whole page under a name that says otherwise.
+
+Two things surfaced with it: a fixed header repeats in every strip of a stitched
+shot, which is what stitching does and cannot be avoided from an extension —
+stated rather than hidden; and testing a single `SCREENSHOT` step had never
+worked at all, because the step runs in the worker and the test path forwarded
+everything it did not special-case to the page, where `injector.js` refuses it
+by design (B-32).
+
+The stitching itself is proven in the e2e suite, where the image can be decoded
+and measured. Node has neither `OffscreenCanvas` nor `createImageBitmap`, and
+mocking them would have meant asserting against something more capable than the
+runtime — which is exactly what hid A-12 for four hundred tests.
+
+That decision paid immediately. The first full-page shot in a real browser came
+back `This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota`:
+**Chrome allows about two captures a second**, and a four-strip page asks for
+four at once. The mocked `captureVisibleTab` has no quota, so in the unit suite
+stitching looked instantaneous and free. Captures are paced now — waiting first
+rather than retrying after a refusal, since the retry has to wait anyway — with
+one patient retry for the case where something else spent the quota, and the
+panel says a long page will take a few seconds.
+
+### J-12 · HIGH · Detect Table returned a page's labels as columns
+
+_Found by running the extension against a real site rather than against a
+fixture._
+
+A scrape of `scrapethissite.com/pages/simple/` came back with the right data in
+eight columns, four of which were junk:
+
+```
+country name,strongnthoftype,country capital,strongnthoftype 2,
+country population,strongnthoftype 3,country area,sup
+Andorra,Capital:,Andorra la Vella,Population:,84000,Area (km2):,468.0,2
+```
+
+Real markup labels its fields inline — `<strong>Capital:</strong>` beside the
+value — and those `<strong>`s have the same shape in every record, so they read
+as a perfectly consistent column. Three of them held the same label repeated in
+all 250 rows; the fourth held the `2` from `km<sup>2</sup>`.
+
+**A column whose value never changes carries no information about the record.**
+It is the form's label, printed once per row. Constant columns are dropped, and
+samples are now kept for every record rather than the first three, because
+constancy cannot be judged from three.
+
+The same run exposed two number-reading faults:
+
+- `"1.4E7"` — how that site reports Antarctica's area — was read as `1.4`. The
+  numeric run stopped at the `E`, turning fourteen million into one point four:
+  a wrong number that looks entirely plausible in a column of areas. Scientific
+  notation is read whole now, and only where it is unambiguous, so `"3 EUR"`
+  and `"Section 4E"` are still not exponents.
+- Populations and areas carry no currency mark, so Detect Table's automatic
+  transform left them as text. A column whose samples are _all_ cleanly numeric
+  is read as numbers — all, not a majority, because a column that is 90% numbers
+  and 10% `"N/A"` would otherwise turn that 10% into empty cells with nothing
+  said.
 
 ---
 

@@ -115,10 +115,10 @@ test("an input type with no selection range does not throw", () => {
 // ── B-29 / B-30: screenshots ─────────────────────────────────────────────────
 
 test("a tab that is already active is not re-activated", () => {
-  const fn = extract(
-    swSrc,
-    /async function _captureScreenshot\([\s\S]*?\n\}\n/,
-  );
+  // The activation lives in _takeShot now — the one place every screenshot
+  // area goes through — so _captureScreenshot can be reused by the single-step
+  // "Test" path without storing anything.
+  const fn = extract(swSrc, /async function _takeShot\([\s\S]*?\n\}\n/);
   assert.match(fn, /const before = await chrome\.tabs\.get\(tabId\);/);
   assert.match(fn, /if \(!before\.active\) \{/);
   assert.ok(
@@ -130,19 +130,16 @@ test("a tab that is already active is not re-activated", () => {
 });
 
 test("the 400ms settle only happens when the tab actually changed", () => {
-  const fn = extract(
-    swSrc,
-    /async function _captureScreenshot\([\s\S]*?\n\}\n/,
-  );
+  const fn = extract(swSrc, /async function _takeShot\([\s\S]*?\n\}\n/);
   const guarded = fn.match(/if \(!before\.active\) \{[\s\S]*?\n {4}\}/)[0];
   assert.match(guarded, /_sleep\(400\)/);
 });
 
 test("quality selects a format where quality means something", () => {
-  const fn = extract(
-    swSrc,
-    /async function _captureScreenshot\([\s\S]*?\n\}\n/,
-  );
+  // The B-30 logic now lives in _captureViewport: every area — visible, full
+  // page, single element — takes its photographs through it, so there is still
+  // one place that decides the format.
+  const fn = extract(swSrc, /async function _captureViewport\([\s\S]*?\n\}\n/);
   assert.match(fn, /const format = quality >= 100 \? "png" : "jpeg";/);
   assert.match(
     fn,

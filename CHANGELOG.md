@@ -10,12 +10,12 @@ if any copy of it drifts.
 ## [Unreleased]
 
 Everything below was found by a full-repository audit
-([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 137 findings) and fixed against
+([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 142 findings) and fixed against
 it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-550**, plus **47 end-to-end checks** that load the extension into a real
+605**, plus **54 end-to-end checks** that load the extension into a real
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
@@ -60,12 +60,53 @@ capabilities the configuration promised and the code did not have.
   there is nothing repeating to find. Detect Table now offers it when it finds
   no table, and only when there is something to read.
 
+- **`IF_ELSE` can ask about emptiness, numbers and patterns** (J-08) — "only
+  scrape items under £50" and "skip the row when the price is missing" could not
+  be expressed at all before. The page reports what it saw and the worker
+  decides, so a numeric branch uses the same number reader `EXTRACT` does rather
+  than a second copy of it.
+- **`SCREENSHOT` can capture the whole page or one element** (J-11), not just
+  the visible strip. Full-page walks the page and joins the strips, puts the
+  scroll position back, and truncates a bottomless feed rather than looping
+  forever. A fixed header repeats in each strip — that is what stitching does,
+  and it is stated rather than hidden. Captures are paced: Chrome allows about
+  two a second, which the first real-browser run discovered by being refused.
+- **The API sniffer can be filtered** (J-10) by URL and method, before the
+  bounded buffer rather than after it, so analytics and font requests can no
+  longer push the calls you wanted out of the capture.
+- **`KEYBOARD` has a target and a repeat count** (J-09). It typed at whatever
+  had focus, once.
 - **Extracted values are cleaned as they are read** (J-06). `"$25.50"` arrives
   as `25.5`, `"/p/123"` as a full URL. Number reading handles European decimals,
   where the comma is the point — `"1.234,56"` read as `1.234` is a hundredfold
   error in a price column with nothing to signal it — and text with no number in
   it becomes empty, never `0`, because `0` is a plausible price. Detect Table
   picks the obvious transforms itself.
+
+### Fixed — found by running it on a real website
+
+The first scrape against a site I did not write the markup for
+(`scrapethissite.com`) returned the right data in the wrong shape (J-12):
+
+```
+country name,strongnthoftype,country capital,strongnthoftype 2,…,sup
+Andorra,Capital:,Andorra la Vella,Population:,84000,Area (km2):,468.0,2
+```
+
+- **Detect Table returned the page's own labels as columns.** Real markup labels
+  its fields inline — `<strong>Capital:</strong>` beside the value — and those
+  have the same shape in every record, so they read as perfectly consistent
+  columns. Three held one label repeated 250 times; a fourth held the `2` from
+  `km<sup>2</sup>`. A column whose value never changes is now dropped, and
+  samples are kept for every record rather than the first three, because
+  constancy cannot be judged from three.
+- **`"1.4E7"` was read as `1.4`.** That is how the site reports Antarctica's
+  area, and the numeric run stopped at the `E` — fourteen million became one
+  point four, which looks entirely plausible in a column of areas.
+- **Plain-number columns were left as text**, because the automatic transform
+  only recognised money. A column whose samples are _all_ cleanly numeric is now
+  read as numbers — all, not a majority, so a column that is 90% numbers and 10%
+  `"N/A"` is left alone rather than having that 10% quietly emptied.
 
 ### Fixed — the exported scripts
 
@@ -79,6 +120,11 @@ capabilities the configuration promised and the code did not have.
   Python `"""…"""` literal with escaped single quotes, which Python resolves
   before the browser sees them — arriving as JavaScript with an unterminated
   string. It compiled as Python, because to Python it is just text.
+- **Every `IF_ELSE` condition but `exists` was emitted as `if (true)`** with a
+  TODO comment beside it, so an exported script took the IF branch
+  unconditionally — it ran, produced a file, and had silently ignored its own
+  branching. The existing check could not see it: it looks for `# TODO` in the
+  Python output, and the Node stub was a `//` comment.
 - The emitted scripts are now **compiled** in the test suite — `node --check`
   and `python -m py_compile` over a pipeline using every construct the emitters
   can produce. Pattern-matching the output is happy with source that will not

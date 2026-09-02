@@ -60,6 +60,13 @@ export function emitNode(pipeline) {
     `const fsRegex = (v, p) => { const m = String(v ?? '').match(new RegExp(p)); return m ? (m[1] ?? m[0]) : null; };`,
     `const fsTrim = v => String(v ?? '').replace(/\\s+/g, ' ').trim();`,
     "",
+    `// What an IF_ELSE branch reads before it decides. null means "no such`,
+    `// element", which every condition treats as not-matching rather than as`,
+    `// an empty string — the two are different, and conflating them puts every`,
+    `// missing row into the wrong branch.`,
+    `const fsText = async loc => (await loc.count()) > 0 ? fsTrim(await loc.first().innerText()) : null;`,
+    `const fsAttr = async (loc, a) => (await loc.count()) > 0 ? await loc.first().getAttribute(a) : null;`,
+    "",
     `const sleep = ms => new Promise(r => setTimeout(r, ms));`,
     `const jitter = (min, max) => min + Math.random() * (max - min);`,
     "",
@@ -76,6 +83,57 @@ export function emitNode(pipeline) {
 
   lines.push(`  } finally {`, `    await browser.close();`, `  }`, `})();`, "");
   return lines.join("\n");
+}
+
+/**
+ * One IF_ELSE condition as a JavaScript expression over `_loc`.
+ *
+ * Mirrors utils/conditions.js, which is where the extension's copy lives; the
+ * pair is held together by a test that emits every condition in the registry
+ * and fails on any that comes back stubbed.
+ *
+ * @returns {string|null} null when the condition cannot be expressed
+ */
+function _conditionNode(condition, config, esc) {
+  const value = esc(String(config.value ?? ""));
+  const attr = esc(String(config.attr ?? ""));
+  const num = Number(String(config.value ?? "").trim());
+  const numeric = (op) =>
+    Number.isFinite(num)
+      ? `((n => n !== null && n ${op} ${num})(fsNumber(await fsText(_loc))))`
+      : null;
+
+  switch (condition) {
+    case "exists":
+      return `(await _loc.count()) > 0`;
+    case "not-exists":
+      return `(await _loc.count()) === 0`;
+    case "is-empty":
+      return `((t => t === null || t === '')(await fsText(_loc)))`;
+    case "not-empty":
+      return `((t => t !== null && t !== '')(await fsText(_loc)))`;
+    case "text-equals":
+      return `(await fsText(_loc)) === fsTrim('${value}')`;
+    case "text-contains":
+      return `((t => t !== null && t.includes(fsTrim('${value}')))(await fsText(_loc)))`;
+    case "text-matches":
+      if (!isValidRegex(config.value ?? "")) return null;
+      return `((t => t !== null && new RegExp('${value.replace(/\\/g, "\\\\")}').test(t))(await fsText(_loc)))`;
+    case "attr-equals":
+      return `((a => a !== null && a.trim() === '${value}'.trim())(await fsAttr(_loc, '${attr}')))`;
+    case "attr-contains":
+      return `((a => a !== null && a.includes('${value}'))(await fsAttr(_loc, '${attr}')))`;
+    case "attr-exists":
+      return `(await fsAttr(_loc, '${attr}')) !== null`;
+    case "number-equals":
+      return numeric("===");
+    case "number-gt":
+      return numeric(">");
+    case "number-lt":
+      return numeric("<");
+    default:
+      return null;
+  }
 }
 
 function _emitNodeStep(step) {
@@ -208,21 +266,34 @@ function _emitNodeStep(step) {
       const lines = [
         `// IF_ELSE: ${condition} - ${esc(config.selector ?? "")}`,
       ];
-      if (condition === "exists") {
+      const test = _conditionNode(condition, config, esc);
+      if (test === null) {
+        // Emitted as a refusal rather than as `if (true)`, which is what this
+        // used to do for every condition but `exists`: the script ran, produced
+        // a file, and had silently ignored its own branching.
         lines.push(
-          `if (await page.locator('${esc(config.selector ?? "")}').count() > 0) {`,
+          `// UNSUPPORTED: condition '${condition}' cannot be expressed here.`,
+          `throw new Error("FlowScrape: IF_ELSE condition '${condition}' is not exportable");`,
+          "",
         );
-      } else {
-        lines.push(`if (true) { // TODO: impl extended condition ${condition}`);
+        return lines;
       }
+      // Braced: two sibling branches in the same scope would otherwise both
+      // declare `_loc`, and the script would not parse. Caught by the check
+      // that compiles the emitted output rather than pattern-matching it.
+      lines.push(
+        `{`,
+        `  const _loc = page.locator('${esc(config.selector ?? "")}');`,
+        `  if (${test}) {`,
+      );
       for (const child of step.ifBranch ?? []) {
-        lines.push(..._emitNodeStep(child).map((l) => "  " + l));
+        lines.push(..._emitNodeStep(child).map((l) => "    " + l));
       }
-      lines.push(`} else {`);
+      lines.push(`  } else {`);
       for (const child of step.elseBranch ?? []) {
-        lines.push(..._emitNodeStep(child).map((l) => "  " + l));
+        lines.push(..._emitNodeStep(child).map((l) => "    " + l));
       }
-      lines.push(`}`, "");
+      lines.push(`  }`, `}`, "");
       return lines;
     }
     case "FILL":

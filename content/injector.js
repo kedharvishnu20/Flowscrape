@@ -303,6 +303,55 @@ async function _executeStep(step) {
       return _stepPaginate(config, context);
     case "PAGINATE_PROBE":
       return _stepPaginateProbe(config, context);
+    case "PAGE_METRICS":
+      // What a full-page screenshot needs to know before it starts walking.
+      return {
+        scrollHeight: Math.max(
+          document.documentElement?.scrollHeight ?? 0,
+          document.body?.scrollHeight ?? 0,
+        ),
+        viewportHeight: window.innerHeight,
+        width: document.documentElement?.clientWidth ?? window.innerWidth,
+        // Captures come back at device resolution; the crop maths is in CSS
+        // pixels, so the two have to be reconciled or every crop is off by the
+        // zoom factor on a HiDPI screen.
+        dpr: window.devicePixelRatio || 1,
+        scrollY: window.scrollY,
+      };
+
+    case "SCROLL_TO":
+      // "auto", never smooth: the worker captures as soon as this resolves,
+      // and a smooth scroll is still moving when the shutter goes.
+      window.scrollTo({ top: Number(config.top) || 0, behavior: "auto" });
+      await _sleep(Number(config.settleMs) ?? 120);
+      return { top: window.scrollY };
+
+    case "ELEMENT_BOX": {
+      const el = _queryScoped(config.selector || "", context, false)[0];
+      if (!el) {
+        // Throwing rather than returning the viewport: a full-page shot
+        // labelled "the element" is the worst outcome, because it looks right.
+        throw new Error(`Screenshot: nothing matched "${config.selector}".`);
+      }
+      el.scrollIntoView({ behavior: "auto", block: "center" });
+      await _sleep(Number(config.settleMs) ?? 150);
+      const r = el.getBoundingClientRect();
+      return {
+        x: r.left,
+        y: r.top,
+        width: r.width,
+        height: r.height,
+        dpr: window.devicePixelRatio || 1,
+        // The crop is taken from a canvas the size of the whole capture, so
+        // the worker needs the viewport's dimensions and not just the box's.
+        viewport: {
+          width: document.documentElement?.clientWidth ?? window.innerWidth,
+          height: window.innerHeight,
+        },
+        viewportHeight: window.innerHeight,
+      };
+    }
+
     case "PAGE_DATA": {
       // page-data.js is injected alongside this file and publishes the reader
       // on the shared isolated world, the same way structure-detector.js does.
@@ -1591,7 +1640,25 @@ const _NAMED_KEY_CODES = Object.freeze({
   PageDown: "PageDown",
 });
 
-async function _stepKeyboard({ key }, context = {}) {
+/** More presses than this is a stuck key, not an instruction. */
+const KEYBOARD_MAX_REPEAT = 500;
+
+/**
+ * Press a key, optionally at a named element and more than once.
+ *
+ * It used to dispatch at `document.activeElement`, once, with no way to say
+ * where. So "type into the search box and press Enter" needed a CLICK first
+ * and worked only if that click happened to focus the right thing — and
+ * pressing a key twice needed two steps.
+ *
+ * A selector that matches nothing throws rather than falling back to whatever
+ * has focus: the fallback sends the key to the page body, where it does
+ * nothing, and the step reports success.
+ */
+async function _stepKeyboard(
+  { key, selector = "", repeat = 1, delayMs = 50 },
+  context = {},
+) {
   // key may be a combo like "Ctrl+Enter" or "Shift+Alt+Delete"
   const parts = (key || "Enter").split("+");
   const mainKey = parts[parts.length - 1];
@@ -1600,7 +1667,25 @@ async function _stepKeyboard({ key }, context = {}) {
   const shiftKey = parts.includes("Shift");
   const metaKey = parts.includes("Meta");
 
-  const active = document.activeElement || document.body;
+  let active;
+  if (selector) {
+    const el = _queryScoped(selector, context, false)[0];
+    if (!el) throw new Error(`Keyboard: nothing matched "${selector}".`);
+    // Focus as well as target it: a key event dispatched at an input the page
+    // does not consider focused is ignored by most editors and frameworks.
+    try {
+      el.focus?.();
+    } catch {}
+    active = el;
+  } else {
+    active = document.activeElement || document.body;
+  }
+
+  const times = Math.max(
+    1,
+    Math.min(KEYBOARD_MAX_REPEAT, Math.floor(Number(repeat) || 1)),
+  );
+  const gap = Math.max(0, Number(delayMs) ?? 50);
   const code = _keyToCode(mainKey);
   const which = mainKey.length === 1 ? mainKey.charCodeAt(0) : 0;
   const evInit = {
@@ -1617,11 +1702,14 @@ async function _stepKeyboard({ key }, context = {}) {
     metaKey,
   };
 
-  active.dispatchEvent(new KeyboardEvent("keydown", evInit));
-  active.dispatchEvent(new KeyboardEvent("keypress", evInit));
-  await _sleep(40);
-  active.dispatchEvent(new KeyboardEvent("keyup", evInit));
-  return { keypressed: key };
+  for (let i = 0; i < times; i++) {
+    active.dispatchEvent(new KeyboardEvent("keydown", evInit));
+    active.dispatchEvent(new KeyboardEvent("keypress", evInit));
+    await _sleep(Math.min(40, gap));
+    active.dispatchEvent(new KeyboardEvent("keyup", evInit));
+    if (i < times - 1 && gap > 0) await _sleep(gap);
+  }
+  return { keypressed: key, repeated: times, selector: selector || null };
 }
 
 async function _stepDragDrop({ source, target }, context = {}) {
@@ -1685,43 +1773,26 @@ function _normText(v) {
     .trim();
 }
 
-async function _stepIfElse(
-  { condition, selector, value = "", attr = "" },
-  context = {},
-) {
-  const el =
-    _queryScoped(selector, context, false)[0] || _getScopedRoot(context);
-  const exists = !!el;
-  let conditionMet = false;
-  switch (condition) {
-    case "exists":
-      conditionMet = exists;
-      break;
-    case "not-exists":
-      conditionMet = !exists;
-      break;
-    // Real markup indents its text, so an element rendered as "Add to cart"
-    // has a textContent of "\n      Add to cart\n    ". trim() alone does not
-    // help when the whitespace is *inside* the string, which is why
-    // text-equals almost never matched anything (B-25).
-    case "text-equals":
-      conditionMet = exists && _normText(el.textContent) === _normText(value);
-      break;
-    case "text-contains":
-      conditionMet =
-        exists && _normText(el.textContent).includes(_normText(value));
-      break;
-    case "attr-equals":
-      conditionMet =
-        exists && (el.getAttribute(attr) ?? "").trim() === String(value).trim();
-      break;
-    case "attr-contains":
-      conditionMet = exists && (el.getAttribute(attr) || "").includes(value);
-      break;
-    default:
-      conditionMet = exists;
-  }
-  return { conditionMet };
+/**
+ * Look at the element a branch asks about, and report what is there.
+ *
+ * It does not decide. Deciding needs the same number reader EXTRACT uses —
+ * a branch reading "1.234,56" as 1.234 would take the wrong path on every
+ * European price — and a classic content script cannot import the module that
+ * holds it. A second parser here would drift from the first (G-01), so the
+ * worker evaluates against `utils/conditions.js` and this only reads the DOM.
+ *
+ * @returns {{exists: boolean, text: string, attrValue: ?string}}
+ */
+async function _stepIfElse({ selector, attr = "" }, context = {}) {
+  const el = _queryScoped(selector, context, false)[0] || null;
+  return {
+    exists: !!el,
+    // Unnormalised: the worker normalises, so both sides cannot disagree about
+    // what counts as whitespace (B-25).
+    text: el ? el.textContent : "",
+    attrValue: el && attr ? el.getAttribute(attr) : null,
+  };
 }
 
 // ── Form fill row ─────────────────────────────────────────────────────────────

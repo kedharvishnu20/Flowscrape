@@ -285,7 +285,7 @@
             col.hits++;
             seen.add(id);
           }
-          if (col.samples.length < MAX_SAMPLE_ROWS) col.samples.push(sample);
+          col.samples.push(sample);
         }
       }
     }
@@ -293,6 +293,25 @@
     let columns = [...found.values()].filter(
       (c) => c.hits >= members.length * MIN_COVERAGE,
     );
+
+    // A column whose value never changes is the form's label, not the record's
+    // data. Real markup labels its fields inline — `<strong>Capital:</strong>`
+    // beside the value — and those <strong>s have the same shape in every
+    // record, so they read as a perfectly consistent column. On a real run
+    // against a country list this produced three columns holding "Capital:",
+    // "Population:" and "Area (km2):" repeated 250 times, plus a fourth holding
+    // the "2" from km<sup>2</sup>.
+    //
+    // Only applied where there is enough to judge by: with two records, two
+    // matching values is a coincidence as often as a rule.
+    if (members.length >= MIN_RECORDS) {
+      columns = columns.filter((c) => {
+        if (c.samples.length < Math.min(members.length, MIN_RECORDS))
+          return true;
+        const distinct = new Set(c.samples.map((v) => clean(v)));
+        return distinct.size > 1;
+      });
+    }
 
     // Drop a text column whose value is already inside a shallower one. A list
     // and each of its items are not four columns, they are one.
@@ -317,7 +336,10 @@
         selector: c.selector,
         kind: c.kind,
         coverage: Math.round((c.hits / members.length) * 100),
-        samples: c.samples,
+        // Trimmed only now: the constancy check above needs every sample, and
+        // three would have called a 250-row label column "varied" as often as
+        // not.
+        samples: c.samples.slice(0, MAX_SAMPLE_ROWS),
       }));
     uniquifyNames(named);
     return named;

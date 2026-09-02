@@ -534,3 +534,107 @@ test("the JavaScript PAGE_DATA hands to the browser is itself valid JavaScript",
   assert.match(js, /page\.evaluate\(\(\) => \{/);
   assert.match(js, /ld\+json/);
 });
+
+// ── IF_ELSE conditions in an exported script ────────────────────────────────
+
+test("every IF_ELSE condition is emitted, not stubbed to always-true", async () => {
+  // Both emitters handled `exists` and fell through to
+  // `if (true) { // TODO: impl extended condition ... }` for everything else.
+  // The exported script therefore took the IF branch unconditionally — it ran,
+  // produced a file, and had silently ignored its own branching. The B-13
+  // check could not see it: it looks for "# TODO" in the Python output, and
+  // the Node stub is a `//` comment.
+  const { CONDITION_NAMES } = await import("../utils/conditions.js");
+  const stubbed = [];
+  for (const condition of CONDITION_NAMES) {
+    const pipeline = [
+      {
+        id: "if",
+        type: "IF_ELSE",
+        config: { condition, selector: ".p", value: "10", attr: "data-id" },
+        ifBranch: [step("CLICK", { selector: ".yes" })],
+        elseBranch: [step("CLICK", { selector: ".no" })],
+      },
+    ];
+    const { py, js } = emit(pipeline);
+    if (/if \(true\)|if True:|TODO/.test(js + py)) stubbed.push(condition);
+  }
+  assert.deepEqual(stubbed, [], "these conditions are emitted as always-true");
+});
+
+test("an emitted numeric condition compares numbers, not strings", () => {
+  // "$9.99" < "$25.50" is true as a string comparison and false as a number
+  // one, which is the wrong branch on most of a shop.
+  const { py, js } = emit([
+    {
+      id: "if",
+      type: "IF_ELSE",
+      config: { condition: "number-lt", selector: ".p", value: "50" },
+      ifBranch: [step("CLICK", { selector: ".cheap" })],
+      elseBranch: [],
+    },
+  ]);
+  // The prelude defines fsNumber unconditionally, so look at the condition
+  // itself rather than at the file.
+  // Anchored on the emitted step, or the prelude's own `if`s match first.
+  const jsTest = js.match(/\/\/ IF_ELSE:[\s\S]*?if \((.*)\) \{/)?.[1] ?? "";
+  assert.match(
+    jsTest,
+    /fsNumber/,
+    `the branch does not read a number: ${jsTest}`,
+  );
+  assert.match(jsTest, /< 50/);
+
+  const pyTest = py.match(/# IF_ELSE:[\s\S]*?\n\s*if (.*):/)?.[1] ?? "";
+  assert.match(
+    pyTest,
+    /fs_number/,
+    `the branch does not read a number: ${pyTest}`,
+  );
+  assert.match(pyTest, /< 50/);
+});
+
+test("the emitted branches still parse with every condition in them", (t) => {
+  const branchy = [
+    {
+      id: "a",
+      type: "IF_ELSE",
+      config: { condition: "is-empty", selector: ".p" },
+      ifBranch: [step("CLICK", { selector: ".x" })],
+      elseBranch: [
+        {
+          id: "b",
+          type: "IF_ELSE",
+          config: { condition: "text-matches", selector: ".q", value: "\\d+" },
+          ifBranch: [step("CLICK", { selector: ".y" })],
+          elseBranch: [],
+        },
+      ],
+    },
+    {
+      id: "c",
+      type: "IF_ELSE",
+      config: { condition: "attr-exists", selector: ".r", attr: "data-id" },
+      ifBranch: [],
+      elseBranch: [step("CLICK", { selector: ".z" })],
+    },
+  ];
+  const { py, js } = emit(branchy);
+
+  const jsFile = join(dir, "branches.mjs");
+  writeFileSync(jsFile, js);
+  execFileSync(process.execPath, ["--check", jsFile]);
+
+  let python;
+  try {
+    python = execFileSync("sh", ["-c", "command -v python3"], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    t.skip("no python3 on this machine");
+    return;
+  }
+  const pyFile = join(dir, "branches.py");
+  writeFileSync(pyFile, py);
+  execFileSync(python, ["-m", "py_compile", pyFile]);
+});

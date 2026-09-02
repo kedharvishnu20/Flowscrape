@@ -8,6 +8,8 @@ import {
   isKnownStepType,
 } from "../utils/step-types.js";
 import { TRANSFORMS, isValidRegex } from "../utils/value-transforms.js";
+import { CONDITIONS } from "../utils/conditions.js";
+import { snifferFilterError } from "../utils/sniffer-filter.js";
 import {
   formatRows,
   formatMeta,
@@ -1790,6 +1792,29 @@ function generateConfigHtml(step) {
       <div class="key-display" id="key-disp-${step.id}">${esc(c.key || "Not set")}</div>
       <button class="btn key-register-btn" id="key-reg-${step.id}" data-action="register-key" data-id="${step.id}">🔴 Register Key</button>
     </div>`;
+    html += `<label>Send it to <span style="color:var(--text-dim);font-weight:400;">(optional)</span></label>`;
+    html += selectorRow(step, "selector");
+    html += hint(
+      "Leave blank to send the key wherever the page currently has focus. " +
+        "Naming an element focuses it first — which is what a search box needs " +
+        "before it will accept Enter.",
+    );
+    html += field(
+      step,
+      "repeat",
+      "Press this many times",
+      "number",
+      c.repeat ?? 1,
+    );
+    if ((c.repeat ?? 1) > 1) {
+      html += field(
+        step,
+        "delayMs",
+        "Wait between presses (ms)",
+        "number",
+        c.delayMs ?? 50,
+      );
+    }
     html += toggle(
       step,
       "optional",
@@ -1850,26 +1875,59 @@ function generateConfigHtml(step) {
   // ── IF_ELSE ──
   if (step.type === "IF_ELSE") {
     const cond = c.condition || "exists";
+    // Built from the registry, so a condition cannot exist without the panel
+    // offering it, and each one says which inputs it needs — which is how
+    // "Attr" once shipped with nowhere to type the attribute name (B-07).
+    const meta = CONDITIONS[cond] ?? CONDITIONS.exists;
     html += `<label>Condition</label>
     <select id="cfg-${step.id}-condition" data-id="${step.id}" data-key="condition" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
-      <option value="exists"       ${cond === "exists" ? "selected" : ""}>Element exists</option>
-      <option value="not-exists"   ${cond === "not-exists" ? "selected" : ""}>Element does NOT exist</option>
-      <option value="text-equals"  ${cond === "text-equals" ? "selected" : ""}>Text equals value</option>
-      <option value="text-contains"${cond === "text-contains" ? "selected" : ""}>Text contains value</option>
-      <option value="attr-equals"  ${cond === "attr-equals" ? "selected" : ""}>Attribute equals value</option>
-      <option value="attr-contains"${cond === "attr-contains" ? "selected" : ""}>Attribute contains value</option>
+      ${Object.entries(CONDITIONS)
+        .map(
+          ([name, m]) =>
+            `<option value="${name}" ${cond === name ? "selected" : ""}>${esc(m.label)}</option>`,
+        )
+        .join("")}
     </select>`;
     html += selectorRow(step, "selector");
-    if (
-      ["text-equals", "text-contains", "attr-equals", "attr-contains"].includes(
-        cond,
-      )
-    ) {
-      html += field(step, "value", "Value to compare", "text", c.value || "");
-    }
-    if (["attr-equals", "attr-contains"].includes(cond)) {
+
+    if (meta.needs === "attr" || meta.needs === "attr+value") {
       html += field(step, "attr", "Attribute name", "text", c.attr || "");
+      html += hint("For example href, src, data-id, aria-expanded.");
     }
+    if (meta.needs === "value" || meta.needs === "attr+value") {
+      const numeric = cond.startsWith("number-");
+      html += field(
+        step,
+        "value",
+        numeric ? "Compare against (a number)" : "Value to compare",
+        "text",
+        c.value || "",
+      );
+      if (numeric) {
+        html += hint(
+          'The number is read out of the text around it, so "$25.50" is 25.5. ' +
+            "Text with no number in it never matches — it is not treated as zero.",
+        );
+        if (c.value && !Number.isFinite(Number(String(c.value).trim()))) {
+          html += `<p style="font-size:11px;color:var(--red);margin:-4px 0 8px 0;">Not a number — this branch would fail and always take ELSE.</p>`;
+        }
+      } else if (cond === "text-matches") {
+        html += hint(
+          "A regular expression, tested against the element's text.",
+        );
+        if (c.value && !isValidRegex(c.value)) {
+          html += `<p style="font-size:11px;color:var(--red);margin:-4px 0 8px 0;">Not a valid pattern — this branch would fail and always take ELSE.</p>`;
+        }
+      }
+    }
+    if (meta.needs === "none" && cond !== "exists" && cond !== "not-exists") {
+      html += hint(
+        cond === "is-empty"
+          ? 'True when the element is missing, empty, or holds only whitespace — all three are "there is nothing here".'
+          : "True only when the element is there and has some text in it.",
+      );
+    }
+
     html += `<p style="font-size:11px;color:var(--text-dim);margin-top:8px;margin-bottom:0;">
       Add steps in the <b>IF ✓</b> and <b>ELSE ✗</b> blocks below the card.</p>`;
     // Every other step type ends with this; IF_ELSE was the only one without it,
@@ -2293,6 +2351,31 @@ function generateConfigHtml(step) {
 
   // ── SCREENSHOT ──
   if (step.type === "SCREENSHOT") {
+    const area = c.area || "viewport";
+    html += `<label>What to capture</label>
+    <select id="cfg-${step.id}-area" data-id="${step.id}" data-key="area" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="viewport" ${area === "viewport" ? "selected" : ""}>The visible area</option>
+      <option value="full"     ${area === "full" ? "selected" : ""}>The whole page</option>
+      <option value="element"  ${area === "element" ? "selected" : ""}>One element</option>
+    </select>`;
+
+    if (area === "element") {
+      html += selectorRow(step, "selector");
+      html += hint(
+        "The element is scrolled into view and the shot is cropped to it. " +
+          "An element with no size on screen fails the step rather than " +
+          "quietly returning the whole page.",
+      );
+    } else if (area === "full") {
+      html += hint(
+        "The page is walked a screenful at a time and the strips are joined. " +
+          "Chrome allows about two captures a second, so a long page takes a " +
+          "few seconds. A fixed header repeats in each strip — that is what " +
+          "stitching does, and there is no way around it from an extension. " +
+          "Very long pages are truncated, and say so.",
+      );
+    }
+
     html += field(
       step,
       "quality",
@@ -2301,9 +2384,12 @@ function generateConfigHtml(step) {
       c.quality ?? 100,
     );
     html += hint(
-      "Captures the visible part of the tab, not the whole page. Shots are " +
-        "held in memory during the run and saved with the export; a run that " +
-        "fills the buffer keeps going and says how many it dropped.",
+      "100 keeps a lossless PNG, where quality means nothing. Below that it " +
+        "switches to JPEG, where the number is real.",
+    );
+    html += hint(
+      "Shots are held in memory during the run and saved with the export; a " +
+        "run that fills the buffer keeps going and says how many it dropped.",
     );
     html += toggle(
       step,
@@ -2322,6 +2408,34 @@ function generateConfigHtml(step) {
         "in the run monitor and in the export.",
     );
     html += toggle(step, "enabled", "Record network requests during this run");
+
+    html += field(
+      step,
+      "urlFilter",
+      "Only record URLs containing",
+      "text",
+      c.urlFilter || "",
+    );
+    const filterProblem = snifferFilterError(c.urlFilter || "");
+    if (filterProblem) {
+      html += `<p style="font-size:11px;color:var(--red);margin:-4px 0 8px 0;">${esc(filterProblem)}</p>`;
+    } else {
+      html += hint(
+        "Blank records everything, which on a real site is mostly analytics, " +
+          "fonts and ad auctions. Several substrings can be separated by " +
+          "commas: /api/, /graphql. Start with re: for a regular expression.",
+      );
+    }
+
+    html += field(
+      step,
+      "methods",
+      "Only these methods (optional)",
+      "text",
+      c.methods || "",
+    );
+    html += hint("For example POST, or POST PUT. Blank means any method.");
+
     html += toggle(
       step,
       "optional",
@@ -3558,12 +3672,23 @@ function _chooseDetectedTable(candidates) {
  */
 function _transformFor(field) {
   if (field.kind === "href" || field.kind === "src") return "url";
-  const samples = (field.samples ?? []).filter(Boolean);
+  const samples = (field.samples ?? [])
+    .filter(Boolean)
+    .map((s) => String(s).trim());
   if (samples.length === 0) return "";
+
+  // A column that is *entirely* numbers — populations, areas, counts — is a
+  // number. Every sample must qualify, not a majority: a column that is 90%
+  // numbers and 10% "N/A" would otherwise turn that 10% into empty cells with
+  // nothing said. Leaving it as text costs a conversion; getting it wrong
+  // costs data.
+  const plainNumber = /^[^\d-]{0,3}-?\d[\d.,\s]*(?:[eE][+-]?\d+)?[^\d]{0,4}$/;
+  if (samples.every((s) => plainNumber.test(s))) return "number";
+
+  // Otherwise only where the column reads as money: a currency mark, or a
+  // two-decimal amount. "Ships in 2 days" has a number in it and is not one.
   const money = samples.filter(
-    (s) =>
-      /^[^\d]{0,3}[\d][\d.,\s]*(?:[^\d]{0,4})$/.test(String(s).trim()) &&
-      /[$£€¥₹]|\d[.,]\d{2}\b/.test(String(s)),
+    (s) => plainNumber.test(s) && /[$£€¥₹]|\d[.,]\d{2}\b/.test(s),
   ).length;
   return money / samples.length > 0.6 ? "number" : "";
 }

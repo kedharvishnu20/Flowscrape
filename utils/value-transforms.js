@@ -35,6 +35,19 @@
  */
 function toNumber(text) {
   const raw = String(text ?? "");
+
+  // Scientific notation first, and only where it is unambiguous: digits, then
+  // E, then a signed exponent. Found in a real scrape — scrapethissite.com
+  // reports Antarctica's area as "1.4E7" — where the general pattern below
+  // stopped at the E and turned fourteen million into 1.4. A wrong number that
+  // looks plausible in a column of areas is the worst kind. "3 EUR" and
+  // "Section 4E" are not exponents, and must not be read as any.
+  const sci = raw.match(/-?\d+(?:[.,]\d+)?[eE][+-]?\d+/);
+  if (sci) {
+    const n = Number(sci[0].replace(",", "."));
+    if (Number.isFinite(n)) return n;
+  }
+
   // Grab the numeric run, including separators and a leading sign.
   const match = raw.match(/-?\d[\d.,  \s]*\d|-?\d/);
   if (!match) return null;

@@ -415,3 +415,83 @@ test("a page with nothing repeating is offered the page's own data instead", asy
   );
   assert.match(offer, /PAGE_DATA/);
 });
+
+// ── what a real site produced ────────────────────────────────────────────────
+//
+// From an actual run against scrapethissite.com/pages/simple/. The data was
+// right — 250 countries, correct values — and the columns were wrong in three
+// ways, all of them this module's doing:
+//
+//   country name,strongnthoftype,country capital,strongnthoftype 2,
+//   country population,strongnthoftype 3,country area,sup
+//   Andorra,Capital:,Andorra la Vella,Population:,84000,Area (km2):,468.0,2
+//
+// Three junk columns holding the same label in every row, a fourth holding the
+// "2" from km<sup>2</sup>, and names derived from `strong:nth-of-type(1)`.
+
+/** The markup that page actually uses, one record. */
+const COUNTRY = (name, capital, population, area) => `
+  <div class="col-md-4 country">
+    <h3 class="country-name"><i class="flag-icon"></i>${name}</h3>
+    <div class="country-info">
+      <strong>Capital:</strong> <span class="country-capital">${capital}</span><br>
+      <strong>Population:</strong> <span class="country-population">${population}</span><br>
+      <strong>Area (km<sup>2</sup>):</strong> <span class="country-area">${area}</span>
+    </div>
+  </div>`;
+
+const COUNTRIES = `<div class="row">
+  ${COUNTRY("Andorra", "Andorra la Vella", "84000", "468.0")}
+  ${COUNTRY("United Arab Emirates", "Abu Dhabi", "4975593", "82880.0")}
+  ${COUNTRY("Afghanistan", "Kabul", "29121286", "647500.0")}
+  ${COUNTRY("Albania", "Tirana", "2986952", "28748.0")}
+</div>`;
+
+/** Read the page the way the panel does. */
+function read(html) {
+  const d = detectorFor(html);
+  const out = JSON.parse(JSON.stringify(d.detect()));
+  d.close();
+  return out;
+}
+
+test("a label repeated in every record is not a column", () => {
+  // "Capital:", "Population:" and "Area (km2):" are the same in all 250 rows.
+  // A column whose value never changes carries no information about the record
+  // — it is the form's label, printed 250 times.
+  const { candidates } = read(COUNTRIES);
+  const table = candidates[0];
+  const names = table.fields.map((f) => f.name);
+
+  for (const field of table.fields) {
+    const unique = new Set(field.samples.map((s) => String(s).trim()));
+    assert.ok(
+      unique.size > 1,
+      `"${field.name}" is the same in every row (${[...unique][0]}) — a label, not data`,
+    );
+  }
+  assert.ok(
+    !names.some((n) => /strongnthoftype|^sup/.test(n)),
+    `junk columns survived: ${names.join(", ")}`,
+  );
+});
+
+test("the columns that carry the data are all there", () => {
+  const { candidates } = read(COUNTRIES);
+  const names = candidates[0].fields.map((f) => f.name);
+  for (const wanted of ["name", "capital", "population", "area"]) {
+    assert.ok(
+      names.some((n) => n.includes(wanted)),
+      `no column for ${wanted}; got ${names.join(", ")}`,
+    );
+  }
+});
+
+test("the rows read back as the countries they came from", () => {
+  const { candidates } = read(COUNTRIES);
+  const row = candidates[0].sampleRows[0];
+  const values = Object.values(row).map((v) => String(v));
+  assert.ok(values.includes("Andorra"), JSON.stringify(row));
+  assert.ok(values.includes("Andorra la Vella"), JSON.stringify(row));
+  assert.ok(values.includes("84000"), JSON.stringify(row));
+});

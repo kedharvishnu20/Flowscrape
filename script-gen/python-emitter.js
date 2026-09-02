@@ -103,6 +103,18 @@ export function emitPython(pipeline) {
     "def fs_trim(v):",
     '    return re.sub(r"\\s+", " ", str(v or "")).strip()',
     "",
+    "",
+    '# What an IF_ELSE branch reads before it decides. None means "no such',
+    '# element", which every condition treats as not-matching rather than as an',
+    "# empty string — the two are different, and conflating them puts every",
+    "# missing row into the wrong branch.",
+    "async def fs_text(loc):",
+    "    return fs_trim(await loc.first.inner_text()) if await loc.count() > 0 else None",
+    "",
+    "",
+    "async def fs_attr(loc, a):",
+    "    return await loc.first.get_attribute(a) if await loc.count() > 0 else None",
+    "",
     "# ── Config ────────────────────────────────────────────────────",
     `TARGET_ORIGIN = "${pipeline.targetOrigin ?? ""}"`,
     `MIN_DELAY_MS  = 800   # Floor enforced by FlowScrape ethics engine`,
@@ -149,6 +161,60 @@ export function emitPython(pipeline) {
  * @param {object} step
  * @returns {string[]}
  */
+/**
+ * One IF_ELSE condition as a Python expression over `_loc`.
+ *
+ * Mirrors utils/conditions.js. Held to it by a test that emits every condition
+ * in the registry and fails on any that comes back stubbed.
+ *
+ * @returns {string|null} null when the condition cannot be expressed
+ */
+function _conditionPy(condition, config) {
+  const value = _escStr(String(config.value ?? ""));
+  const attr = _escStr(String(config.attr ?? ""));
+  const num = Number(String(config.value ?? "").trim());
+  const numeric = (op) =>
+    Number.isFinite(num)
+      ? `(lambda n: n is not None and n ${op} ${num})(fs_number(await fs_text(_loc)))`
+      : null;
+
+  switch (condition) {
+    case "exists":
+      return `await _loc.count() > 0`;
+    case "not-exists":
+      return `await _loc.count() == 0`;
+    case "is-empty":
+      return `(lambda t: t is None or t == "")(await fs_text(_loc))`;
+    case "not-empty":
+      return `(lambda t: t is not None and t != "")(await fs_text(_loc))`;
+    case "text-equals":
+      return `await fs_text(_loc) == fs_trim("${value}")`;
+    case "text-contains":
+      return `(lambda t: t is not None and fs_trim("${value}") in t)(await fs_text(_loc))`;
+    case "text-matches": {
+      const raw = String(config.value ?? "");
+      // A raw literal cannot end in a backslash, and such a pattern is not
+      // valid anyway — refuse rather than trim it into something else.
+      if (!isValidRegex(raw) || /\\$/.test(raw)) return null;
+      return `(lambda t: t is not None and re.search(r"${raw.replace(/"/g, '\\"')}", t) is not None)(await fs_text(_loc))`;
+    }
+    case "attr-equals":
+      return `(lambda a: a is not None and a.strip() == "${value}".strip())(await fs_attr(_loc, "${attr}"))`;
+    case "attr-contains":
+      return `(lambda a: a is not None and "${value}" in a)(await fs_attr(_loc, "${attr}"))`;
+    case "attr-exists":
+      return `await fs_attr(_loc, "${attr}") is not None`;
+    case "number-equals":
+      return numeric("==");
+    case "number-gt":
+      return numeric(">");
+    case "number-lt":
+      return numeric("<");
+    default:
+      return null;
+  }
+}
+
 function _emitStep(step) {
   const { type, config = {} } = step;
   switch (type) {
@@ -276,13 +342,22 @@ function _emitStep(step) {
       const lines = [
         `# IF_ELSE: ${condition} - ${_escStr(config.selector ?? "")}`,
       ];
-      if (condition === "exists") {
+      const test = _conditionPy(condition, config);
+      if (test === null) {
+        // Emitted as a refusal rather than as `if True:`, which is what this
+        // used to do for every condition but `exists`: the script ran, produced
+        // a file, and had silently ignored its own branching.
         lines.push(
-          `if await page.locator("${_escStr(config.selector ?? "")}").count() > 0:`,
+          `# UNSUPPORTED: condition "${condition}" cannot be expressed here.`,
+          `raise ValueError("FlowScrape: IF_ELSE condition '${condition}' is not exportable")`,
+          "",
         );
-      } else {
-        lines.push(`if True:  # TODO: impl extended condition ${condition}`);
+        return lines;
       }
+      lines.push(
+        `_loc = page.locator("${_escStr(config.selector ?? "")}")`,
+        `if ${test}:`,
+      );
       for (const child of step.ifBranch ?? []) {
         lines.push(..._emitStep(child).map((l) => "    " + l));
       }

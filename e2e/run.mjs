@@ -148,6 +148,18 @@ const RICH = `<!doctype html><html><head>
   </div>
 </body></html>`;
 
+/** A page several screenfuls tall, with a known element to crop to. */
+const TALL = `<!doctype html><html><head><style>
+  body { margin: 0; }
+  .band { height: 700px; }
+  #card { width: 300px; height: 200px; background: #c00; margin: 40px; }
+</style></head><body>
+  <div class="band" style="background:#eef"></div>
+  <div id="card"></div>
+  <div class="band" style="background:#efe"></div>
+  <div class="band" style="background:#fee"></div>
+</body></html>`;
+
 let env;
 let site;
 
@@ -160,6 +172,7 @@ test.before(async () => {
     "/page/2": paged(2),
     "/page/3": paged(3),
     "/rich": RICH,
+    "/tall": TALL,
   });
   env = await launch();
 });
@@ -250,9 +263,14 @@ async function onSite(path = "/") {
   const id = await env.panel.evaluate(
     (url) =>
       new Promise((resolve) => {
-        chrome.tabs.query({}, (tabs) =>
-          resolve(tabs.find((t) => t.url === url)?.id ?? null),
-        );
+        chrome.tabs.query({}, (tabs) => {
+          // The *last* match, not the first: several checks visit the same
+          // path, and any tab an earlier one left open would otherwise be the
+          // one this test drives. That is how a working KEYBOARD step looked
+          // broken — the key went to a stale tab and this page saw nothing.
+          const matches = tabs.filter((t) => t.url === url);
+          resolve(matches[matches.length - 1]?.id ?? null);
+        });
       }),
     site.url(path),
   );
@@ -437,7 +455,34 @@ test("IF_ELSE reads text as rendered, not as indented", async () => {
     tabId,
   });
   assert.equal(res.ok, true, JSON.stringify(res));
-  assert.equal(res.result.conditionMet, true);
+  // The page reports what it saw and does not decide (J-08), so evaluate it
+  // here the way the worker does — against the one shared definition.
+  const { evaluateCondition } = await import("../utils/conditions.js");
+  assert.equal(
+    evaluateCondition("text-equals", res.result, { value: "In stock" }),
+    true,
+  );
+  assert.equal(res.result.exists, true);
+  await page.close();
+});
+
+test("a numeric IF_ELSE reads the number out of a real page's text", async () => {
+  const { page, tabId } = await onSite();
+  const res = await env.send("step:execute", {
+    step: step("IF_ELSE", { condition: "number-lt", selector: ".price" }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  const { evaluateCondition } = await import("../utils/conditions.js");
+  // The first product is $10.00.
+  assert.equal(
+    evaluateCondition("number-lt", res.result, { value: "20" }),
+    true,
+  );
+  assert.equal(
+    evaluateCondition("number-gt", res.result, { value: "20" }),
+    false,
+  );
   await page.close();
 });
 
@@ -864,5 +909,132 @@ test("PAGE_DATA on a page with nothing structured does not fail the run", async 
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(res.result.found, false);
   assert.match(res.result.reason, /no structured data/i);
+  await page.close();
+});
+
+// ── screenshots that are more than the visible strip ────────────────────────
+
+/** The pixel size of a data: URL image, measured by decoding it. */
+async function imageSize(page, dataUrl) {
+  return page.evaluate(
+    (url) =>
+      new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () =>
+          resolve({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => reject(new Error("not a decodable image"));
+        img.src = url;
+      }),
+    dataUrl,
+  );
+}
+
+/**
+ * Take one screenshot and hand the image back.
+ *
+ * Through step:execute, which returns the shot directly: data:download carries
+ * rows only — screenshots ride along in the export archive — so a run would
+ * give nothing to measure.
+ */
+async function shot(tabId, config) {
+  const res = await env.send("step:execute", {
+    step: step("SCREENSHOT", config),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.ok(
+    res.result.dataUrl?.startsWith("data:image/"),
+    "no image came back",
+  );
+  return res.result;
+}
+
+test("a full-page screenshot is taller than one screenful", async () => {
+  // The check that only a real browser can make: joining the strips needs
+  // OffscreenCanvas and createImageBitmap, which Node does not have, so the
+  // unit tests can only prove the scrolling. This proves the picture.
+  const { page, tabId } = await onSite("/tall");
+  const viewport = await page.evaluate(() => window.innerHeight);
+
+  const full = await shot(tabId, { area: "full", quality: 100 });
+  const size = await imageSize(page, full.dataUrl);
+  assert.ok(
+    size.h > viewport * 1.5,
+    `the image is ${size.h}px tall; the viewport is ${viewport}px, and the page is 2800px`,
+  );
+  await page.close();
+});
+
+test("a full-page screenshot leaves the page where it found it", async () => {
+  const { page, tabId } = await onSite("/tall");
+  await page.evaluate(() => window.scrollTo(0, 500));
+  await shot(tabId, { area: "full" });
+  const after = await page.evaluate(() => window.scrollY);
+  assert.ok(
+    Math.abs(after - 500) < 30,
+    `the page was left at ${after}px, not back at 500px`,
+  );
+  await page.close();
+});
+
+test("an element screenshot is the size of the element", async () => {
+  const { page, tabId } = await onSite("/tall");
+  const cropped = await shot(tabId, {
+    area: "element",
+    selector: "#card",
+    quality: 100,
+  });
+  const size = await imageSize(page, cropped.dataUrl);
+  const dpr = await page.evaluate(() => window.devicePixelRatio || 1);
+  assert.ok(
+    Math.abs(size.w - 300 * dpr) <= 2 && Math.abs(size.h - 200 * dpr) <= 2,
+    `cropped to ${size.w}x${size.h}; the element is 300x200 at dpr ${dpr}`,
+  );
+  await page.close();
+});
+
+test("an element screenshot of a missing element fails the step", async () => {
+  const { page, tabId } = await onSite("/tall");
+  const res = await env.send("step:execute", {
+    step: step("SCREENSHOT", { area: "element", selector: "#nope" }),
+    tabId,
+  });
+  assert.equal(res.ok, false, "a missing element must not yield a page shot");
+  await page.close();
+});
+
+test("the visible-area screenshot still works, and is one screenful", async () => {
+  const { page, tabId } = await onSite("/tall");
+  const viewport = await page.evaluate(() => window.innerHeight);
+  const view = await shot(tabId, { area: "viewport", quality: 100 });
+  const size = await imageSize(page, view.dataUrl);
+  const dpr = await page.evaluate(() => window.devicePixelRatio || 1);
+  assert.ok(
+    Math.abs(size.h - viewport * dpr) < 40,
+    `${size.h}px tall for a ${viewport}px viewport at dpr ${dpr}`,
+  );
+  await page.close();
+});
+
+test("KEYBOARD sends a key to the element it names", async () => {
+  const { page, tabId } = await onSite();
+  await page.evaluate(() => {
+    const i = document.getElementById("search");
+    window.__seen = [];
+    i.addEventListener("keydown", (e) => window.__seen.push(e.key));
+  });
+
+  const res = await env.send("step:execute", {
+    step: step("KEYBOARD", {
+      key: "Enter",
+      selector: "#search",
+      repeat: 2,
+      delayMs: 5,
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  const seen = await page.evaluate(() => window.__seen);
+  assert.deepEqual(seen, ["Enter", "Enter"]);
   await page.close();
 });

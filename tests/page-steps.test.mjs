@@ -389,30 +389,44 @@ test("an unknown symbol reports an empty code rather than an invented one", asyn
 });
 
 // ── B-25: IF_ELSE text conditions ────────────────────────────────────────────
+//
+// The page no longer decides — it reports what it saw, and utils/conditions.js
+// evaluates, so the numeric comparisons can share EXTRACT's number reader
+// without a second copy in a classic content script. These run the same two
+// halves the product runs, so the B-25 whitespace regression stays covered end
+// to end rather than at the seam.
+
+import { evaluateCondition } from "../utils/conditions.js";
+
+/** Read the element the way the branch does, then decide the way it does. */
+async function branch(h, config) {
+  const observed = await h.api._stepIfElse(config);
+  return evaluateCondition(config.condition, observed, config);
+}
 
 test("text-equals matches text as it is rendered, not as it is indented", async () => {
   const h = await loadInjector(
     `<button id="b">\n      Add to cart\n    </button>`,
   );
-  const r = await h.api._stepIfElse({
-    condition: "text-equals",
-    selector: "#b",
-    value: "Add to cart",
-  });
-  assert.equal(r.conditionMet, true);
+  assert.equal(
+    await branch(h, {
+      condition: "text-equals",
+      selector: "#b",
+      value: "Add to cart",
+    }),
+    true,
+  );
   h.close();
 });
 
 test("text-contains normalises both sides", async () => {
   const h = await loadInjector(`<div id="d">Price:\n  $12.00</div>`);
   assert.equal(
-    (
-      await h.api._stepIfElse({
-        condition: "text-contains",
-        selector: "#d",
-        value: "Price: $12",
-      })
-    ).conditionMet,
+    await branch(h, {
+      condition: "text-contains",
+      selector: "#d",
+      value: "Price: $12",
+    }),
     true,
   );
   h.close();
@@ -421,13 +435,11 @@ test("text-contains normalises both sides", async () => {
 test("a genuinely different string still does not match", async () => {
   const h = await loadInjector(`<div id="d">In stock</div>`);
   assert.equal(
-    (
-      await h.api._stepIfElse({
-        condition: "text-equals",
-        selector: "#d",
-        value: "Out of stock",
-      })
-    ).conditionMet,
+    await branch(h, {
+      condition: "text-equals",
+      selector: "#d",
+      value: "Out of stock",
+    }),
     false,
   );
   h.close();
@@ -436,9 +448,7 @@ test("a genuinely different string still does not match", async () => {
 test("exists and attribute conditions still work", async () => {
   const h = await loadInjector(`<div id="d" data-state=" ready "></div>`);
   const c = (condition, extra) =>
-    h.api
-      ._stepIfElse({ condition, selector: "#d", ...extra })
-      .then((r) => r.conditionMet);
+    branch(h, { condition, selector: "#d", ...extra });
 
   assert.equal(await c("exists"), true);
   assert.equal(await c("not-exists"), false);

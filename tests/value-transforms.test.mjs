@@ -35,6 +35,25 @@ test("number handles European decimals, where the comma is the point", () => {
   assert.equal(at("€ 9,99", "number"), 9.99);
 });
 
+test("scientific notation is read whole, not truncated at the E", () => {
+  // Found in a real scrape: scrapethissite.com gives Antarctica's area as
+  // "1.4E7". The numeric run stopped at the "E", so 14 million became 1.4 —
+  // a wrong number that looks entirely plausible in a column of areas, which
+  // is the worst kind.
+  assert.equal(at("1.4E7", "number"), 14000000);
+  assert.equal(at("1.4e7", "number"), 14000000);
+  assert.equal(at("-2.5E-3", "number"), -0.0025);
+  assert.equal(at("6.02E23", "number"), 6.02e23);
+});
+
+test("an E that is not an exponent is not treated as one", () => {
+  // "3 EUR" and "Section 4E" both have a digit near an E and neither is
+  // scientific notation.
+  assert.equal(at("3 EUR", "number"), 3);
+  assert.equal(at("Section 4E", "number"), 4);
+  assert.equal(at("12E", "number"), 12);
+});
+
 test("number gives null rather than a wrong number when there is none", () => {
   // NaN in a CSV column is noise; 0 is a lie. Null says "not there".
   assert.equal(at("Out of stock", "number"), null);
@@ -262,6 +281,35 @@ test("a detected price column is read as a number", () => {
       `not read as a price: ${samples.join(" ")}`,
     );
   }
+});
+
+test("a column of plain numbers is read as numbers", () => {
+  // Populations and areas carry no currency symbol, so the currency rule alone
+  // left them as text — which was the state of the real country scrape.
+  const guess = makeGuesser();
+  assert.equal(
+    guess({ kind: "text", samples: ["84000", "4975593", "29121286"] }),
+    "number",
+  );
+  assert.equal(
+    guess({ kind: "text", samples: ["468.0", "82880.0", "647500.0"] }),
+    "number",
+  );
+});
+
+test("one non-numeric sample stops the whole column being converted", () => {
+  // A column that is 90% numbers and 10% "N/A" must not turn that 10% into
+  // empty cells silently. Conservative on purpose: leaving it as text costs a
+  // conversion; getting it wrong costs data.
+  const guess = makeGuesser();
+  assert.equal(
+    guess({ kind: "text", samples: ["84000", "N/A", "29121286"] }),
+    "",
+  );
+  assert.equal(
+    guess({ kind: "text", samples: ["84000", "about 5 million"] }),
+    "",
+  );
 });
 
 test("a column of prose is left exactly as it is", () => {

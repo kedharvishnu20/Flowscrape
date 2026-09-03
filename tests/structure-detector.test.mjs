@@ -495,3 +495,89 @@ test("the rows read back as the countries they came from", () => {
   assert.ok(values.includes("Andorra la Vella"), JSON.stringify(row));
   assert.ok(values.includes("84000"), JSON.stringify(row));
 });
+
+// ── pressing the button twice ────────────────────────────────────────────────
+
+test("Detect Table does not silently stack a second loop over the same list", async () => {
+  // From a real run: a scrape of a 250-country page produced 1,250 rows —
+  // every country five times over. The generated pipeline is correct (it
+  // yields exactly one row per record), so the five copies came from the board
+  // carrying five identical loops: the button appended one each time it was
+  // pressed, said "Added a loop", and gave no hint that the previous one was
+  // still there. Five presses, five full scrapes, no warning.
+  const panel = await readFile(
+    new URL("../sidepanel/pipeline-builder.js", import.meta.url),
+    "utf8",
+  );
+  const fn = panel.match(
+    /function _insertDetectedTable\(table\) \{[\s\S]*?\n\}\n/,
+  )[0];
+
+  // The push itself is fine; what was wrong was pushing without looking. So
+  // assert the order: the pipeline is searched before it is added to.
+  const looked = fn.indexOf("_findDetectedLoop(_pipeline.steps");
+  const pushed = fn.indexOf("_pipeline.steps.push(loop)");
+  assert.ok(looked > -1, "it never looks for an existing loop");
+  assert.ok(pushed > -1, "it never adds the loop");
+  assert.ok(
+    looked < pushed,
+    "it adds the loop before checking for a duplicate",
+  );
+  assert.match(fn, /_confirmDestructive/, "and it asks before replacing one");
+});
+
+test("an existing loop over the same selector is found, whatever it is nested in", async () => {
+  const panel = await readFile(
+    new URL("../sidepanel/pipeline-builder.js", import.meta.url),
+    "utf8",
+  );
+  const finder = panel.match(
+    /function _findDetectedLoop\(steps, selector\) \{[\s\S]*?\n\}\n/,
+  );
+  assert.ok(finder, "no _findDetectedLoop");
+  const find = new Function(`${finder[0]}; return _findDetectedLoop;`)();
+
+  const loop = (sel) => ({
+    id: `l_${sel}`,
+    type: "LOOP",
+    config: { type: "elements", selector: sel },
+    children: [],
+  });
+
+  assert.equal(find([loop(".country")], ".country")?.id, "l_.country");
+  assert.equal(find([loop(".other")], ".country"), null);
+
+  // Nested, because a detected table can be dropped inside another container.
+  const outer = {
+    id: "outer",
+    type: "LOOP",
+    config: { type: "count" },
+    children: [loop(".country")],
+  };
+  assert.equal(find([outer], ".country")?.id, "l_.country");
+
+  const branch = {
+    id: "if",
+    type: "IF_ELSE",
+    config: {},
+    ifBranch: [],
+    elseBranch: [loop(".country")],
+  };
+  assert.equal(find([branch], ".country")?.id, "l_.country");
+
+  // A LOOP that is not over elements is not the same thing.
+  assert.equal(
+    find(
+      [
+        {
+          id: "c",
+          type: "LOOP",
+          config: { type: "count", selector: ".country" },
+          children: [],
+        },
+      ],
+      ".country",
+    ),
+    null,
+  );
+});

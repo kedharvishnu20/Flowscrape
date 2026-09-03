@@ -3461,7 +3461,7 @@ async function _detectStructure() {
 
   const chosen = await _chooseDetectedTable(candidates);
   if (!chosen) return;
-  _insertDetectedTable(chosen);
+  await _insertDetectedTable(chosen);
 }
 
 /**
@@ -3693,7 +3693,40 @@ function _transformFor(field) {
   return money / samples.length > 0.6 ? "number" : "";
 }
 
-function _insertDetectedTable(table) {
+/**
+ * An existing element-loop over this selector, anywhere in the pipeline.
+ *
+ * Searched depth-first through loop bodies and branches, because a detected
+ * table can be dropped inside another container and would still scrape the same
+ * list twice.
+ *
+ * @param {object[]} steps
+ * @param {string} selector
+ * @returns {?object}
+ */
+function _findDetectedLoop(steps, selector) {
+  for (const step of steps ?? []) {
+    if (
+      step.type === "LOOP" &&
+      step.config?.type === "elements" &&
+      step.config?.selector === selector
+    ) {
+      return step;
+    }
+    const nested = _findDetectedLoop(
+      [
+        ...(step.children ?? []),
+        ...(step.ifBranch ?? []),
+        ...(step.elseBranch ?? []),
+      ],
+      selector,
+    );
+    if (nested) return nested;
+  }
+  return null;
+}
+
+async function _insertDetectedTable(table) {
   const extract = {
     id: _nextStepId(),
     type: "EXTRACT",
@@ -3722,13 +3755,37 @@ function _insertDetectedTable(table) {
     children: [extract],
   };
 
+  // Pressing the button again used to append a second loop over the same list,
+  // say "Added a loop", and give no hint the first was still there. A real run
+  // came back with every row five times over — five presses, five full scrapes,
+  // no warning anywhere (J-13).
+  const existing = _findDetectedLoop(_pipeline.steps, table.selector);
+  if (existing) {
+    const replace = await _confirmDestructive({
+      title: "This list is already in the pipeline",
+      body:
+        `There is already a loop over ${table.selector}. Adding another would ` +
+        `scrape the same list twice, and every row would appear twice in the ` +
+        `export.\n\nReplace the existing one?`,
+      confirmLabel: "Replace it",
+    });
+    if (!replace) {
+      notify(
+        "info-log",
+        `Left the pipeline alone — ${table.selector} is already being scraped.`,
+      );
+      return;
+    }
+    _removeStepDeep(_pipeline.steps, existing.id);
+  }
+
   _pipeline.steps.push(loop);
   _expandedNodeId = extract.id;
   saveState();
   renderPipeline();
   notify(
     "info-log",
-    `Added a loop over ${table.selector} with ${extract.config.fields.length} columns. Check the selectors, then Run.`,
+    `${existing ? "Replaced the loop" : "Added a loop"} over ${table.selector} with ${extract.config.fields.length} columns. Check the selectors, then Run.`,
   );
 }
 

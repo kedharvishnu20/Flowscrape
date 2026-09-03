@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 142 findings — 13 blocker · 33 high · 67 medium · 29 low. The
+**Totals:** 143 findings — 13 blocker · 34 high · 67 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -20,7 +20,7 @@ gaps found by reading every step type against its implementation.
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
-| J · Capability gaps             | 12       |
+| J · Capability gaps             | 13       |
 
 ---
 
@@ -127,19 +127,21 @@ decision:
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
+| **J-13** | _this batch_ | Detect Table appended a second loop over the same list every time it was pressed, without a word — which is where a real run's 1,250 rows for 250 countries came from |
 | J-08 … J-12 | _this batch_ | IF_ELSE can ask about emptiness, numbers and patterns; KEYBOARD has a target and a repeat; the sniffer can be filtered; SCREENSHOT can capture the whole page or one element; and Detect Table stops returning a page's own labels as columns |
 | J-06, J-07 | _this batch_ | Extracted values are cleaned as they are read, in one module both emitters share; and PAGE_DATA reads the JSON-LD, microdata and Open Graph every site already publishes — the answer to "turn the page into JSON" for a single record |
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 139 of 142 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 140 of 143 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
 stream framing), A-12 (`EXPORT` downloading nothing at all) and A-13 (every page
-step after a navigation failing) — and because section J records twelve
-capabilities the steps advertised and did not have — the last of them, J-12,
-found by running the extension against a real website rather than a fixture. Three of the four new
+step after a navigation failing) — and because section J records thirteen
+capabilities the steps advertised and did not have — the last two, J-12 and
+J-13, found by running the extension against a real website rather than a
+fixture, and by counting the rows it brought back. Three of the four new
 blockers came from running the code in a real browser, which is why
 `npm run e2e` exists.
 
@@ -1139,6 +1141,30 @@ The same run exposed two number-reading faults:
   is read as numbers — all, not a majority, because a column that is 90% numbers
   and 10% `"N/A"` would otherwise turn that 10% into empty cells with nothing
   said.
+
+### J-13 · HIGH · Detect Table stacked a second scrape of the same list, silently
+
+_Found by counting the rows in a real run's export._
+
+The same country scrape that produced J-12 returned **1,250 rows for 250
+countries** — every row five times over.
+
+The generated pipeline is not at fault: reproduced end to end in a real browser,
+a detected table yields exactly one row per record. The five copies came from
+the board carrying five identical loops. `_insertDetectedTable` appended one
+each time the button was pressed, said "Added a loop", and gave no hint the
+previous one was still there. Five presses, five full scrapes, one export.
+
+Nothing downstream could have caught it either. The export's dedup (D-07)
+reconciles the in-memory rows against the ones read back from IndexedDB — it is
+about the same row arriving twice by two routes, not about a pipeline that
+genuinely scraped a list five times, and collapsing those would be wrong: a
+scrape can legitimately produce identical rows.
+
+Fixed where the mistake is made. An existing element-loop over the same
+selector is looked for first — depth-first, since a detected table can be
+dropped inside another container — and the user is asked whether to replace it.
+Declining leaves the pipeline untouched and says so.
 
 ---
 

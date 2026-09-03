@@ -160,6 +160,23 @@ const TALL = `<!doctype html><html><head><style>
   <div class="band" style="background:#fee"></div>
 </body></html>`;
 
+/** A country list, shaped the way scrapethissite.com shapes one. */
+const COUNTRY = (n, c, p, a) => `<div class="col-md-4 country">
+  <h3 class="country-name"><i class="flag-icon"></i>${n}</h3>
+  <div class="country-info">
+    <strong>Capital:</strong> <span class="country-capital">${c}</span><br>
+    <strong>Population:</strong> <span class="country-population">${p}</span><br>
+    <strong>Area (km<sup>2</sup>):</strong> <span class="country-area">${a}</span>
+  </div></div>`;
+const COUNTRIES = `<!doctype html><html><head><title>Countries</title></head><body>
+  <div class="container"><h1>Countries</h1><div class="row">
+  ${COUNTRY("Andorra", "Andorra la Vella", "84000", "468.0")}
+  ${COUNTRY("Afghanistan", "Kabul", "29121286", "647500.0")}
+  ${COUNTRY("Antarctica", "None", "0", "1.4E7")}
+  ${COUNTRY("Albania", "Tirana", "2986952", "28748.0")}
+  </div></div>
+</body></html>`;
+
 let env;
 let site;
 
@@ -173,6 +190,7 @@ test.before(async () => {
     "/page/3": paged(3),
     "/rich": RICH,
     "/tall": TALL,
+    "/countries": COUNTRIES,
   });
   env = await launch();
 });
@@ -1036,5 +1054,93 @@ test("KEYBOARD sends a key to the element it names", async () => {
   assert.equal(res.ok, true, JSON.stringify(res));
   const seen = await page.evaluate(() => window.__seen);
   assert.deepEqual(seen, ["Enter", "Enter"]);
+  await page.close();
+});
+
+// ── the run that started all this ───────────────────────────────────────────
+
+test("a detected country table gives one row per country, with clean columns", async () => {
+  // The shape of a real scrape that came back with the right data in the wrong
+  // columns: three of them held "Capital:", "Population:" and "Area (km2):"
+  // repeated in every row, and a fourth held the 2 from km<sup>2</sup> (J-12).
+  const { page, tabId } = await onSite("/countries");
+
+  const det = await env.send("content:detect", { tabId });
+  assert.equal(det.ok, true, JSON.stringify(det));
+  const table = det.result.candidates[0];
+  assert.ok(table, "nothing was detected");
+  assert.equal(table.selector, ".country");
+  assert.equal(
+    table.fields.length,
+    4,
+    `expected 4 columns, got: ${table.fields.map((f) => f.name).join(", ")}`,
+  );
+  for (const field of table.fields) {
+    assert.ok(
+      new Set(field.samples.map((v) => String(v).trim())).size > 1,
+      `"${field.name}" holds the same value in every row — a label, not data`,
+    );
+  }
+
+  const started = await env.send("pipeline:start", {
+    tabId,
+    targetOrigin: site.origin,
+    pipeline: {
+      name: "countries",
+      steps: [
+        {
+          id: "loop",
+          type: "LOOP",
+          config: { type: "elements", selector: table.selector, max: 0 },
+          children: [
+            step("EXTRACT", {
+              fields: table.fields.map((f) => ({
+                name: f.name,
+                selector: f.selector,
+                type: "text",
+                // The area column carries "1.4E7" — the value that used to be
+                // read as 1.4.
+                ...(f.name.includes("area") || f.name.includes("population")
+                  ? { transform: ["number"] }
+                  : {}),
+              })),
+            }),
+          ],
+        },
+      ],
+    },
+  });
+  assert.equal(started.ok, true, JSON.stringify(started));
+
+  let rows = [];
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    const dl = await env.send("data:download", { runId: started.result.runId });
+    if (dl.ok && dl.result.rows?.length >= 4) {
+      rows = dl.result.rows;
+      break;
+    }
+  }
+  // Give a duplicating implementation time to over-run before counting.
+  await new Promise((r) => setTimeout(r, 1500));
+  rows = (await env.send("data:download", { runId: started.result.runId }))
+    .result.rows;
+
+  assert.equal(rows.length, 4, `one row per country; got ${rows.length}`);
+  const nameKey = table.fields[0].name;
+  assert.deepEqual(rows.map((r) => r[nameKey]).sort(), [
+    "Afghanistan",
+    "Albania",
+    "Andorra",
+    "Antarctica",
+  ]);
+
+  const antarctica = rows.find((r) => r[nameKey] === "Antarctica");
+  const areaKey = table.fields.find((f) => f.name.includes("area")).name;
+  assert.equal(
+    antarctica[areaKey],
+    14000000,
+    `"1.4E7" was read as ${antarctica[areaKey]}`,
+  );
   await page.close();
 });

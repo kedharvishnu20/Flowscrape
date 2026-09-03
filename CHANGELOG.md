@@ -10,12 +10,12 @@ if any copy of it drifts.
 ## [Unreleased]
 
 Everything below was found by a full-repository audit
-([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 142 findings) and fixed against
+([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 143 findings) and fixed against
 it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-605**, plus **54 end-to-end checks** that load the extension into a real
+607**, plus **55 end-to-end checks** that load the extension into a real
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
@@ -103,6 +103,13 @@ Andorra,Capital:,Andorra la Vella,Population:,84000,Area (km2):,468.0,2
 - **`"1.4E7"` was read as `1.4`.** That is how the site reports Antarctica's
   area, and the numeric run stopped at the `E` — fourteen million became one
   point four, which looks entirely plausible in a column of areas.
+- **Detect Table stacked a second scrape of the same list** (J-13), which is
+  where the run's 1,250 rows for 250 countries came from: the button appended a
+  loop each time it was pressed, said "Added a loop", and never mentioned that
+  the previous one was still on the board. The generated pipeline was correct —
+  reproduced in a real browser, it yields exactly one row per record. An
+  existing loop over the same selector is now found first, and replacing it is
+  a question rather than an accident.
 - **Plain-number columns were left as text**, because the automatic transform
   only recognised money. A column whose samples are _all_ cleanly numeric is now
   read as numbers — all, not a majority, so a column that is 90% numbers and 10%

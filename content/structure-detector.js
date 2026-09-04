@@ -289,6 +289,89 @@
   }
 
   /** Work out the columns of one record set. */
+  /**
+   * Attributes that carry a value the element renders as graphics.
+   *
+   * `aria-label`, `title` and `alt` are the accessible name — the standard,
+   * required way to say what a picture means, so a rating widget that omits
+   * them is already broken for screen readers. `data-*` is where a component
+   * keeps the value that drives its own rendering.
+   */
+  const LABEL_ATTRS = ["aria-label", "title", "alt"];
+
+  /**
+   * The value of an element that has no text, no href and no src.
+   *
+   * Returns every plausible carrier rather than picking one, because which is
+   * right depends on the site and the caller already has the machinery to
+   * decide: a column whose value never varies across records is dropped as a
+   * label, so a wrong guess here costs a column that disappears on its own,
+   * while a missing guess costs the user their data.
+   *
+   * @returns {Array<[kind, sample, extra]>} entries for the column table
+   */
+  function graphicValues(el, record) {
+    const out = [];
+    const attr = (n) => clean(el.getAttribute?.(n) ?? "");
+
+    // 1. The accessible name — "4 out of 5 stars".
+    for (const name of LABEL_ATTRS) {
+      const v = attr(name);
+      if (v && v.length <= 120) return [["attr", v, { attribute: name }]];
+    }
+
+    // 2. The value the component renders from — data-rating, data-score.
+    for (const a of el.attributes ?? []) {
+      if (!a.name.startsWith("data-")) continue;
+      const v = clean(a.value);
+      if (!v || v.length > 40) continue;
+      return [["attr", v, { attribute: a.name }]];
+    }
+
+    // Nothing states the value outright, so offer the two ways it might be
+    // implied and let the constancy filter settle it.
+
+    // 3. The class list, where the value is encoded in it: the shape
+    //    `<p class="star-rating Three">` that book-catalogue markup uses. A
+    //    class list that is the same in every record is a style hook, and the
+    //    constancy filter drops it without this having to guess.
+    const classes = clean(el.className || "");
+    if (classes && el.children.length > 0) {
+      out.push(["attr", classes, { attribute: "class" }]);
+    }
+
+    // 4. Repeated icon children, counted: four filled stars is the value 4.
+    //    Only the most specific signature, so `<i class="star filled">` wins
+    //    over the bare `<i>` it also matches and the widget yields one column.
+    if (el.children.length >= 2) {
+      const sigs = new Map();
+      for (const child of el.children) {
+        if (NOISE.has(child.tagName) || child.children.length > 0) continue;
+        const tag = child.tagName.toLowerCase();
+        const cls = [...child.classList].filter((c) => !JUNK_CLASS.test(c));
+        const sig = cls.length ? `${tag}.${cls.join(".")}` : tag;
+        sigs.set(sig, (sigs.get(sig) ?? 0) + 1);
+      }
+      let best = "";
+      let bestCount = 0;
+      for (const [sig, n] of sigs) {
+        if (n < 2) continue;
+        const specificity = sig.split(".").length;
+        const bestSpec = best ? best.split(".").length : -1;
+        if (
+          specificity > bestSpec ||
+          (specificity === bestSpec && n > bestCount)
+        ) {
+          best = sig;
+          bestCount = n;
+        }
+      }
+      if (best) out.push(["count", String(bestCount), { countSelector: best }]);
+    }
+
+    return out;
+  }
+
   function columnsOf(members) {
     const found = new Map();
 
@@ -314,6 +397,9 @@
         // column people most often want after the title.
         const parent = el.parentElement;
         if (
+          full && // `full` guards it: with no text at all this fired on every
+          // single-child wrapper, so a rating widget inside its own <td> was
+          // skipped before anything could look at it.
           !href &&
           !src &&
           parent &&
@@ -330,20 +416,36 @@
           el.children.length > 0 &&
           [...el.children].every((c) => c.children.length === 0);
         const value = ownText || (childrenAreLeaves ? full : "");
-        if (!value && !href && !src) continue;
+
+        // No text, no link, no image is not the same as no value. A star
+        // rating, a status pip, a flag — the whole point of the widget is to
+        // show a value without writing it down, and this used to `continue`
+        // straight past them. That is why a books table detected as "10 rows x
+        // 3 columns" with the rating column missing.
+        const graphic =
+          !value && !href && !src ? graphicValues(el, record) : [];
+        if (!value && !href && !src && graphic.length === 0) continue;
 
         const selector = relSelector(el, record);
         if (!selector) continue;
 
-        for (const [kind, sample] of [
+        for (const [kind, sample, extra] of [
           ["text", value],
           ["href", href],
           ["src", src],
+          ...graphic,
         ]) {
           if (!sample) continue;
-          const id = `${selector}|${kind}`;
+          const id = `${selector}|${kind}|${extra?.attribute ?? extra?.countSelector ?? ""}`;
           if (!found.has(id)) {
-            found.set(id, { selector, kind, hits: 0, samples: [], depth: 0 });
+            found.set(id, {
+              selector,
+              kind,
+              ...extra,
+              hits: 0,
+              samples: [],
+              depth: 0,
+            });
             let d = 0;
             for (let n = el; n && n !== record; n = n.parentElement) d++;
             found.get(id).depth = d;
@@ -405,6 +507,13 @@
         name: nameFrom(c.selector, c.kind, headers),
         selector: c.selector,
         kind: c.kind,
+        // A "attr" or "count" column is only readable with the attribute name
+        // or the child selector that produced it. Dropping them here made the
+        // detected column fail at run time with "set to Attr but has no
+        // attribute name" — loudly, at least, but still a column that could
+        // not be used.
+        ...(c.attribute ? { attribute: c.attribute } : {}),
+        ...(c.countSelector ? { countSelector: c.countSelector } : {}),
         coverage: Math.round((c.hits / members.length) * 100),
         // Trimmed only now: the constancy check above needs every sample, and
         // three would have called a 250-row label column "varied" as often as

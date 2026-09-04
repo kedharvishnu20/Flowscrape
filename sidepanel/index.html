@@ -1862,6 +1862,46 @@
        * does, or a caution about it. Set as prose behind an amber rule so it
        * reads as an aside rather than another control.
        */
+      /* The Bulk / Specific chooser. */
+      .selector-mode-btn {
+        flex: 1;
+        padding: 12px 10px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--bg-border);
+        background: var(--bg-void);
+        color: var(--text-main);
+        cursor: pointer;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        transition:
+          border-color var(--fast) var(--ease),
+          background var(--fast) var(--ease);
+      }
+
+      .selector-mode-btn:hover {
+        border-color: var(--text-dim);
+        background: var(--bg-hover);
+      }
+
+      /* The mode that fits the field being picked. One, never both. */
+      .selector-mode-btn.suggested {
+        border-color: var(--accent);
+        background: var(--accent-dim);
+      }
+
+      .selector-mode-sub {
+        margin-top: 5px;
+        font-family: var(--prose);
+        font-size: 10.5px;
+        font-weight: 400;
+        letter-spacing: 0;
+        text-transform: none;
+        color: var(--text-dim);
+      }
+
       .step-note {
         border-left: 2px solid var(--accent);
         background: var(--bg-void);

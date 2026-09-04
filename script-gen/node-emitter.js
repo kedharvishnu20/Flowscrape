@@ -496,10 +496,22 @@ function _transformNode(expr, field) {
 function _extractNode(config) {
   const lines = ["const extracted = {};"];
   for (const field of config.fields ?? []) {
-    const { name, selector, attribute } = field;
-    const read = attribute
-      ? `await page.getAttribute('${selector}', '${attribute}')`
-      : `await page.innerText('${selector}')`;
+    const { name, selector, attribute, countSelector } = field;
+    if (field.type === "count" && !countSelector) {
+      lines.push(
+        `// INVALID: field '${name}' is set to Count but names nothing to count.`,
+        `throw new Error("FlowScrape field '${name}': Count needs a selector");`,
+      );
+      continue;
+    }
+    // See the Python emitter: a "count" field is a value the page renders as
+    // repetition, and both scripts must count the same thing the run does.
+    const read =
+      field.type === "count"
+        ? `String(await page.locator('${selector}').first().locator('${countSelector ?? ""}').count())`
+        : attribute
+          ? `await page.getAttribute('${selector}', '${attribute}')`
+          : `await page.innerText('${selector}')`;
     const expr = _transformNode(read, field);
     if (expr === null) {
       lines.push(

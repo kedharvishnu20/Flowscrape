@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 153 findings — 15 blocker · 38 high · 71 medium · 29 low. The
+**Totals:** 157 findings — 17 blocker · 40 high · 71 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -20,7 +20,7 @@ gaps found by reading every step type against its implementation.
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
-| J · Capability gaps             | 23       |
+| J · Capability gaps             | 27       |
 
 ---
 
@@ -127,6 +127,7 @@ decision:
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
+| **J-24** … **J-27** | _this batch_ | New, all four from real use. Neither selector mode did what it said — Specific returned the whole column, Bulk returned every cell in the table. Detect Table dropped every column rendered as icons rather than text. The API sniffer's MAIN-world hook had no isolated-world listener after a navigation, so it captured nothing on any run that navigated. And a paginating loop offered a bulk picker for its one Next button |
 | **J-23** | _this batch_ | New. The board was a 1400x1200 pan/zoom canvas inside a 400px panel, so nested steps were laid out where they could not be seen — the "UI constraints" that made dropping a step into a loop look broken. It is a scrolling list now, and the panel has an actual visual design rather than framework defaults |
 | J-20, J-21, J-22 | _this batch_ | A field picked inside a loop is described relative to the record, which is what makes a grid of product cards scrapeable; steps can be dragged into a loop; and PAGE_JSON returns the page itself as JSON |
 | J-14 … J-19 | _earlier_ | Steps can reach inside iframes; every step type can be tested; the API sniffer's captures survive the run that made them; a table names its own columns; HOVER says when it achieved nothing; a browser shortcut can be typed rather than pressed. All six reported from real use |
@@ -136,7 +137,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 150 of 153 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 154 of 157 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
@@ -1406,6 +1407,114 @@ Fixed along the way, each of them a real defect rather than a taste call:
   the keyboard (a second E-09).
 - Zoom in / zoom out / reset / fit were four buttons that, once the board
   became a list, did nothing.
+
+### J-24 · BLOCKER · Neither selector mode did what it said
+
+_Reported as "why is Specific working as Bulk and Bulk working as Specific in
+the extract activity"._
+
+Measured against a five-row books table, picking one price cell:
+
+| mode     | selector returned | matched                         |
+| -------- | ----------------- | ------------------------------- |
+| Specific | `td.price`        | 5 — every price on the page     |
+| Bulk     | `td`              | 15 — every cell of every column |
+
+**Specific** walked up building an ancestor chain and returned the _best_
+candidate — the one matching fewest elements — whether or not that was one
+element. A positional path was tried only if the best had degraded to a bare
+tag. Every level of a table has a class, so the walk never reached a count of
+one and "this element" came back as the whole column.
+
+**Bulk** did the opposite. On seeing that the target's siblings share its tag it
+treated that level as the repetition and dropped the element's own class — so a
+cell became `td`: names, authors and prices interleaved into one column of
+nonsense. This is what "bulk extract is not working properly" was; the
+loop-scoped picking of J-20 worked around it rather than fixing it.
+
+The two were also indistinguishable on an anchor, both returning five matches,
+which is how "bulk behaves like specific" looked from the outside.
+
+Specific now falls back to a positional path whenever nothing names the element
+uniquely, and that path names each level rather than counting it —
+`tr.book:nth-of-type(2) > td.price`, not
+`body:nth-of-type(1) > table:nth-of-type(1) > tbody:nth-of-type(1) > …`, which
+is unique and useless. Bulk keeps whatever distinguishes the element from the
+siblings it was being confused with, so it means "this field in every record"
+rather than "every sibling".
+
+### J-25 · HIGH · Detect Table dropped every column with no text
+
+_Reported against a books table on a practice site: "the star column is not
+identified" — it came back as 10 rows x 3 columns._
+
+`columnsOf` read text, `href` and `src`, and skipped any element with none of
+the three. A rating is the canonical value a page shows without writing down —
+four filled star icons, `class="star-rating Three"`, an `aria-label`, a
+`data-rating` — and all four shapes hit that skip.
+
+A second bug hid the cell from anything that might have looked: the "sole child
+carrying all its parent's text" wrapper guard compared two empty strings and
+matched, so **any** single-child wrapper with no text was skipped before its
+contents were considered.
+
+An element with no text now offers whatever carries its value: the accessible
+name (`aria-label`/`title`/`alt` — required for the widget to work for screen
+readers at all), a `data-*` value, its class list, or a count of its repeated
+icon children. The last two are offered together rather than guessed between,
+because the existing constancy filter already drops a column whose value never
+varies — a wrong guess costs a column that disappears on its own, a missing
+guess costs the user their data.
+
+That needed a reader on the other side, or the detector would produce columns a
+run returns empty: EXTRACT gains a **Count** field type, and both script
+emitters carry it, so an exported script counts the same thing the run does.
+The detected column also had to carry the attribute name that makes it
+readable — without it the run failed with "set to Attr but has no attribute
+name", loudly at least, but still unusable.
+
+### J-26 · BLOCKER · The API sniffer never captured anything after a navigation
+
+_Reported as "this has an API that itself gives the JSON data back, still the
+API sniffer is not finding anything"._
+
+Two faults, both fatal on their own.
+
+**The relay was missing.** `page-sniffer.js` runs in the MAIN world, where there
+is no `chrome.runtime`, so it reports what it caught by posting a window
+message. `injector.js` is what forwards that to the worker — and `injector.js`
+is injected _on demand_, when a page step needs it. On a freshly navigated
+document it is simply not there. Verified in a real browser: the hook was
+installed (`fetchPatched: true`) and the relay was not (`injectorLoaded:
+false`), so every capture was posted into a page with no listener and dropped.
+Since a run almost always navigates before the traffic it cares about, the
+sniffer captured nothing in practice. The relay is now registered with the same
+matches and the same lifetime as the hook it serves.
+
+**The page was the response.** Opening an API URL directly — the most obvious
+thing to try — makes no fetch and no XHR: the JSON _is_ the document, and there
+is no request to hook. A document whose content type says it is data is now
+reported as a capture in its own right, once, and only stored if a run with the
+sniffer on owns the tab.
+
+### J-27 · HIGH · Paginate asked for a Next button and offered a bulk picker
+
+_Found while reproducing the PAGINATE report against a 24-page paginator._
+
+A LOOP's `selector` means two different things depending on its mode: the
+records to iterate over (many) or the Next control (one). The picker keyed its
+default off the step type alone, so a paginating loop opened in **Bulk** — and a
+bulk pick of a paginator returns every page link. PAGINATE clicks the first,
+which is "1", so the run re-scraped page one until Max pages ran out.
+
+The field was also labelled with its raw key, `selector`, with nothing saying it
+wanted the Next control; and `_executePaginate` honoured `settleMs` and
+`requireChange`, neither of which the UI offered — so a paginator whose Next
+button is never disabled could not be stopped at all.
+
+PAGINATE's own logic was correct throughout: against a 24-page paginator with
+Max pages set to 30 it collected 600 rows and stopped at page 24 with "no
+element matched … this looks like the last page".
 
 ---
 

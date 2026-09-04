@@ -153,6 +153,26 @@ function _assertOriginAllowed(rawUrl, runState, stepType) {
 const SNIFFER_SCRIPT_ID = "fs_page_sniffer";
 const SNIFFER_FILE = "content/page-sniffer.js";
 
+/**
+ * The isolated-world half of the sniffer.
+ *
+ * page-sniffer.js runs in the MAIN world, where there is no `chrome.runtime`,
+ * so it reports what it caught by posting a window message. injector.js is what
+ * listens for that and forwards it to this worker — and injector.js is injected
+ * *on demand*, when a page step needs it.
+ *
+ * On a freshly navigated page it is therefore not there. The hook installed
+ * fine, caught the request fine, posted the message fine, and nobody was
+ * listening: every capture was dropped. Since a run almost always navigates
+ * before the traffic it cares about, the sniffer captured nothing in practice.
+ *
+ * So the relay is registered with the same matches and the same lifetime as the
+ * hook it serves. injector.js guards itself with `__fsInjected`, so this and
+ * the on-demand injection cannot install two listeners.
+ */
+const SNIFFER_RELAY_ID = "fs_sniffer_relay";
+const INJECTOR_FILE = "content/injector.js";
+
 /** Runs currently requesting the sniffer; it is unregistered when this empties. */
 const _snifferRuns = new Set();
 
@@ -178,6 +198,15 @@ async function _enableSniffer(runId, tabId, targetOrigin) {
       });
     }
 
+    const existingRelay = await chrome.scripting
+      .getRegisteredContentScripts({ ids: [SNIFFER_RELAY_ID] })
+      .catch(() => []);
+    if (existingRelay.length) {
+      await chrome.scripting.unregisterContentScripts({
+        ids: [SNIFFER_RELAY_ID],
+      });
+    }
+
     await chrome.scripting.registerContentScripts([
       {
         id: SNIFFER_SCRIPT_ID,
@@ -185,6 +214,17 @@ async function _enableSniffer(runId, tabId, targetOrigin) {
         matches: _snifferMatches(targetOrigin),
         runAt: "document_start",
         world: "MAIN",
+        allFrames: false,
+        persistAcrossSessions: false,
+      },
+      {
+        // The listener for what the hook above posts. Without it the captures
+        // go nowhere; see SNIFFER_RELAY_ID.
+        id: SNIFFER_RELAY_ID,
+        js: [INJECTOR_FILE],
+        matches: _snifferMatches(targetOrigin),
+        runAt: "document_end",
+        world: "ISOLATED",
         allFrames: false,
         persistAcrossSessions: false,
       },
@@ -204,6 +244,9 @@ async function _enableSniffer(runId, tabId, targetOrigin) {
   // into the page that is already open so the run does not have to navigate
   // first — traffic that happened before this point is necessarily missed.
   if (tabId) {
+    await chrome.scripting
+      .executeScript({ target: { tabId }, files: [INJECTOR_FILE] })
+      .catch(() => {});
     await chrome.scripting
       .executeScript({
         target: { tabId },
@@ -231,12 +274,17 @@ async function _disableSniffer(runId) {
   if (!_snifferRuns.delete(runId)) return;
   if (_snifferRuns.size > 0) return; // another run still wants it
 
-  await chrome.scripting
-    .unregisterContentScripts({ ids: [SNIFFER_SCRIPT_ID] })
-    .then(() => logger.info(MODULE, "sniffer-unregistered", { runId }))
-    .catch((err) =>
-      logger.warn(MODULE, "sniffer-unregister-fail", { error: err.message }),
-    );
+  for (const id of [SNIFFER_SCRIPT_ID, SNIFFER_RELAY_ID]) {
+    await chrome.scripting
+      .unregisterContentScripts({ ids: [id] })
+      .then(() => logger.info(MODULE, "sniffer-unregistered", { runId, id }))
+      .catch((err) =>
+        logger.warn(MODULE, "sniffer-unregister-fail", {
+          id,
+          error: err.message,
+        }),
+      );
+  }
 }
 
 // ── Utility helpers ────────────────────────────────────────────────────────────

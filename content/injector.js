@@ -189,6 +189,75 @@ window.addEventListener("message", (event) => {
   }
 });
 
+/**
+ * Content types that mean "this document is itself an API response".
+ * `+json` and `+xml` cover the suffixed types real APIs use, like
+ * `application/vnd.api+json`.
+ */
+const _DATA_DOC_TYPE =
+  /^(application\/(json|.*\+json|xml|.*\+xml|x-ndjson|ld\+json)|text\/(json|xml|csv|plain))$/i;
+
+/**
+ * Report the page itself when the page *is* the data.
+ *
+ * The sniffer hooks fetch and XMLHttpRequest, which between them cover every
+ * request a page's own scripts make — and none of the one the browser made to
+ * fetch the document. So opening an API URL directly, which is the most obvious
+ * thing to try, captured nothing at all: there is no request to hook, because
+ * the response is already on the screen.
+ *
+ * Reported once per document, and only stored if a run with the sniffer on owns
+ * this tab — the worker's `network:sniff` handler checks that, so this cannot
+ * record anything on its own.
+ */
+function _reportDataDocument() {
+  if (globalThis.__fsDataDocReported) return;
+  const type = String(document.contentType || "");
+  if (!_DATA_DOC_TYPE.test(type)) return;
+
+  // Chrome renders a JSON or plain-text document inside a <pre>, so that is
+  // where the untouched bytes are; innerText on the body would come back
+  // reflowed, and on the JSON viewer would come back folded.
+  const body =
+    document.querySelector("pre")?.textContent ??
+    document.body?.innerText ??
+    "";
+  if (!body.trim()) return;
+  globalThis.__fsDataDocReported = true;
+
+  let status = 0;
+  try {
+    status =
+      Number(performance.getEntriesByType("navigation")[0]?.responseStatus) || 0;
+  } catch {}
+
+  try {
+    chrome.runtime
+      .sendMessage({
+        type: "network:sniff",
+        payload: {
+          method: "GET",
+          url: location.href,
+          status,
+          reqBody: "",
+          resBody: body.slice(0, SNIFF_LIMITS.body),
+          apiType: "document",
+        },
+      })
+      .catch(() => {});
+  } catch {
+    // Extension context invalidated.
+  }
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", _reportDataDocument, {
+    once: true,
+  });
+} else {
+  _reportDataDocument();
+}
+
 // ── Runtime message bridge (SW → content script) ──────────────────────────────
 
 /**
@@ -997,6 +1066,24 @@ async function _stepExtract({ fields = [], schema = [] }, context = {}) {
         );
       }
       return el.getAttribute(field.attribute) ?? null;
+    }
+    if (field.type === "count") {
+      // A value the page shows as repetition rather than text: four filled
+      // stars is the rating 4, six tag chips is six tags. Same contract as
+      // "attribute" — no selector means there is nothing to count, and
+      // returning 0 would be a plausible-looking wrong answer.
+      if (!field.countSelector) {
+        throw new Error(
+          `EXTRACT field "${field.name || "unnamed"}" is set to Count but has no selector to count.`,
+        );
+      }
+      try {
+        return String(el.querySelectorAll(field.countSelector).length);
+      } catch {
+        throw new Error(
+          `EXTRACT field "${field.name || "unnamed"}": "${field.countSelector}" is not a valid selector.`,
+        );
+      }
     }
     if (field.type === "html") return el.innerHTML;
 
@@ -1887,6 +1974,28 @@ function _buildBulkSelector(el) {
         part += `.${CSS.escape(sigClass)}`;
         foundBulkSequence = true;
       } else if (["li", "tr", "td", "article", "section"].includes(part)) {
+        // Repetition found, but this element is one of several *different*
+        // things repeating side by side — the three cells of a table row, not
+        // the rows. Returning the bare tag here is what made bulk picking a
+        // price cell return `td`: every cell of every column, names and
+        // authors and prices interleaved into one column of nonsense.
+        //
+        // Bulk means "this field, in every record" — one element per record,
+        // not every sibling. So keep whatever distinguishes this element from
+        // the siblings it is being confused with: its own class, else its
+        // position among them.
+        const own = Array.from(current.classList || []).find(
+          (c) =>
+            c.length > 1 &&
+            !/^(active|selected|hover|first|last|odd|even)/.test(c) &&
+            !/\d/.test(c),
+        );
+        if (own) {
+          part += `.${CSS.escape(own)}`;
+        } else {
+          const idx = sameTagSiblings.indexOf(current) + 1;
+          if (idx > 0) part += `:nth-of-type(${idx})`;
+        }
         foundBulkSequence = true;
       }
     } else {
@@ -1938,28 +2047,70 @@ function _findCommonClass(elements) {
   return common[0] || "";
 }
 
+/**
+ * A structural path to exactly one element.
+ *
+ * Positional, because it is the fallback used when nothing on the page names
+ * the element — but not blindly positional. Every level used to be emitted as
+ * `tag:nth-of-type(n)`, which produced
+ * `body:nth-of-type(1) > table:nth-of-type(1) > tbody:nth-of-type(1) > tr:nth-of-type(2) > td:nth-of-type(1)`
+ * where `table.books > tbody > tr:nth-of-type(2) > td.name` says the same thing
+ * and survives the page gaining a second table. So each level uses the name the
+ * page gave it and adds an index only where the name is ambiguous, the path
+ * stops as soon as it is unique, and `html`/`body` are never emitted — they are
+ * one per document and add nothing but noise.
+ */
 function _buildNthPath(node, maxDepth = 8) {
   if (!node || node.nodeType !== Node.ELEMENT_NODE) return "*";
+
+  const stable = (c) =>
+    c.length > 1 &&
+    !/^(is|has|js|ng|v|active|open|show|hide|selected|disabled|hover|first|last|odd|even)([-_]|$)/.test(
+      c,
+    ) &&
+    !/\d/.test(c);
+
   const parts = [];
   let current = node;
   let depth = 0;
 
-  while (current && depth < maxDepth && current !== document.documentElement) {
+  while (current && depth < maxDepth) {
     const tag = current.tagName.toLowerCase();
+    if (tag === "html" || tag === "body") break;
+
     if (current.id) {
       parts.unshift(`#${CSS.escape(current.id)}`);
       break;
     }
+
     const parent = current.parentElement;
-    if (!parent) {
-      parts.unshift(tag);
-      break;
+    const cls = Array.from(current.classList || []).find(stable);
+    let part = cls ? `${tag}.${CSS.escape(cls)}` : tag;
+
+    // An index only where the name does not already single this element out
+    // among its siblings.
+    if (parent) {
+      const twins = Array.from(parent.children).filter((c) => {
+        if (c.tagName.toLowerCase() !== tag) return false;
+        return cls ? c.classList.contains(cls) : true;
+      });
+      if (twins.length > 1) {
+        const sameType = Array.from(parent.children).filter(
+          (c) => c.tagName.toLowerCase() === tag,
+        );
+        const idx = sameType.indexOf(current) + 1;
+        if (idx > 0) part += `:nth-of-type(${idx})`;
+      }
     }
-    const sameType = Array.from(parent.children).filter(
-      (c) => c.tagName.toLowerCase() === tag,
-    );
-    const idx = sameType.indexOf(current) + 1;
-    parts.unshift(idx > 0 ? `${tag}:nth-of-type(${idx})` : tag);
+
+    parts.unshift(part);
+
+    // Stop as soon as the path is unambiguous; anything above it is noise.
+    const chain = parts.join(" > ");
+    try {
+      if (document.querySelectorAll(chain).length === 1) return chain;
+    } catch {}
+
     current = parent;
     depth++;
   }
@@ -2409,10 +2560,19 @@ function _buildSelector(el, bulk = false) {
     depth++;
   }
 
-  // 3) Return best non-unique candidate; if it degrades, force structural path.
-  if (bestSelector === el.tagName.toLowerCase()) {
-    return _buildNthPath(el);
-  }
+  // 3) Nothing named the element uniquely, so name it by position.
+  //
+  // This step used to run only when the best candidate had degraded to a bare
+  // tag, so "Specific" routinely returned a selector matching many elements:
+  // picking one price cell in a table gave `td.price`, which is every price on
+  // the page. The user asked for one element and silently got the column —
+  // which is the whole of "Specific behaves like Bulk".
+  //
+  // Every element has a unique nth-of-type path unless it is inside a repeated
+  // structure with no anchor at all, so this almost always resolves.
+  const nth = _buildNthPath(el);
+  if (qCount(nth) === 1) return nth;
+  if (bestSelector === el.tagName.toLowerCase()) return nth;
   return bestSelector;
 }
 

@@ -594,10 +594,24 @@ function _emitExtract(config) {
   if (fields.length === 0) return ["# EXTRACT: no fields defined", ""];
   lines.push("extracted = {}");
   for (const field of fields) {
-    const { name, selector, attribute } = field;
-    const read = attribute
-      ? `await page.get_attribute("${_escStr(selector)}", "${attribute}")`
-      : `await page.inner_text("${_escStr(selector)}")`;
+    const { name, selector, attribute, countSelector } = field;
+    // "count" reads a value the page shows as repetition — four filled stars
+    // is the rating 4. Playwright's locator count is the same question the
+    // in-page reader asks with querySelectorAll, so the script and the run
+    // return the same number rather than the script quietly omitting a column.
+    const read =
+      field.type === "count"
+        ? `str(await page.locator("${_escStr(selector)}").first.locator("${_escStr(countSelector ?? "")}").count())`
+        : attribute
+          ? `await page.get_attribute("${_escStr(selector)}", "${attribute}")`
+          : `await page.inner_text("${_escStr(selector)}")`;
+    if (field.type === "count" && !countSelector) {
+      lines.push(
+        `# INVALID: field "${name}" is set to Count but names nothing to count.`,
+        `raise ValueError("FlowScrape field '${name}': Count needs a selector")`,
+      );
+      continue;
+    }
     const expr = _transformPy(read, field);
     if (expr === null) {
       lines.push(

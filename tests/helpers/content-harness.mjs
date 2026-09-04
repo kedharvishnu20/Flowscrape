@@ -26,6 +26,9 @@ const EXPOSED = [
   "_stepPaginate",
   "_stepHover",
   "_buildScopedSelector",
+  "_buildSelector",
+  "_buildNthPath",
+  "_buildBulkSelector",
 ];
 
 /**

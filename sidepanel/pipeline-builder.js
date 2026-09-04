@@ -1583,8 +1583,30 @@ function _configFields(step) {
       );
     } else {
       // paginate
-      html += selectorRow(step, "selector");
-      html += field(step, "max", "Max pages", "number", c.max ?? 10);
+      html += `<div class="step-note">
+        <div class="step-note-title">Click Next until the pages run out</div>
+        <p class="prose">Pick the site's Next control — the "&rsaquo;", "Next" or "&raquo;" link. The body below runs once per page. It stops on its own when there is no next page, so Max pages is only a safety limit.</p>
+      </div>`;
+      html += selectorRow(step, "selector", "Next button");
+      html += field(
+        step,
+        "max",
+        "Max pages (safety limit)",
+        "number",
+        c.max ?? 10,
+      );
+      html += field(
+        step,
+        "settleMs",
+        "Wait after each page loads (ms)",
+        "number",
+        c.settleMs ?? 1500,
+      );
+      html += toggle(
+        step,
+        "requireChange",
+        "Stop if the page does not change (for Next buttons that are never disabled)",
+      );
     }
     html += `<label>On iteration failure</label>
     <select id="cfg-${step.id}-onFail" data-id="${step.id}" data-key="onFail" class="cfg-bind" style="margin-bottom:8px;">
@@ -1784,9 +1806,21 @@ function _configFields(step) {
           <option value="text" ${(f.type || "text") === "text" ? "selected" : ""}>Text</option>
           <option value="html" ${f.type === "html" ? "selected" : ""}>HTML</option>
           <option value="attribute" ${f.type === "attribute" ? "selected" : ""}>Attr</option>
+          <option value="count" ${f.type === "count" ? "selected" : ""}>Count</option>
         </select>
         <button class="btn btn-icon" style="color:var(--red);" data-action="remove-extract-field" data-id="${step.id}" data-index="${fi}">✕</button>
       </div>`;
+      if (f.type === "count") {
+        // Counting is how a rating rendered as four filled stars becomes the
+        // number 4. Without a selector there is nothing to count, so the
+        // injector refuses rather than returning a plausible 0.
+        html += `<div class="flex gap-2" style="margin:-2px 0 6px 0;align-items:center;">
+          <span style="flex:1;font-size:10px;color:var(--text-dim);text-align:right;">count of</span>
+          <input type="text" class="extract-count-input" data-id="${step.id}" data-index="${fi}"
+            value="${esc(f.countSelector || "")}" placeholder="i.icon-star.filled"
+            style="flex:2.8;font-size:11px;">
+        </div>`;
+      }
       if (f.type === "attribute") {
         // Without a name there is nothing to read: injector requires
         // field.attribute, so "Attr" used to fall through to text extraction.
@@ -2361,12 +2395,17 @@ function field(step, key, label, type, value) {
     <input type="${type}" id="cfg-${step.id}-${key}" value="${esc(value)}"
       data-id="${step.id}" data-key="${key}" class="cfg-bind" style="margin-bottom:8px;">`;
 }
-function selectorRow(step, key) {
+function selectorRow(step, key, label = key) {
   const v = step.config[key] || "";
+  // Same rule as the picker's default, and for the same reason: a paginating
+  // LOOP's selector is one Next control, not a set of records.
+  const paginating = step.type === "LOOP" && step.config?.type === "paginate";
   const isMultiSelect =
-    ["EXTRACT", "LOOP"].includes(step.type) && key === "selector";
+    ["EXTRACT", "LOOP"].includes(step.type) &&
+    key === "selector" &&
+    !paginating;
   const modeBadge = isMultiSelect ? "Bulk" : "Specific";
-  return `<label>${key}</label>
+  return `<label>${label}</label>
     <div class="flex gap-2" style="margin-bottom:8px;">
       <input type="text" id="cfg-${step.id}-${key}" value="${esc(v)}"
         data-id="${step.id}" data-key="${key}" class="cfg-bind" style="flex:1;">
@@ -2876,8 +2915,9 @@ function bindDelegatedEvents() {
       if (!field) return;
       field.type = target.value;
       if (field.type !== "attribute") delete field.attribute;
+      if (field.type !== "count") delete field.countSelector;
       saveState();
-      _rerenderCardConfig(step); // show or hide the attribute input
+      _rerenderCardConfig(step); // show or hide the type's own input
       return;
     }
 
@@ -2947,6 +2987,15 @@ function bindDelegatedEvents() {
       const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
       if (!field) return;
       field.attribute = target.value.trim();
+      saveState();
+      return;
+    }
+
+    if (target.classList.contains("extract-count-input")) {
+      const step = _findStepDeep(_pipeline.steps, target.dataset.id);
+      const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
+      if (!field) return;
+      field.countSelector = target.value.trim();
       saveState();
       return;
     }
@@ -3215,9 +3264,16 @@ async function _pickSelector(stepId, key) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return notify("error-log", "No active tab available.");
 
-  const stepType = _findStepDeep(_pipeline.steps, stepId)?.type;
+  const step = _findStepDeep(_pipeline.steps, stepId);
+  const stepType = step?.type;
+  // A LOOP's `selector` means two different things depending on its mode: the
+  // records to iterate (bulk) or the Next control (one element). Defaulting
+  // paginate mode to bulk handed PAGINATE a selector matching every link in
+  // the paginator — and it clicks the first, which is page 1. The run then
+  // re-scraped page 1 until "max pages" ran out.
+  const paginating = stepType === "LOOP" && step?.config?.type === "paginate";
   const defaultBulk =
-    key === "selector" && ["EXTRACT", "LOOP"].includes(stepType);
+    key === "selector" && ["EXTRACT", "LOOP"].includes(stepType) && !paginating;
 
   // Show mode selector modal
   const mode = await _selectSelectorMode(defaultBulk);
@@ -3265,13 +3321,13 @@ async function _selectSelectorMode(defaultBulk) {
       <p style="margin: 0; color: var(--text-dim); font-size: 12px;">Choose how to match elements:</p>
     </div>
     <div style="display: flex; gap: 12px; margin-bottom: 16px;">
-      <button class="selector-mode-btn" data-mode="specific" style="flex:1; padding:12px; border-radius:8px; border:2px solid var(--accent); background:rgba(99,102,241,0.1); color:var(--text-main); cursor:pointer; font-weight:600; transition:all 0.2s;">
+      <button class="selector-mode-btn" data-mode="specific">
         Specific
-        <div style="font-size:10px; color:var(--text-dim); font-weight:normal; margin-top:4px;">Single element</div>
+        <div class="selector-mode-sub">This one element</div>
       </button>
-      <button class="selector-mode-btn" data-mode="bulk" style="flex:1; padding:12px; border-radius:8px; border:2px solid var(--bg-border); background:transparent; color:var(--text-main); cursor:pointer; font-weight:600; transition:all 0.2s;">
+      <button class="selector-mode-btn" data-mode="bulk">
         Bulk
-        <div style="font-size:10px; color:var(--text-dim); font-weight:normal; margin-top:4px;">Multiple matches</div>
+        <div class="selector-mode-sub">The same field in every record</div>
       </button>
     </div>
     <button class="btn" style="width:100%; margin-top:16px;" id="modal-cancel">Cancel</button>
@@ -3294,13 +3350,12 @@ async function _selectSelectorMode(defaultBulk) {
       resolve(null);
     });
 
-    const defaultBtn = card.querySelector(
-      `[data-mode="${defaultBulk ? "bulk" : "specific"}"]`,
-    );
-    if (defaultBtn) {
-      defaultBtn.style.borderColor = "var(--accent)";
-      defaultBtn.style.background = "rgba(99,102,241,0.15)";
-    }
+    // Exactly one is marked as the suggestion. The Specific button used to
+    // carry the highlight in its own inline style, so it always looked chosen —
+    // and where bulk was the default, both did.
+    card
+      .querySelector(`[data-mode="${defaultBulk ? "bulk" : "specific"}"]`)
+      ?.classList.add("suggested");
 
     modal.appendChild(card);
     document.body.appendChild(modal);
@@ -3616,9 +3671,20 @@ async function _insertDetectedTable(table) {
       fields: table.fields.map((f) => ({
         name: f.name,
         selector: f.selector,
-        type: f.kind === "text" ? "text" : "attribute",
+        // The detector's `kind` and EXTRACT's `type` are two vocabularies; this
+        // is the only place they meet. A kind with no reader here would produce
+        // a column the run silently returns empty, so every kind the detector
+        // can emit is named.
+        type:
+          f.kind === "text"
+            ? "text"
+            : f.kind === "count"
+              ? "count"
+              : "attribute",
         ...(f.kind === "href" ? { attribute: "href" } : {}),
         ...(f.kind === "src" ? { attribute: "src" } : {}),
+        ...(f.kind === "attr" ? { attribute: f.attribute } : {}),
+        ...(f.kind === "count" ? { countSelector: f.countSelector } : {}),
         ...(_transformFor(f) ? { transform: [_transformFor(f)] } : {}),
       })),
     },

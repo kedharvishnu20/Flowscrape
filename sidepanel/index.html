@@ -44,56 +44,112 @@
         padding: 0;
       }
 
+      /*
+       * FlowScrape is a measuring instrument, not a dashboard.
+       *
+       * It lives in a 400px strip beside a live web page, and people keep it
+       * open for hours while a run works through a site. So it is designed
+       * like the front panel of a piece of lab equipment: warm graphite rather
+       * than the blue-slate every SaaS tool uses, one hot colour reserved for
+       * "this is live", hairline rules instead of soft shadows, and geometry
+       * that is sharp because instruments do not have twelve-pixel corners.
+       *
+       * Typography is the other half of it. Only two faces are bundled — a
+       * remote font is a CSP violation and a request to Google on every open
+       * (A-09) — so the constraint became the concept: JetBrains Mono carries
+       * every piece of chrome (labels, buttons, numbers, step names) and Inter
+       * is kept for prose. Mono chrome around humanist prose is what a
+       * technical instrument reads like.
+       */
       :root {
-        --bg-void: #05050a;
-        --bg-base: #0b0d14;
-        --bg-raised: #12141f;
-        --bg-hover: #1a1d2a;
-        --bg-border: #23273a;
+        /* Ground — warm, so it never reads as another blue dashboard. */
+        --bg-void: #0a0908;
+        --bg-base: #121110;
+        --bg-raised: #1a1917;
+        --bg-hover: #232120;
+        --bg-border: #2e2b28;
+        --hairline: rgba(242, 239, 233, 0.08);
 
-        --text-main: #f8fafc;
-        --text-muted: #94a3b8;
-        --text-dim: #64748b;
+        /* Ink */
+        --text-main: #f2efe9;
+        --text-muted: #a09a90;
+        --text-dim: #6f6a63;
 
-        --accent: #6366f1;
-        --accent-glow: rgba(99, 102, 241, 0.2);
+        /*
+         * One signal colour. Amber is the instrument-panel convention and it
+         * is emphatically not the indigo every generated interface reaches
+         * for. Everything the user can act on is this and nothing else is.
+         */
+        --accent: #e8b33a;
+        --accent-ink: #100e0a;
+        --accent-dim: rgba(232, 179, 58, 0.14);
+        --accent-glow: rgba(232, 179, 58, 0.22);
 
-        --green: #22c55e;
-        --red: #ef4444;
-        --yellow: #eab308;
+        /*
+         * Reserved: mint means "running, right now", and appears nowhere else,
+         * so a glance at the panel answers "is it working?" without reading.
+         */
+        --live: #5fe3c0;
+        --live-dim: rgba(95, 227, 192, 0.14);
 
-        /* Step Type Colors */
-        /* One token per palette step type; a test in tests/step-registry.test.mjs
-         keeps this in step with utils/step-types.js. The palette uses
-         var(--step-X) with no fallback, so a missing token renders as no
-         background at all. */
-        --step-WEBSITE: #38bdf8;
-        --step-NAVIGATE: #3b82f6;
-        --step-CLICK: #8b5cf6;
-        --step-FILL: #06b6d4;
-        --step-HOVER: #a78bfa;
-        --step-SELECT: #14b8a6;
-        --step-SCROLL: #64748b;
-        --step-KEYBOARD: #78716c;
-        --step-DRAG_DROP: #d946ef;
-        --step-UPLOAD_ACTIVITY: #0d9488;
-        --step-WAIT: #f59e0b;
-        --step-IF_ELSE: #eab308;
-        --step-LOOP: #6366f1;
-        --step-PAGINATE: #0ea5e9;
-        --step-EXTRACT: #10b981;
-        --step-SCREENSHOT: #ec4899;
-        --step-PAGE_DATA: #14b8a6;
-        --step-PAGE_JSON: #0ea5e9;
-        --step-EXPORT: #22c55e;
-        --step-API: #0891b2;
-        --step-API_SNIFFER: #a855f7;
-        --step-PDF_EXTRACTION: #f97316;
-        --step-AUTO_EXTRACT: #f43f5e;
+        --green: #7fc98a;
+        --red: #ff5c3a;
+        --yellow: #e8b33a;
 
-        --radius: 8px;
-        --radius-sm: 4px;
-        --shadow-fly: 0 10px 40px -10px rgba(0, 0, 0, 0.5);
+        /*
+         * Step colours by category rather than twenty-three arbitrary hues.
+         * Action is warm, Flow is violet, Data is cool — so the shape of a
+         * pipeline is legible before a single label is read. A test in
+         * tests/step-registry.test.mjs keeps this list in step with
+         * utils/step-types.js; the palette uses var(--step-X) with no
+         * fallback, so a missing token renders as no background at all.
+         */
+        --step-WEBSITE: #d98b3a;
+        --step-NAVIGATE: #e0a03f;
+        --step-CLICK: #e8b33a;
+        --step-FILL: #d4a24c;
+        --step-HOVER: #c9964a;
+        --step-SELECT: #bf8b3f;
+        --step-SCROLL: #a8845a;
+        --step-KEYBOARD: #96795c;
+        --step-DRAG_DROP: #b8823a;
+        --step-UPLOAD_ACTIVITY: #a97d45;
+
+        --step-WAIT: #9b8bd4;
+        --step-IF_ELSE: #a78bd9;
+        --step-LOOP: #8f7fd1;
+        --step-PAGINATE: #7d6fc4;
+
+        --step-EXTRACT: #5fe3c0;
+        --step-PAGE_DATA: #52cfb2;
+        --step-PAGE_JSON: #48bfa8;
+        --step-SCREENSHOT: #5cc9d4;
+        --step-EXPORT: #6fdcb0;
+        --step-API: #4fb8c9;
+        --step-API_SNIFFER: #45a8bd;
+        --step-PDF_EXTRACTION: #3f9cb0;
+        --step-AUTO_EXTRACT: #62d9c4;
+
+        /* Sharp. An instrument does not have rounded corners. */
+        --radius: 3px;
+        --radius-sm: 2px;
+
+        /*
+         * Depth from hairlines and ground shifts, not from blur. Soft drop
+         * shadows are the thing that makes an interface look generated.
+         */
+        --shadow-fly: 0 8px 24px -8px rgba(0, 0, 0, 0.75);
+        --lift: inset 0 1px 0 rgba(242, 239, 233, 0.05);
+
+        /*
+         * Mechanical, not bouncy. Fast enough to feel like a switch closing.
+         */
+        --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+        --fast: 120ms;
+        --med: 180ms;
+
+        --mono: "JetBrains Mono", ui-monospace, monospace;
+        --prose: "Inter", system-ui, sans-serif;
       }
 
       html,
@@ -101,18 +157,57 @@
         height: 100%;
         background: var(--bg-void);
         color: var(--text-main);
-        font-family:
-          "Inter",
-          system-ui,
-          -apple-system,
-          "Segoe UI",
-          Roboto,
-          Helvetica,
-          Arial,
-          sans-serif;
-        font-size: 13px;
+        /*
+         * Mono is the chrome face, not the exception. Every label, button,
+         * number and step name is set in it; Inter is opted into for prose
+         * (see .prose below). That inversion is the typographic system — an
+         * instrument panel is lettered, not typeset.
+         */
+        font-family: var(--mono);
+        font-size: 12px;
         line-height: 1.5;
+        letter-spacing: 0.01em;
         overflow: hidden;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /*
+       * A fine horizontal rule texture over the ground. At 3px it is felt
+       * rather than seen — it stops the large dark areas reading as flat void,
+       * which is what makes a dark interface look cheap.
+       */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        background: repeating-linear-gradient(
+          to bottom,
+          rgba(242, 239, 233, 0.014) 0 1px,
+          transparent 1px 3px
+        );
+      }
+
+      /* Running text, and only running text. */
+      .prose,
+      p {
+        font-family: var(--prose);
+        letter-spacing: 0;
+      }
+
+      /*
+       * Section labels: small, spaced, uppercase. The one typographic move
+       * that does most of the work in instrument design.
+       */
+      .section-label,
+      label {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--text-dim);
       }
 
       /* Scrollbars */
@@ -135,38 +230,82 @@
       }
 
       /* Buttons */
+      /*
+       * Buttons are switches: square, lettered, and they depress. `all 0.2s`
+       * animated layout properties too, which is what made the old ones feel
+       * gelatinous — only the properties that change are transitioned now.
+       */
       .btn {
         display: inline-flex;
         align-items: center;
         justify-content: center;
         gap: 6px;
-        padding: 6px 12px;
+        padding: 7px 11px;
         border-radius: var(--radius-sm);
-        font-size: 12px;
+        font-family: var(--mono);
+        font-size: 10.5px;
         font-weight: 500;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
         cursor: pointer;
-        transition: all 0.2s;
+        transition:
+          background var(--fast) var(--ease),
+          border-color var(--fast) var(--ease),
+          color var(--fast) var(--ease),
+          transform var(--fast) var(--ease);
         border: 1px solid var(--bg-border);
         background: var(--bg-raised);
-        color: var(--text-main);
+        color: var(--text-muted);
+        white-space: nowrap;
       }
 
       .btn:hover {
         background: var(--bg-hover);
         border-color: var(--text-dim);
+        color: var(--text-main);
       }
 
+      .btn:active {
+        transform: translateY(1px);
+      }
+
+      .btn:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      /*
+       * The only saturated fill in the interface. Exactly one thing on screen
+       * should ever be this colour, which is what makes it mean "do this".
+       */
       .btn-primary {
         background: var(--accent);
         border-color: var(--accent);
-        color: white;
-        box-shadow: 0 2px 10px var(--accent-glow);
+        color: var(--accent-ink);
+        font-weight: 600;
       }
 
       .btn-primary:hover {
-        background: #818cf8;
-        border-color: #818cf8;
-        filter: brightness(1.1);
+        background: #f3c256;
+        border-color: #f3c256;
+        color: var(--accent-ink);
+      }
+
+      /*
+       * Outlined rather than filled: an inviting action that is still not
+       * *the* action. Only one filled amber control is on screen at a time —
+       * Run — and that is what makes the fill mean something.
+       */
+      .btn-accent {
+        color: var(--accent);
+        border-color: rgba(232, 179, 58, 0.45);
+        background: var(--accent-dim);
+      }
+
+      .btn-accent:hover {
+        color: var(--accent);
+        background: rgba(232, 179, 58, 0.2);
+        border-color: var(--accent);
       }
 
       .btn-primary:disabled {
@@ -177,12 +316,14 @@
 
       .btn-danger {
         color: var(--red);
-        border-color: rgba(239, 68, 68, 0.3);
-        background: rgba(239, 68, 68, 0.05);
+        border-color: rgba(255, 92, 58, 0.28);
+        background: rgba(255, 92, 58, 0.06);
       }
 
       .btn-danger:hover {
-        background: rgba(239, 68, 68, 0.15);
+        background: rgba(255, 92, 58, 0.16);
+        border-color: var(--red);
+        color: var(--red);
       }
 
       .btn-icon {
@@ -191,18 +332,30 @@
         padding: 0;
         background: transparent;
         border: none;
-        color: var(--text-muted);
+        color: var(--text-dim);
         display: flex;
         align-items: center;
         justify-content: center;
-        border-radius: 4px;
+        border-radius: var(--radius-sm);
         cursor: pointer;
-        transition: 0.2s;
+        transition:
+          background var(--fast) var(--ease),
+          color var(--fast) var(--ease);
       }
 
       .btn-icon:hover {
-        background: var(--bg-border);
+        background: var(--bg-hover);
         color: var(--text-main);
+      }
+
+      .btn-icon:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      .btn-icon-danger:hover {
+        background: rgba(255, 92, 58, 0.14);
+        color: var(--red);
       }
 
       button:disabled {
@@ -214,7 +367,11 @@
       h1,
       h2,
       h3 {
-        font-weight: 600;
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 12px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
         color: var(--text-main);
         margin-bottom: 8px;
       }
@@ -222,13 +379,12 @@
       p {
         color: var(--text-muted);
         font-size: 12px;
+        line-height: 1.55;
         margin-bottom: 12px;
       }
 
       .mono {
-        font-family:
-          "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas,
-          "Liberation Mono", Menlo, monospace;
+        font-family: var(--mono);
         font-size: 11px;
       }
 
@@ -257,6 +413,11 @@
       }
 
       /* Inputs */
+      /*
+       * Fields read as slots cut into the panel: recessed ground, a hairline,
+       * and a single amber rule along the bottom edge when focused. The old
+       * 2px glow ring around a rounded box is the generated-interface tell.
+       */
       input[type="text"],
       input[type="number"],
       input[type="url"],
@@ -265,31 +426,62 @@
         width: 100%;
         background: var(--bg-void);
         border: 1px solid var(--bg-border);
+        border-bottom-color: var(--bg-hover);
         color: var(--text-main);
         border-radius: var(--radius-sm);
-        padding: 6px 10px;
-        font-size: 12px;
-        font-family: inherit;
+        padding: 6px 9px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        letter-spacing: 0.01em;
         outline: none;
         transition:
-          border 0.2s,
-          box-shadow 0.2s;
+          border-color var(--fast) var(--ease),
+          background var(--fast) var(--ease);
+      }
+
+      input::placeholder,
+      textarea::placeholder {
+        color: var(--text-dim);
+        letter-spacing: 0.04em;
+      }
+
+      input:hover:not(:focus),
+      select:hover:not(:focus),
+      textarea:hover:not(:focus) {
+        border-color: var(--text-dim);
       }
 
       input:focus,
       select:focus,
       textarea:focus {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 2px var(--accent-glow);
+        background: var(--bg-base);
+        border-color: var(--bg-border);
+        border-bottom-color: var(--accent);
+      }
+
+      select {
+        appearance: none;
+        /* A drawn chevron; the platform control is the wrong century. */
+        background-image:
+          linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+          linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+        background-position:
+          calc(100% - 13px) calc(50% + 1px),
+          calc(100% - 9px) calc(50% + 1px);
+        background-size:
+          4px 4px,
+          4px 4px;
+        background-repeat: no-repeat;
+        padding-right: 24px;
+      }
+
+      textarea {
+        line-height: 1.5;
+        resize: vertical;
       }
 
       label {
         display: block;
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--text-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
         margin-bottom: 4px;
         margin-top: 10px;
       }
@@ -302,78 +494,106 @@
         position: relative;
       }
 
-      /* Header (Databricks style) */
+      /*
+       * Header: the instrument's faceplate. Slightly lighter than the ground,
+       * a hairline of light along the top edge, one rule below.
+       */
       #header {
         display: flex;
         align-items: center;
-        padding: 12px 16px;
+        padding: 9px 12px;
         background: var(--bg-raised);
         border-bottom: 1px solid var(--bg-border);
+        box-shadow: var(--lift);
         z-index: 10;
         flex-shrink: 0;
+        position: relative;
       }
 
       .logo-container {
         display: flex;
         align-items: center;
-        gap: 8px;
-        font-weight: 700;
-        font-size: 14px;
-        letter-spacing: -0.5px;
+        gap: 7px;
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-main);
+        white-space: nowrap;
       }
 
+      /*
+       * The mark: a small amber square with a notch out of one corner — a
+       * flow taking a turn. Drawn in CSS, not an emoji in a rounded gradient
+       * tile, which is the single most generated-looking thing an app can do.
+       */
       .logo-bolt {
-        width: 24px;
-        height: 24px;
-        border-radius: 6px;
-        background: linear-gradient(135deg, var(--accent), #d946ef);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 14px;
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        border-radius: 1px;
+        background: var(--accent);
+        clip-path: polygon(0 0, 100% 0, 100% 55%, 55% 55%, 55% 100%, 0 100%);
+        font-size: 0;
+        color: transparent;
+        overflow: hidden;
       }
 
       .nav-pills {
         display: flex;
-        gap: 4px;
-        background: var(--bg-base);
-        padding: 4px;
-        border-radius: 6px;
-        border: 1px solid var(--bg-border);
         margin-left: auto;
+        align-items: stretch;
       }
 
+      /*
+       * Tabs are underlined, not pilled. A pill inside a pill inside a rounded
+       * header is the visual signature of a generated interface; a rule under
+       * the live one says the same thing with a tenth of the ink.
+       */
       .nav-pill {
-        padding: 4px 12px;
-        font-size: 12px;
+        padding: 6px 2px 5px;
+        margin: 0 8px;
+        font-family: var(--mono);
+        font-size: 10px;
         font-weight: 500;
-        color: var(--text-muted);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-dim);
         cursor: pointer;
-        border-radius: 4px;
-        transition: all 0.2s;
+        border-radius: 0;
+        border-bottom: 1.5px solid transparent;
+        transition:
+          color var(--fast) var(--ease),
+          border-color var(--fast) var(--ease);
       }
 
       .nav-pill:hover {
-        color: var(--text-main);
-        background: var(--bg-hover);
+        color: var(--text-muted);
+      }
+
+      .nav-pill:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
       }
 
       .nav-pill.active {
-        background: var(--bg-raised);
+        background: transparent;
         color: var(--text-main);
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
-        border: 1px solid var(--bg-border);
+        box-shadow: none;
+        border-bottom-color: var(--accent);
       }
 
-      /* Run Bar */
+      /* Run Bar — the one control that is always reachable. */
       #run-bar {
         display: flex;
         align-items: center;
-        gap: 12px;
-        padding: 10px 16px;
+        gap: 8px;
+        padding: 9px 12px;
         background: var(--bg-base);
         border-bottom: 1px solid var(--bg-border);
         z-index: 9;
+        flex-shrink: 0;
       }
 
       /* View Container */
@@ -397,318 +617,277 @@
         display: flex;
       }
 
-      /* =========================================================
-       PREMIUM PRODUCTION UI
-       ========================================================= */
       #view-pipeline {
-        background-image:
-          radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
-          linear-gradient(140deg, #0b0c10 0%, #161b22 55%, #0f111a 100%);
-        background-size:
-          24px 24px,
-          100% 100%;
-        scroll-behavior: smooth;
+        background: var(--bg-base);
         overflow: hidden;
         padding: 10px;
       }
 
+      /*
+       * The toolbar wraps. It was a single non-wrapping flex row holding five
+       * buttons and a select — about 560px of controls in a 400px panel — so
+       * the last two were simply outside the window with no way to reach them.
+       * The primary action sits on its own line; the rest flow beneath it in
+       * whatever width there is.
+       */
       #board-toolbar {
         position: relative;
         z-index: 20;
         display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 8px;
-        margin-bottom: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        /* Pro border */
-        border-radius: 10px;
-        background: rgba(16, 21, 31, 0.85);
-        /* Deep slate glass */
-        backdrop-filter: blur(12px);
-        box-shadow:
-          0 12px 24px -16px rgba(0, 0, 0, 0.7),
-          inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+        padding: 0 0 9px;
+        margin-bottom: 6px;
+        border-bottom: 1px solid var(--hairline);
+        flex-shrink: 0;
       }
 
+      .toolbar-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+
+      #board-toolbar .btn {
+        flex: 0 1 auto;
+      }
+
+      #btn-detect-structure {
+        width: 100%;
+      }
+
+      /* A select is an input, and inputs are width:100% — inside the toolbar
+         it has to size to its content like the buttons beside it. */
+      #board-toolbar select.btn {
+        width: auto;
+        flex: 0 0 auto;
+        padding: 7px 24px 7px 11px;
+      }
+
+      /*
+       * The board scrolls; it is not an infinite canvas.
+       *
+       * It used to be a 1400 x 1200 stage panned and zoomed inside a viewport
+       * about 400px wide — the node-graph metaphor every desktop automation
+       * tool uses, in a strip where four hundred pixels is the entire width.
+       * Steps were laid out off-screen and had to be hunted for by dragging,
+       * which is what "the UI constraints" meant when people said they could
+       * not get a step into a loop.
+       *
+       * A pipeline is a list. In this shape a list is also the only honest
+       * layout: it scrolls the way every other panel in the browser scrolls,
+       * nothing is ever positioned where it cannot be seen, and nesting is
+       * shown by indentation rather than by geometry the user has to navigate.
+       */
       #board-viewport {
         position: relative;
         flex: 1;
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        /* Softer edge */
-        border-radius: 12px;
-        overflow: hidden;
-        min-height: 520px;
-        cursor: grab;
-        box-shadow: inset 0 4px 24px -10px rgba(0, 0, 0, 0.5);
-        /* Inner depth */
-        /* No repeating linear gradient - keeping it clean */
-      }
-
-      #board-viewport.panning {
-        cursor: grabbing;
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius);
+        overflow-x: hidden;
+        overflow-y: auto;
+        min-height: 320px;
+        background: var(--bg-base);
+        cursor: default;
       }
 
       #board-stage {
-        position: absolute;
-        inset: 0;
-        min-width: 1400px;
-        min-height: 1200px;
-        transform-origin: 0 0;
-        will-change: transform;
-      }
-
-      #pipeline-wires {
-        position: absolute;
-        inset: 0;
+        position: relative;
         width: 100%;
-        height: 100%;
-        pointer-events: none;
-        z-index: 1;
-        overflow: visible;
-      }
-
-      .wire-path {
-        fill: none;
-        stroke: rgba(255, 255, 255, 0.4);
-        stroke-width: 1.5;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-      }
-
-      /* Invisible click target or subtle background line */
-      .wire-path-glow {
-        fill: none;
-        stroke: rgba(255, 255, 255, 0.02);
-        stroke-width: 6;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-        /* Remove blur so it stays crisp */
-      }
-
-      .hidden-tracer {
-        display: none;
-      }
-
-      /* Animated execution tracer */
-      .wire-path-active-tracer {
-        display: block !important;
-        fill: none;
-        stroke: #4ade80;
-        /* Vibrant Green Flow */
-        stroke-width: 3.5;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-        stroke-dasharray: 8 16;
-        animation: tracerFlow 0.8s linear infinite;
-        filter: drop-shadow(0 0 6px rgba(74, 222, 128, 0.8));
-      }
-
-      @keyframes tracerFlow {
-        0% {
-          stroke-dashoffset: 24;
-        }
-
-        100% {
-          stroke-dashoffset: 0;
-        }
-      }
-
-      .wire-path.loop {
-        stroke: rgba(129, 140, 248, 0.7);
-      }
-
-      .wire-path.if {
-        stroke: rgba(74, 222, 128, 0.7);
-      }
-
-      .wire-path.else {
-        stroke: rgba(251, 113, 133, 0.7);
-      }
-
-      .wire-dot {
-        fill: rgba(255, 255, 255, 0.8);
-      }
-
-      .wire-dot.loop {
-        fill: #818cf8;
-      }
-
-      .wire-dot.if {
-        fill: #4ade80;
-      }
-
-      .wire-dot.else {
-        fill: #fb7185;
+        padding: 12px 10px 32px;
       }
 
       #pipeline-canvas {
         position: relative;
         display: flex;
         flex-direction: column;
-        align-items: center;
-        padding: 24px 60px 80px;
-        gap: 8px;
-        min-height: 100%;
-        min-width: 920px;
-        z-index: 2;
+        align-items: stretch;
+        gap: 0;
+        width: 100%;
       }
 
       .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
         text-align: center;
         color: var(--text-dim);
-        padding: 40px 20px;
+        padding: 48px 16px;
         width: 100%;
+      }
+
+      /* Three empty slots, drawn: the shape the board is waiting to be. */
+      .empty-rack {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        width: 100%;
+        max-width: 190px;
+      }
+
+      .empty-rack span {
+        height: 22px;
+        border: 1px dashed var(--bg-border);
+        border-left: 2px solid var(--bg-hover);
+        border-radius: var(--radius-sm);
+      }
+
+      .empty-rack span:nth-child(2) {
+        opacity: 0.66;
+      }
+
+      .empty-rack span:nth-child(3) {
+        opacity: 0.36;
+      }
+
+      .empty-hint {
+        margin: 0;
+        font-size: 11.5px;
+        line-height: 1.6;
+        color: var(--text-dim);
+        max-width: 260px;
       }
 
       /* Node Wrapper (holds insert button + card) */
       .node-wrapper {
         display: flex;
         flex-direction: column;
-        align-items: center;
+        align-items: stretch;
         width: 100%;
-        max-width: 380px;
+        max-width: none;
         position: relative;
       }
 
-      /* Insert Step Button between nodes */
+      /*
+       * The seam between two steps. At rest it is a hairline with a small tick
+       * in the middle; under the pointer the tick fills amber and names itself.
+       * The old version was a 24px dashed circle that grew 15% on hover — one
+       * of those per step, jumping. A seam is quieter and reads as a place
+       * where something can be inserted, which is what it is.
+       */
       .insert-step {
-        width: 24px;
-        height: 24px;
-        border-radius: 50%;
-        background: #181d26;
-        /* match card */
-        border: 1px dashed rgba(255, 255, 255, 0.15);
+        align-self: stretch;
+        height: 14px;
+        margin: 1px 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        color: var(--text-dim);
-        font-size: 14px;
+        color: transparent;
+        font-family: var(--mono);
+        font-size: 10px;
+        line-height: 1;
         cursor: pointer;
         position: relative;
-        z-index: 3;
-        transition: all 0.2s;
-        margin-top: 14px;
-        margin-bottom: 14px;
+        transition: color var(--fast) var(--ease);
+      }
+
+      .insert-step::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 50%;
+        height: 1px;
+        background: var(--hairline);
+        transition: background var(--fast) var(--ease);
+        z-index: -1;
       }
 
       .insert-step:hover {
-        background: var(--accent);
-        color: white;
-        border-color: var(--accent);
-        transform: scale(1.15);
-        border-style: solid;
+        color: var(--accent);
+      }
+
+      .insert-step:hover::before {
+        background: var(--accent-dim);
+      }
+
+      .insert-step:focus-visible {
+        color: var(--accent);
       }
 
       .node-wrapper:first-child .insert-step.top-insert {
         margin-top: 0;
-        margin-bottom: 20px;
       }
 
       /* The Node Card — Clean, solid, premium production UI */
+      /*
+       * A step reads as a labelled module on a rack: a flat plate, a hairline
+       * edge, and a coloured bar down the left naming its category. Depth
+       * comes from the ground shifting under it, not from a drop shadow.
+       */
       .node-card {
         width: 100%;
-        background: #181d26;
-        /* Deeper space gray */
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 10px;
-        /* Sharper pro radius */
+        background: var(--bg-raised);
+        border: 1px solid var(--hairline);
+        border-left: 3px solid var(--step-color, var(--text-dim));
+        border-radius: var(--radius-sm);
         position: relative;
         z-index: 4;
         transition:
-          all 0.2s cubic-bezier(0.2, 0, 0, 1),
-          box-shadow 0.3s;
+          background var(--fast) var(--ease),
+          border-color var(--fast) var(--ease);
         cursor: grab;
         overflow: visible;
-        box-shadow:
-          0 4px 12px -2px rgba(0, 0, 0, 0.4),
-          inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        /* Pro elevation */
-      }
-
-      .node-port {
-        position: absolute;
-        left: 50%;
-        width: 14px;
-        height: 14px;
-        transform: translateX(-50%);
-        border-radius: 50%;
-        border: 2px solid var(--node-step-color, var(--bg-border));
-        background: #0f111a;
-        box-shadow:
-          0 0 0 3px rgba(15, 17, 26, 1),
-          /* Cutout look against the card/bg */ 0 0 16px -8px
-            var(--node-step-color, #64748b);
-        z-index: 6;
-        pointer-events: none;
-        transition: all 0.3s ease;
-      }
-
-      .node-port::after {
-        content: "";
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: 4px;
-        height: 4px;
-        transform: translate(-50%, -50%);
-        border-radius: 50%;
-        background: var(--node-step-color, #64748b);
-        transition: all 0.3s ease;
-      }
-
-      .node-port.in {
-        top: -8px;
-      }
-
-      .node-port.out {
-        bottom: -8px;
-      }
-
-      .node-card:active {
-        cursor: grabbing;
-        transform: scale(0.98);
-        box-shadow: 0 2px 6px -1px rgba(0, 0, 0, 0.6);
+        box-shadow: var(--lift);
       }
 
       .node-card:hover {
-        border-color: rgba(255, 255, 255, 0.15);
-        box-shadow:
-          0 8px 16px -4px rgba(0, 0, 0, 0.5),
-          inset 0 1px 0 rgba(255, 255, 255, 0.08);
-        /* Lift on hover */
+        background: var(--bg-hover);
+        border-color: var(--bg-border);
+        border-left-color: var(--step-color, var(--text-muted));
+      }
+
+      /*
+       * The one expressive moment in the interface: the step being executed
+       * right now carries a travelling signal along its edge. Mint, which
+       * appears nowhere else, so "is it running" is answered peripherally.
+       */
+      .node-card.running {
+        border-left-color: var(--live);
+        background: var(--bg-hover);
+      }
+
+      .node-card.running::after {
+        content: "";
+        position: absolute;
+        left: -2px;
+        top: 0;
+        width: 2px;
+        height: 30%;
+        background: linear-gradient(
+          to bottom,
+          transparent,
+          var(--live),
+          transparent
+        );
+        animation: signal 1.4s linear infinite;
+      }
+
+      @keyframes signal {
+        from {
+          transform: translateY(-40%);
+        }
+        to {
+          transform: translateY(340%);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .node-card.running::after {
+          animation: none;
+          height: 100%;
+          background: var(--live);
+        }
       }
 
       .node-header {
-        padding: 10px 14px;
+        padding: 9px 11px;
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 8px;
         cursor: pointer;
-        background: linear-gradient(
-          180deg,
-          rgba(255, 255, 255, 0.03) 0%,
-          transparent 100%
-        );
-        /* Subtle specular highlight */
-        border-top-left-radius: 10px;
-        border-top-right-radius: 10px;
-      }
-
-      .node-icon-box {
-        width: 32px;
-        height: 32px;
-        border-radius: 6px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 14px;
-        flex-shrink: 0;
-        background: rgba(255, 255, 255, 0.05);
-        /* Pro box for icon */
-        color: white;
-        box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.2);
       }
 
       .node-title-group {
@@ -717,78 +896,40 @@
       }
 
       .node-title {
-        font-size: 13px;
-        font-weight: 600;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
         color: var(--text-main);
         display: flex;
         align-items: center;
         gap: 6px;
       }
 
+      /*
+       * The configured value under the name — a URL, a selector, a count.
+       * Kept dim so a scan reads the sequence of step names first and the
+       * details only when the eye stops.
+       */
       .node-subtitle {
-        font-size: 11.5px;
-        color: var(--text-muted);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--text-dim);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         margin-top: 2px;
-        font-family:
-          "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas,
-          "Liberation Mono", Menlo, monospace;
-        /* Variables stand out */
       }
 
       .node-status-icon {
-        font-size: 12px;
+        font-size: 11px;
         display: none;
-      }
-
-      /* Node State Styles applied via JS */
-      @keyframes cardPulseGlow {
-        0% {
-          box-shadow:
-            0 0 0 0px rgba(74, 222, 128, 0.15),
-            0 4px 12px -2px rgba(0, 0, 0, 0.5);
-          border-color: rgba(74, 222, 128, 0.2);
-        }
-
-        50% {
-          box-shadow:
-            0 0 0 4px rgba(74, 222, 128, 0),
-            0 0 20px 2px rgba(74, 222, 128, 0.3);
-          border-color: rgba(74, 222, 128, 0.6);
-        }
-
-        100% {
-          box-shadow:
-            0 0 0 0px rgba(74, 222, 128, 0),
-            0 4px 12px -2px rgba(0, 0, 0, 0.5);
-          border-color: rgba(74, 222, 128, 0.2);
-        }
-      }
-
-      .node-card.running {
-        animation: cardPulseGlow 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-        z-index: 10;
       }
 
       .node-card.running .node-status-icon.running-spinner {
         display: inline-block;
         animation: spin 1s linear infinite;
-      }
-
-      .node-card.running .node-port {
-        background: var(--green);
-        border-color: rgba(255, 255, 255, 0.8);
-        box-shadow:
-          0 0 0 3px rgba(15, 17, 26, 1),
-          0 0 16px 2px rgba(74, 222, 128, 0.8);
-        transform: translateX(-50%) scale(1.15);
-      }
-
-      .node-card.running .node-port::after {
-        background: #0f111a;
-        /* Inverse the dot for contrast */
       }
 
       .node-card.success {
@@ -809,45 +950,44 @@
         color: var(--red);
       }
 
-      @keyframes pulseGlow {
-        0% {
-          box-shadow: 0 0 0 0 var(--accent-glow);
-        }
-
-        70% {
-          box-shadow: 0 0 0 10px transparent;
-        }
-
-        100% {
-          box-shadow: 0 0 0 0 transparent;
-        }
-      }
-
       @keyframes spin {
         100% {
           transform: rotate(360deg);
         }
       }
 
+      /*
+       * Row actions stay hidden until the row is under the pointer or holds
+       * focus — a board of thirty steps otherwise carries sixty icons that are
+       * never the thing being looked for.
+       */
       .node-actions {
         display: flex;
-        gap: 4px;
-        opacity: 0.2;
-        transition: opacity 0.2s;
+        gap: 2px;
+        opacity: 0;
+        transition: opacity var(--fast) var(--ease);
       }
 
-      .node-card:hover .node-actions {
+      .node-card:hover .node-actions,
+      .node-card:focus-within .node-actions,
+      .node-card.expanded .node-actions {
         opacity: 1;
       }
 
-      /* Node Config Body (Expanding panel) */
+      /*
+       * The configuration panel is inset into the card — a shade darker, so
+       * it reads as the inside of the module rather than more surface.
+       */
       .node-config {
-        padding: 0 12px 12px 12px;
         display: none;
-        border-top: 1px solid var(--bg-border);
-        margin-top: 4px;
-        padding-top: 12px;
+        padding: 10px 11px 12px;
+        border-top: 1px solid var(--hairline);
+        background: var(--bg-base);
         cursor: default;
+      }
+
+      .node-config label:first-child {
+        margin-top: 0;
       }
 
       .node-card.expanded .node-config {
@@ -869,7 +1009,7 @@
       #step-palette-overlay {
         position: absolute;
         inset: 0;
-        background: rgba(0, 0, 0, 0.6);
+        background: rgba(10, 9, 8, 0.72);
         z-index: 100;
         display: none;
         align-items: flex-end;
@@ -882,16 +1022,22 @@
       #step-palette {
         background: var(--bg-raised);
         width: 100%;
-        border-top-left-radius: 12px;
-        border-top-right-radius: 12px;
-        border-top: 1px solid var(--bg-border);
-        padding: 16px;
+        border-top: 1px solid var(--accent);
+        border-radius: 0;
+        padding: 12px 12px 16px;
         display: flex;
         flex-direction: column;
         max-height: 85%;
         overflow-y: auto;
+        box-shadow: var(--shadow-fly);
         transform: translateY(100%);
-        transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        transition: transform var(--med) var(--ease);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #step-palette {
+          transition: none;
+        }
       }
 
       #step-palette-overlay.open #step-palette {
@@ -902,129 +1048,198 @@
         margin-bottom: 12px;
       }
 
-      .palette-category {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--text-dim);
-        text-transform: uppercase;
-        margin: 12px 0 8px 0;
-        border-bottom: 1px solid var(--bg-border);
-        padding-bottom: 4px;
-      }
-
+      /*
+       * One row per step, not a grid of tiles. At this width three columns
+       * wrapped the longer names onto three lines each, and the emoji tiles
+       * carried no information a reader could use — the registry's own
+       * one-line description was sitting in a data- attribute for the search
+       * box and shown to nobody.
+       */
       .palette-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
       }
 
       .palette-item {
         display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 6px;
-        padding: 12px 4px;
-        background: var(--bg-base);
-        border: 1px solid var(--bg-border);
-        border-radius: var(--radius-sm);
+        align-items: stretch;
+        gap: 10px;
+        padding: 0;
+        background: transparent;
+        border: none;
+        border-radius: 0;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: background var(--fast) var(--ease);
       }
 
       .palette-item:hover {
         background: var(--bg-hover);
-        border-color: var(--accent);
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
       }
 
-      .palette-item-icon {
-        width: 36px;
-        height: 36px;
-        border-radius: 8px;
+      .palette-item:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+
+      /* The category, as a stripe. Warm = Action, violet = Flow, cool = Data. */
+      .palette-item-bar {
+        flex: 0 0 3px;
+        border-radius: 1px;
+      }
+
+      .palette-item-text {
         display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 18px;
-        color: white;
+        flex-direction: column;
+        gap: 1px;
+        padding: 7px 8px 8px 0;
+        min-width: 0;
       }
 
       .palette-item-label {
-        font-size: 10px;
+        font-family: var(--mono);
+        font-size: 11px;
         font-weight: 500;
-        text-align: center;
+        letter-spacing: 0.06em;
+        color: var(--text-main);
+        text-align: left;
+      }
+
+      .palette-item-desc {
+        font-family: var(--prose);
+        font-size: 11px;
+        line-height: 1.35;
+        color: var(--text-dim);
+      }
+
+      .palette-category {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--text-dim);
+        padding: 14px 0 6px;
+        border-bottom: 1px solid var(--hairline);
+        margin-bottom: 4px;
       }
 
       /* =========================================================
        MONITOR DASHBOARD
        ========================================================= */
+      /*
+       * Readouts, not "stat cards". No box around each one — a hairline grid
+       * with the numbers set large in mono, the way a meter face is laid out.
+       * Boxed cards with drop shadows in a 2x2 grid is the stock dashboard
+       * component, and it wastes half the width on borders.
+       */
       .metric-grid {
         display: grid;
         grid-template-columns: repeat(2, 1fr);
-        gap: 12px;
-        margin-bottom: 16px;
+        gap: 1px;
+        background: var(--hairline);
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius);
+        overflow: hidden;
+        margin-bottom: 14px;
       }
 
       .metric-card {
         background: var(--bg-raised);
-        border: 1px solid var(--bg-border);
-        border-radius: var(--radius);
-        padding: 12px;
+        padding: 10px 11px 11px;
         display: flex;
         flex-direction: column;
+        gap: 3px;
+        min-width: 0;
       }
 
+      /*
+       * `tabular-nums` matters here: the elapsed clock ticks once a second and
+       * proportional digits make it jitter sideways as the glyphs change.
+       */
       .metric-val {
-        font-size: 24px;
-        font-weight: 700;
-        font-family:
-          "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas,
-          "Liberation Mono", Menlo, monospace;
+        font-family: var(--mono);
+        font-size: 21px;
+        font-weight: 400;
+        line-height: 1.1;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+        color: var(--text-main);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* The state readout is a word, not a number; it is set as a label. */
+      #mon-state {
+        font-size: 13px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        line-height: 1.7;
       }
 
       .metric-label {
-        font-size: 11px;
+        font-family: var(--mono);
+        font-size: 9px;
+        font-weight: 500;
         color: var(--text-dim);
         text-transform: uppercase;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.16em;
       }
 
+      /*
+       * The log is the instrument's tape. Rows are dense, timestamps are dim
+       * and fixed-width, and severity is carried by a single coloured tick in
+       * the gutter rather than by tinting the whole line.
+       */
       .log-container {
         flex: 1;
         min-height: 200px;
+        max-height: 40vh;
         background: var(--bg-void);
-        border: 1px solid var(--bg-border);
+        border: 1px solid var(--hairline);
         border-radius: var(--radius);
-        padding: 8px;
+        padding: 6px 0;
         overflow-y: auto;
-        font-family:
-          "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas,
-          "Liberation Mono", Menlo, monospace;
+        font-family: var(--mono);
         font-size: 10px;
+        line-height: 1.45;
         display: flex;
         flex-direction: column;
-        gap: 4px;
       }
 
       .log-entry {
         display: flex;
         gap: 8px;
-        padding: 2px 4px;
-        border-radius: 2px;
+        padding: 1px 8px 1px 7px;
+        border-left: 2px solid transparent;
+      }
+
+      .log-entry:hover {
+        background: var(--bg-base);
       }
 
       .log-ts {
         color: var(--text-dim);
         white-space: nowrap;
+        font-variant-numeric: tabular-nums;
       }
 
       .log-msg {
         color: var(--text-muted);
-        word-break: break-all;
+        word-break: break-word;
+        min-width: 0;
+      }
+
+      .log-entry.error-log {
+        border-left-color: var(--red);
       }
 
       .log-entry.error-log .log-msg {
         color: var(--red);
+      }
+
+      .log-entry.warn-log {
+        border-left-color: var(--yellow);
       }
 
       .log-entry.warn-log .log-msg {
@@ -1032,7 +1247,7 @@
       }
 
       .log-entry.info-log .log-msg {
-        color: var(--text-main);
+        color: var(--text-muted);
       }
 
       /* Focus, for the div-buttons the panel is built from (E-09). Without a
@@ -1162,51 +1377,96 @@
         }
       }
 
-      /* ProgressBar */
+      .progress-block {
+        background: var(--bg-raised);
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius);
+        padding: 10px 11px 12px;
+        margin-bottom: 14px;
+      }
+
+      .progress-block .mono {
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+      }
+
+      /*
+       * A bar, not a gradient. The amber-to-magenta sweep was decoration that
+       * made the value harder to read; a flat fill against a recessed track
+       * says how far along the run is and nothing else.
+       */
       .progress-track {
-        height: 6px;
-        background: var(--bg-border);
-        border-radius: 3px;
+        height: 4px;
+        background: var(--bg-void);
+        border: 1px solid var(--hairline);
+        border-radius: 1px;
         overflow: hidden;
-        margin-top: 10px;
+        margin-top: 9px;
       }
 
       .progress-fill {
         height: 100%;
-        background: linear-gradient(90deg, var(--accent), #d946ef);
+        background: var(--accent);
         width: 0%;
-        transition: width 0.3s;
+        transition: width var(--med) var(--ease);
       }
 
       /* =========================================================
        CONFIG ACCORDIONS
        ========================================================= */
       .accordion-section {
-        border: 1px solid var(--bg-border);
+        border: 1px solid var(--hairline);
         border-radius: var(--radius);
-        margin-bottom: 8px;
+        margin-bottom: 6px;
         background: var(--bg-raised);
         overflow: hidden;
       }
 
       .accordion-header {
-        padding: 12px 16px;
+        padding: 10px 12px;
         display: flex;
         align-items: center;
         justify-content: space-between;
         cursor: pointer;
+        font-family: var(--mono);
         font-weight: 500;
-        font-size: 13px;
+        font-size: 10.5px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        transition:
+          background var(--fast) var(--ease),
+          color var(--fast) var(--ease);
       }
 
       .accordion-header:hover {
-        background: var(--bg-hover);
+        color: var(--text-main);
+      }
+
+      .accordion-section.open .accordion-header {
+        color: var(--text-main);
+        border-bottom: 1px solid var(--hairline);
+      }
+
+      /* A drawn chevron that rotates when the section opens. */
+      .accordion-chevron {
+        width: 5px;
+        height: 5px;
+        flex-shrink: 0;
+        border-right: 1px solid var(--text-dim);
+        border-bottom: 1px solid var(--text-dim);
+        transform: rotate(45deg) translate(-1px, -1px);
+        transition: transform var(--fast) var(--ease);
+      }
+
+      .accordion-section.open .accordion-chevron {
+        transform: rotate(-135deg) translate(-1px, -1px);
+        border-color: var(--accent);
       }
 
       .accordion-content {
-        padding: 16px;
+        padding: 12px;
         display: none;
-        border-top: 1px solid var(--bg-border);
         background: var(--bg-base);
       }
 
@@ -1214,62 +1474,102 @@
         display: block;
       }
 
-      .accordion-section.open .accordion-header {
-        background: var(--bg-hover);
-      }
-
       .toggle-wrap {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 9px;
         cursor: pointer;
-        font-size: 12px;
-        color: var(--text-main);
-        margin-bottom: 8px;
-        margin-top: 8px;
+        font-family: var(--prose);
+        font-size: 11.5px;
+        color: var(--text-muted);
+        margin: 8px 0;
       }
 
+      .toggle-wrap:hover {
+        color: var(--text-main);
+      }
+
+      /*
+       * A rocker switch rather than an iOS pill: a square slot with a square
+       * key that slides in it. Same affordance, and it belongs to the same
+       * object as the buttons.
+       */
       .toggle-switch {
-        width: 32px;
-        height: 18px;
-        border-radius: 9px;
-        background: var(--bg-border);
+        width: 28px;
+        height: 15px;
+        flex-shrink: 0;
+        border-radius: 1px;
+        background: var(--bg-void);
+        border: 1px solid var(--bg-border);
         position: relative;
         display: inline-block;
         vertical-align: middle;
-        transition: background 0.3s;
+        transition:
+          background var(--fast) var(--ease),
+          border-color var(--fast) var(--ease);
         pointer-events: none;
       }
 
       .toggle-switch::after {
         content: "";
         position: absolute;
-        left: 2px;
-        top: 2px;
-        width: 14px;
-        height: 14px;
-        border-radius: 50%;
-        background: white;
-        transition: transform 0.3s;
+        left: 1px;
+        top: 1px;
+        width: 11px;
+        height: 11px;
+        border-radius: 1px;
+        background: var(--text-dim);
+        transition:
+          transform var(--fast) var(--ease),
+          background var(--fast) var(--ease);
       }
 
       input[type="checkbox"]:checked + .toggle-switch {
-        background: var(--accent);
+        border-color: var(--accent);
+        background: var(--accent-dim);
       }
 
       input[type="checkbox"]:checked + .toggle-switch::after {
-        transform: translateX(14px);
+        transform: translateX(13px);
+        background: var(--accent);
       }
 
+      input[type="checkbox"]:focus-visible + .toggle-switch {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .toggle-switch::after {
+          transition: none;
+        }
+      }
+
+      /*
+       * The checkbox is visually replaced by .toggle-switch, but `display:none`
+       * takes it out of the tab order too, so the toggles could not be reached
+       * or operated from the keyboard. Clipped instead of hidden: still
+       * invisible, still focusable, and :focus-visible rings the switch.
+       */
       .toggle-wrap input[type="checkbox"] {
-        display: none;
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        margin: 0;
+        pointer-events: none;
       }
 
       .overlay-status-badge {
-        background: rgba(255, 255, 255, 0.05);
-        padding: 2px 6px;
-        border-radius: 10px;
-        font-size: 10px;
+        background: var(--bg-void);
+        border: 1px solid var(--hairline);
+        padding: 1px 6px;
+        border-radius: 1px;
+        font-family: var(--mono);
+        font-size: 9px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-dim);
       }
 
       .mapping-table {
@@ -1327,157 +1627,154 @@
       /* =========================================================
        LOOP CONTAINER
        ========================================================= */
+      /*
+       * Nesting is shown by an indent and a rule, the way a code editor shows
+       * a block. The rule is the loop's own colour and runs the full height of
+       * the body, so the extent of the loop is unambiguous at a glance — which
+       * is what the wires on the old canvas were supposed to do and could not,
+       * because they were drawn off-screen.
+       */
       .loop-body {
         width: 100%;
         position: relative;
         display: flex;
         flex-direction: column;
-        align-items: center;
+        align-items: stretch;
       }
 
       .loop-scope-bar {
         position: absolute;
-        left: 20px;
+        left: 5px;
         top: 0;
         bottom: 0;
-        width: 3px;
-        border-radius: 2px;
-        background: linear-gradient(
-          180deg,
-          var(--step-LOOP) 0%,
-          transparent 100%
-        );
-        opacity: 0.5;
+        width: 1px;
+        background: var(--step-LOOP);
+        opacity: 0.45;
       }
 
-      /* The drop-into-a-container affordance: an empty loop has no step to
-         aim at, so the body itself has to look like a target. */
-      .loop-body-inner.drop-inside {
-        outline: 2px dashed var(--accent);
-        outline-offset: -4px;
-        background: rgba(99, 102, 241, 0.08);
-        border-radius: 6px;
-      }
       .loop-body-inner {
         width: 100%;
-        max-width: 340px;
-        padding-left: 16px;
+        padding-left: 14px;
         display: flex;
         flex-direction: column;
-        align-items: center;
+        align-items: stretch;
+      }
+
+      /*
+       * The drop-into-a-container affordance: an empty loop has no step to aim
+       * at, so the body itself has to look like a target. On the old canvas the
+       * body was frequently scrolled out of view, which is why dropping a step
+       * into a loop looked broken; in a list it is always beneath its loop.
+       */
+      .loop-body-inner.drop-inside {
+        outline: 1px dashed var(--accent);
+        outline-offset: -2px;
+        background: var(--accent-dim);
       }
 
       .loop-end-marker,
       .ifelse-end-marker {
         display: flex;
         align-items: center;
-        justify-content: center;
         gap: 6px;
         width: 100%;
-        max-width: 360px;
-        padding: 5px 12px;
-        margin: 6px 0;
-        border-radius: var(--radius-sm);
-        font-size: 11px;
-        font-weight: 600;
-        letter-spacing: 0.5px;
+        padding: 3px 0 3px 14px;
+        margin: 2px 0 6px;
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        border: none;
       }
 
       .loop-end-marker {
-        background: rgba(99, 102, 241, 0.08);
-        border: 1px dashed var(--step-LOOP);
         color: var(--step-LOOP);
       }
 
       .ifelse-end-marker {
-        background: rgba(234, 179, 8, 0.08);
-        border: 1px dashed var(--step-IF_ELSE);
         color: var(--step-IF_ELSE);
       }
 
       /* =========================================================
-       IF_ELSE CONTAINER — dual branch columns
-       ========================================================= */
+       IF_ELSE CONTAINER
+       =========================================================
+       Two branches used to sit side by side. In a 400px panel that gave each
+       one about 170px — narrower than a single step card — so branch contents
+       were unreadable and unusable. They stack instead, each labelled. */
       .if-branches {
         display: flex;
-        gap: 8px;
+        flex-direction: column;
+        gap: 6px;
         width: 100%;
-        max-width: 360px;
         margin: 4px 0;
+        padding-left: 14px;
       }
 
       .if-branch {
-        flex: 1;
         display: flex;
         flex-direction: column;
-        align-items: center;
+        align-items: stretch;
         min-width: 0;
-        border-radius: var(--radius-sm);
-        overflow: hidden;
+        border-left: 1px solid var(--bg-border);
       }
 
       .branch-header {
-        width: 100%;
-        padding: 5px 8px;
-        font-size: 10px;
-        font-weight: 700;
-        text-align: center;
+        padding: 4px 0 4px 8px;
+        font-family: var(--mono);
+        font-size: 9.5px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
       }
 
       .if-branch.if-true {
-        border: 1px solid rgba(34, 197, 94, 0.3);
+        border-left-color: rgba(127, 201, 138, 0.45);
       }
 
       .if-branch.if-false {
-        border: 1px solid rgba(239, 68, 68, 0.3);
+        border-left-color: rgba(255, 92, 58, 0.4);
       }
 
       .if-branch.if-true .branch-header {
-        background: rgba(34, 197, 94, 0.12);
         color: var(--green);
       }
 
       .if-branch.if-false .branch-header {
-        background: rgba(239, 68, 68, 0.12);
         color: var(--red);
       }
 
       .if-branch .loop-body-inner {
-        padding-left: 0;
-        max-width: 100%;
+        padding-left: 8px;
       }
 
-      /* Inner insert button (inside LOOP / IF branches) */
+      /* Inner insert affordance (inside LOOP / IF branches) */
       .insert-inner {
-        width: 20px;
-        height: 20px;
-        border-radius: 50%;
-        margin: 4px 0;
-        background: var(--bg-hover);
+        align-self: flex-start;
+        height: 18px;
+        padding: 0 7px;
+        margin: 3px 0 3px 8px;
+        border-radius: var(--radius-sm);
+        background: transparent;
         border: 1px dashed var(--bg-border);
         display: flex;
         align-items: center;
         justify-content: center;
         color: var(--text-dim);
-        font-size: 13px;
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1;
         cursor: pointer;
-        transition: all 0.2s;
+        transition:
+          color var(--fast) var(--ease),
+          border-color var(--fast) var(--ease),
+          background var(--fast) var(--ease);
       }
 
       .insert-inner:hover {
-        background: var(--accent);
-        color: white;
+        background: var(--accent-dim);
+        color: var(--accent);
         border-color: var(--accent);
-      }
-
-      .if-branch .node-wrapper {
-        width: 95%;
-      }
-
-      .if-branch .node-card {
-        font-size: 11px;
+        border-style: solid;
       }
 
       /* =========================================================
@@ -1551,23 +1848,70 @@
         padding: 4px 6px;
       }
 
-      /* node-card inside branches — smaller */
-      .if-branch .node-card {
-        border-radius: 4px;
-      }
-
+      /* Cards inside a branch: same design, one notch tighter. */
       .if-branch .node-header {
-        padding: 8px;
-      }
-
-      .if-branch .node-icon-box {
-        width: 24px;
-        height: 24px;
-        font-size: 11px;
+        padding: 7px 9px;
       }
 
       .if-branch .node-title {
-        font-size: 11px;
+        font-size: 10.5px;
+      }
+
+      /*
+       * An explanatory block inside a step's configuration — what the step
+       * does, or a caution about it. Set as prose behind an amber rule so it
+       * reads as an aside rather than another control.
+       */
+      .step-note {
+        border-left: 2px solid var(--accent);
+        background: var(--bg-void);
+        border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+        padding: 9px 11px;
+        margin-bottom: 12px;
+      }
+
+      .step-note-title {
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 5px;
+      }
+
+      .step-note p {
+        margin: 0;
+        font-size: 11.5px;
+        color: var(--text-muted);
+      }
+
+      /* The fallback chain, numbered, because the order is the point. */
+      .step-note-layers {
+        margin: 8px 0 0;
+        padding-left: 18px;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--text-dim);
+      }
+
+      .step-note-layers li {
+        padding: 1px 0;
+      }
+
+      .selector-mode-badge {
+        display: flex;
+        align-items: center;
+        padding: 0 8px;
+        background: var(--bg-void);
+        border: 1px solid var(--hairline);
+        border-radius: var(--radius-sm);
+        font-family: var(--mono);
+        font-size: 9px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        white-space: nowrap;
       }
 
       .storage-list,
@@ -1584,10 +1928,18 @@
       .storage-item,
       .upload-item,
       .selector-item {
-        border: 1px solid var(--bg-border);
+        border: 1px solid var(--hairline);
+        border-left: 2px solid var(--bg-border);
         border-radius: var(--radius-sm);
-        background: var(--bg-card);
+        background: var(--bg-raised);
         padding: 8px 10px;
+        transition: border-color var(--fast) var(--ease);
+      }
+
+      .storage-item:hover,
+      .upload-item:hover,
+      .selector-item:hover {
+        border-left-color: var(--accent);
       }
 
       .storage-item-head,
@@ -1650,11 +2002,18 @@
       <!-- Header -->
       <header id="header">
         <div class="logo-container">
-          <div class="logo-bolt">⚡</div>
+          <div class="logo-bolt" aria-hidden="true"></div>
           FlowScrape
         </div>
         <div class="nav-pills">
-          <div class="nav-pill active" data-tab="pipeline">Flow</div>
+          <div
+            class="nav-pill active"
+            role="tab"
+            tabindex="0"
+            data-tab="pipeline"
+          >
+            Flow
+          </div>
           <div class="nav-pill" role="tab" tabindex="0" data-tab="monitor">
             Run
           </div>
@@ -1708,70 +2067,40 @@
         <!-- View: PIPELINE -->
         <div id="view-pipeline" class="view active">
           <div id="board-toolbar">
-            <div class="flex gap-2">
-              <!-- Reads the page and offers its repeating structures as
-                   tables, so a pipeline can be built without knowing a single
-                   CSS selector. -->
-              <button class="btn btn-primary" id="btn-detect-structure">
-                🔍 Detect Table
-              </button>
-              <button class="btn" id="btn-export-script">
-                📜 Export Script
-              </button>
+            <!-- Reads the page and offers its repeating structures as
+                 tables, so a pipeline can be built without knowing a single
+                 CSS selector. -->
+            <button class="btn btn-accent" id="btn-detect-structure">
+              Detect Table
+            </button>
+            <div class="toolbar-row">
+              <button class="btn" id="btn-export-script">Export Script</button>
               <!-- The Node emitter existed from the start but nothing could reach
                  it: the format was hardcoded to python (B-12). -->
               <select
                 class="btn"
                 id="sel-export-format"
                 title="Script language"
-                style="padding: 6px 8px"
               >
                 <option value="python">Python</option>
                 <option value="node">Node</option>
               </select>
-              <button class="btn" id="btn-upload-pipeline">
-                📂 Upload Pipeline
-              </button>
-              <button class="btn" id="btn-download-pipeline">
-                ⬇ Pipeline JSON
-              </button>
+              <button class="btn" id="btn-upload-pipeline">Load</button>
+              <button class="btn" id="btn-download-pipeline">Save JSON</button>
               <input
                 id="input-upload-pipeline"
                 type="file"
                 accept=".json,application/json"
                 hidden
               />
-              <button class="btn" id="btn-clear-pipeline">🗑 Clear</button>
-            </div>
-            <div class="flex gap-2 items-center">
-              <button class="btn" id="btn-board-zoom-out" title="Zoom Out">
-                －
+              <button class="btn btn-danger" id="btn-clear-pipeline">
+                Clear
               </button>
-              <button class="btn" id="btn-board-zoom-reset" title="Reset Zoom">
-                100%
-              </button>
-              <button class="btn" id="btn-board-zoom-in" title="Zoom In">
-                ＋
-              </button>
-              <button class="btn" id="btn-board-fit" title="Fit to Board">
-                Fit
-              </button>
-              <span
-                id="board-zoom-label"
-                class="mono"
-                style="
-                  min-width: 52px;
-                  text-align: right;
-                  color: var(--text-dim);
-                "
-                >100%</span
-              >
             </div>
           </div>
 
           <div id="board-viewport">
             <div id="board-stage">
-              <svg id="pipeline-wires" aria-hidden="true"></svg>
               <div id="pipeline-canvas">
                 <!-- Rendered by pipeline-builder.js -->
                 <div class="empty-state">Loading pipeline...</div>
@@ -1801,19 +2130,13 @@
             </div>
             <div class="metric-card">
               <div class="metric-label">Time Elapsed</div>
-              <div
-                class="metric-val"
-                style="color: var(--text-main)"
-                id="mon-time"
-              >
-                00:00
-              </div>
+              <div class="metric-val" id="mon-time">00:00</div>
             </div>
             <div class="metric-card">
               <div class="metric-label">Status</div>
               <div
                 class="metric-val"
-                style="color: var(--green); font-size: 16px; line-height: 30px"
+                style="color: var(--green)"
                 id="mon-state"
               >
                 Idle
@@ -1821,18 +2144,10 @@
             </div>
           </div>
 
-          <div
-            style="
-              background: var(--bg-raised);
-              border: 1px solid var(--bg-border);
-              border-radius: var(--radius);
-              padding: 12px;
-              margin-bottom: 16px;
-            "
-          >
+          <div class="progress-block">
             <div class="flex justify-between items-center">
               <span class="metric-label">Progress</span>
-              <span class="mono text-muted" id="mon-progress-text">0%</span>
+              <span class="mono" id="mon-progress-text">0%</span>
             </div>
             <div class="progress-track">
               <div class="progress-fill" id="mon-progress-fill"></div>
@@ -1843,26 +2158,13 @@
             class="flex justify-between items-center"
             style="margin-bottom: 8px"
           >
-            <h3
-              style="
-                margin: 0;
-                font-size: 12px;
-                color: var(--text-dim);
-                text-transform: uppercase;
-              "
-            >
-              Live Logstream
-            </h3>
+            <h3 class="section-label" style="margin: 0">Live Logstream</h3>
             <div class="flex gap-2">
-              <button
-                class="btn"
-                id="btn-download-partial"
-                style="font-size: 11px"
-              >
-                💾 Download Data
+              <button class="btn" id="btn-download-partial">
+                Download Data
               </button>
               <button class="btn-icon" id="btn-clear-logs" title="Clear Logs">
-                🗑
+                Clear
               </button>
             </div>
           </div>
@@ -1900,8 +2202,8 @@
         <div id="view-storage" class="view">
           <div class="accordion-section open">
             <div class="accordion-header">
-              <span>🗂 Storage Library</span>
-              <span style="font-size: 10px; color: var(--text-dim)">▼</span>
+              <span>Storage Library</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
             </div>
             <div class="accordion-content">
               <p>
@@ -1910,10 +2212,10 @@
               </p>
               <div class="flex gap-2" style="margin-bottom: 10px">
                 <button class="btn" id="btn-storage-add-files">
-                  ➕ Add Files
+                  Add Files
                 </button>
                 <button class="btn" id="btn-storage-clear">
-                  🧹 Clear Library
+                  Clear Library
                 </button>
               </div>
               <input id="input-storage-files" type="file" multiple hidden />
@@ -1934,8 +2236,8 @@
           <!-- API Keys -->
           <div class="accordion-section">
             <div class="accordion-header">
-              <span>🔑 API Keys & Services</span>
-              <span style="font-size: 10px; color: var(--text-dim)">▼</span>
+              <span>API Keys & Services</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
             </div>
             <div class="accordion-content">
               <p>Keys are stored in volatile session memory only.</p>
@@ -1966,8 +2268,8 @@
           <!-- Overlays (Moved from overlay-panel.js structure but styled natively) -->
           <div class="accordion-section">
             <div class="accordion-header">
-              <span>👁 Visual Overlays</span>
-              <span style="font-size: 10px; color: var(--text-dim)">▼</span>
+              <span>Visual Overlays</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
             </div>
             <div class="accordion-content" id="overlay-panel-root">
               <!-- Rendered by overlay-panel.js later, but we use native styles now -->
@@ -1977,8 +2279,8 @@
           <!-- Proxies -->
           <div class="accordion-section">
             <div class="accordion-header">
-              <span>🌐 Proxy Pool</span>
-              <span style="font-size: 10px; color: var(--text-dim)">▼</span>
+              <span>Proxy Pool</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
             </div>
             <div class="accordion-content">
               <label>Rotation Mode</label>

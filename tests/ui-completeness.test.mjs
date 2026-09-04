@@ -211,38 +211,122 @@ test("the nav pills carry their semantics in the markup", () => {
   );
 });
 
-// ── E-11 / E-12: the board ───────────────────────────────────────────────────
+// ── E-11 / E-12 / J-23: the board is a list, not a canvas ───────────────────
+//
+// E-11 and E-12 were performance and discoverability fixes for a pan/zoom
+// canvas: throttle the wire redraw, tell people which modifier zooms. The
+// canvas itself was the defect. A 1400x1200 stage transformed inside a ~400px
+// side panel with `overflow: hidden` put steps where they could not be seen or
+// reached, which is why dropping a step into a loop body appeared to do
+// nothing. The board is a scrolling vertical list now, so the tests below
+// assert the machinery is gone rather than that it is well-behaved.
 
-test("wire redraws are coalesced to one per frame", () => {
-  const fn = extract(/function _scheduleWireRender\(\) \{[\s\S]*?\n\}/);
-  assert.match(fn, /if \(_wireFrame !== null\) return;/);
-  assert.match(fn, /requestAnimationFrame\(/);
-  assert.match(fn, /_wireFrame = null;/, "and re-armed after it runs");
-
-  const transform = extract(/function _applyBoardTransform\(\) \{[\s\S]*?\n\}/);
-  assert.match(transform, /_scheduleWireRender\(\)/);
+test("the board carries no pan, zoom or wire machinery", () => {
+  for (const gone of [
+    "_boardState",
+    "_applyBoardTransform",
+    "_zoomBoard",
+    "_fitBoardToContent",
+    "_renderBoardWires",
+    "_scheduleWireRender",
+    "_hintZoomModifier",
+    "initBoardSurface",
+  ]) {
+    assert.ok(
+      !src.includes(`${gone}(`) && !src.includes(`${gone}.`),
+      `${gone} is still referenced; the canvas was supposed to be removed`,
+    );
+  }
   assert.ok(
-    !/^\s*_renderBoardWires\(\);$/m.test(transform),
-    "the synchronous redraw on every transform is gone",
+    !html.includes('id="pipeline-wires"'),
+    "the wire SVG is still in the markup",
+  );
+  assert.ok(
+    !html.includes('id="board-zoom-label"'),
+    "the zoom readout is still in the markup",
   );
 });
 
-test("the transform itself stays synchronous, so panning still tracks", () => {
-  const fn = extract(/function _applyBoardTransform\(\) \{[\s\S]*?\n\}/);
+test("focusing a running step scrolls it into view", () => {
+  const fn = extract(/function _focusNodeOnBoard\(card\) \{[\s\S]*?\n\}/);
+  assert.match(fn, /scrollIntoView\(/);
+  assert.match(fn, /block: "nearest"/, "and does not yank the whole board");
+  assert.match(src, /_focusNodeOnBoard\(active\);/, "and the run UI calls it");
+});
+
+test("the board viewport scrolls instead of clipping", () => {
+  const rule = html.match(/#board-viewport \{[\s\S]*?\n {6}\}/);
+  assert.ok(rule, "no #board-viewport rule");
+  assert.match(rule[0], /overflow-y: auto/);
   assert.ok(
-    fn.indexOf("elBoardStage.style.transform") <
-      fn.indexOf("_scheduleWireRender"),
-    "the CSS transform is applied before the deferred redraw is queued",
+    !/overflow: hidden/.test(rule[0]),
+    "clipping the board is what hid nested steps",
   );
 });
 
-test("a plain wheel says how to zoom, once", () => {
-  const fn = extract(/function _hintZoomModifier\(\) \{[\s\S]*?\n\}/);
-  assert.match(fn, /if \(_zoomHintShown\) return;/);
-  assert.match(fn, /_zoomHintShown = true;/);
-  assert.match(fn, /Hold \$\{key\} or Shift while scrolling/);
-  assert.match(fn, /Mac/, "the modifier is named for the platform");
-  assert.match(src, /_hintZoomModifier\(\);/, "and the wheel handler calls it");
+test("a step card does not hardcode its own left border", () => {
+  // The inline style used to set `border-left: 4px solid ...`, which no rule in
+  // the stylesheet could override — the card's own hover and running states
+  // could never restyle that edge.
+  const line = extract(/html \+= `<div class="node-card [\s\S]*?`;/);
+  assert.ok(
+    !line.includes("border-left"),
+    "the card sets --step-color only; the stylesheet spends it",
+  );
+  assert.match(line, /--step-color:var\(--step-\$\{step\.type\}\)/);
+});
+
+test("IF/ELSE branches stack rather than sitting side by side", () => {
+  // Two columns in a 400px panel gave each branch ~170px — narrower than one
+  // step card.
+  const rule = html.match(/\.if-branches \{[\s\S]*?\n {6}\}/);
+  assert.ok(rule, "no .if-branches rule");
+  assert.match(rule[0], /flex-direction: column/);
+});
+
+test("the board toolbar wraps so every control stays reachable", () => {
+  const rule = html.match(/#board-toolbar \{[\s\S]*?\n {6}\}/);
+  assert.ok(rule, "no #board-toolbar rule");
+  assert.match(rule[0], /flex-direction: column/);
+  const row = html.match(/\.toolbar-row \{[\s\S]*?\n {6}\}/);
+  assert.ok(row, "no .toolbar-row rule");
+  assert.match(row[0], /flex-wrap: wrap/);
+});
+
+test("the toggle checkboxes stay in the tab order", () => {
+  // `display: none` hid them from the keyboard as well as the eye, so no
+  // toggle in the panel could be reached or operated without a mouse.
+  const rule = html.match(
+    /\.toggle-wrap input\[type="checkbox"\] \{[\s\S]*?\n {6}\}/,
+  );
+  assert.ok(rule, "no rule for the clipped checkbox");
+  assert.ok(
+    !/display: none/.test(rule[0]),
+    "display:none takes the control out of the tab order",
+  );
+  assert.match(rule[0], /opacity: 0/);
+  assert.match(
+    html,
+    /input\[type="checkbox"\]:focus-visible \+ \.toggle-switch/,
+    "and focus is visible on the switch that replaces it",
+  );
+});
+
+test("no remote font or stylesheet is loaded (A-09)", () => {
+  // The panel's CSP blocks remote stylesheets, so the old <link> to
+  // fonts.googleapis.com rendered in a fallback face while leaking a request
+  // to Google on every open. Fonts are bundled; nothing is fetched.
+  assert.ok(
+    !/<link[^>]+rel=["']?stylesheet/i.test(html),
+    "a stylesheet <link> is back in the panel",
+  );
+  assert.ok(
+    !/src:\s*url\(["']?https?:/i.test(html),
+    "an @font-face is pointing at a remote file",
+  );
+  for (const face of html.match(/src: url\("([^"]+)"\)/g) || []) {
+    assert.match(face, /url\("fonts\//, `${face} is not a bundled font`);
+  }
 });
 
 // ── E-15 / E-16 / E-17 / E-20 ────────────────────────────────────────────────

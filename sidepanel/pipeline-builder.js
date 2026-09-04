@@ -54,19 +54,6 @@ let _storageFiles = [];
 let _uploadActivities = [];
 let _dragSourceId = null;
 let _keyListening = false;
-let _boardState = {
-  scale: 1,
-  x: 24,
-  y: 24,
-  minScale: 0.35,
-  maxScale: 2.6,
-  panning: false,
-  startX: 0,
-  startY: 0,
-  originX: 0,
-  originY: 0,
-  fittedOnce: false,
-};
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const elCanvas = document.getElementById("pipeline-canvas");
@@ -74,9 +61,6 @@ const elPalette = document.getElementById("step-palette-overlay");
 const elPaletteSearch = document.getElementById("palette-search");
 const elPaletteContent = document.getElementById("palette-content");
 const elBoardViewport = document.getElementById("board-viewport");
-const elBoardStage = document.getElementById("board-stage");
-const elPipelineWires = document.getElementById("pipeline-wires");
-const elBoardZoomLabel = document.getElementById("board-zoom-label");
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
@@ -105,7 +89,6 @@ async function init() {
     const saved = (await chrome.storage.local.get(SK.PIPELINE))[SK.PIPELINE];
     _pipeline = saved?.steps ? saved : { steps: [] };
     _expandedNodeId = null;
-    _boardState.fittedOnce = false;
     renderPipeline();
     // The storage library and the upload activity list are not tab-scoped —
     // only SK.PIPELINE is — so there is nothing there to re-render. The audit
@@ -118,7 +101,6 @@ async function init() {
   bindPalette();
   bindDelegatedEvents();
   bindKeyboardActivation();
-  initBoardSurface();
 
   const savedState = await chrome.storage.local.get([
     SK.PIPELINE,
@@ -592,7 +574,6 @@ function bindGlobalControls() {
 
       _pipeline.steps = [];
       _expandedNodeId = null;
-      _boardState.fittedOnce = false;
       await chrome.storage.local.remove(SK.PIPELINE);
       saveState();
       renderPipeline();
@@ -859,7 +840,6 @@ function bindGlobalControls() {
 
       _pipeline = normalized;
       _expandedNodeId = null;
-      _boardState.fittedOnce = false;
       await saveState();
       renderPipeline();
       logToMonitor(
@@ -992,318 +972,20 @@ function stopRunUI() {
     .forEach((n) => n.classList.remove("running"));
 }
 
-// ── Board surface (fabric-style pan/zoom + wires) ───────────────────────────
-function initBoardSurface() {
-  if (!elBoardViewport || !elBoardStage) return;
-
-  document
-    .getElementById("btn-board-zoom-in")
-    ?.addEventListener("click", () => {
-      const cx = elBoardViewport.clientWidth / 2;
-      const cy = elBoardViewport.clientHeight / 2;
-      _zoomBoard(1.15, cx, cy);
-    });
-  document
-    .getElementById("btn-board-zoom-out")
-    ?.addEventListener("click", () => {
-      const cx = elBoardViewport.clientWidth / 2;
-      const cy = elBoardViewport.clientHeight / 2;
-      _zoomBoard(1 / 1.15, cx, cy);
-    });
-  document
-    .getElementById("btn-board-zoom-reset")
-    ?.addEventListener("click", () => {
-      _boardState.scale = 1;
-      _boardState.x = 24;
-      _boardState.y = 24;
-      _applyBoardTransform();
-    });
-  document.getElementById("btn-board-fit")?.addEventListener("click", () => {
-    _fitBoardToContent();
-  });
-
-  elBoardViewport.addEventListener(
-    "wheel",
-    (e) => {
-      if (!elBoardViewport) return;
-      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        // A plain wheel scrolls the board rather than zooming, which is what a
-        // long pipeline needs. Saying so once beats leaving trackpad users to
-        // conclude zoom is broken (E-12).
-        _hintZoomModifier();
-        return;
-      }
-      e.preventDefault();
-      const rect = elBoardViewport.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      _zoomBoard(e.deltaY < 0 ? 1.12 : 1 / 1.12, cx, cy);
-    },
-    { passive: false },
-  );
-
-  elBoardViewport.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 && e.button !== 1) return;
-    const interactive =
-      e.target.closest(".node-card") ||
-      e.target.closest(".insert-step") ||
-      e.target.closest(".insert-inner") ||
-      e.target.closest("input,textarea,select,button,.btn");
-    if (interactive) return;
-    _boardState.panning = true;
-    _boardState.startX = e.clientX;
-    _boardState.startY = e.clientY;
-    _boardState.originX = _boardState.x;
-    _boardState.originY = _boardState.y;
-    elBoardViewport.classList.add("panning");
-    elBoardViewport.setPointerCapture(e.pointerId);
-  });
-
-  elBoardViewport.addEventListener("pointermove", (e) => {
-    if (!_boardState.panning) return;
-    _boardState.x = _boardState.originX + (e.clientX - _boardState.startX);
-    _boardState.y = _boardState.originY + (e.clientY - _boardState.startY);
-    _applyBoardTransform();
-  });
-
-  const stopPan = () => {
-    _boardState.panning = false;
-    elBoardViewport.classList.remove("panning");
-  };
-  elBoardViewport.addEventListener("pointerup", stopPan);
-  elBoardViewport.addEventListener("pointercancel", stopPan);
-  window.addEventListener("resize", () => _scheduleWireRender());
-
-  _applyBoardTransform();
-}
-
-function _zoomBoard(factor, cx, cy) {
-  const prev = _boardState.scale;
-  const next = Math.min(
-    _boardState.maxScale,
-    Math.max(_boardState.minScale, prev * factor),
-  );
-  if (next === prev) return;
-
-  const localX = (cx - _boardState.x) / prev;
-  const localY = (cy - _boardState.y) / prev;
-  _boardState.scale = next;
-  _boardState.x = cx - localX * next;
-  _boardState.y = cy - localY * next;
-  _applyBoardTransform();
-}
-
-function _applyBoardTransform() {
-  if (!elBoardStage) return;
-  elBoardStage.style.transform = `translate(${_boardState.x}px, ${_boardState.y}px) scale(${_boardState.scale})`;
-  if (elBoardZoomLabel) {
-    elBoardZoomLabel.textContent = `${Math.round(_boardState.scale * 100)}%`;
-  }
-  _scheduleWireRender();
-}
-
-/** Pending rAF handle for the wire redraw. */
-let _wireFrame = null;
-
 /**
- * Redraw the wires at most once per frame.
+ * Bring a card into view.
  *
- * _renderBoardWires regenerates the entire SVG as a string and assigns it to
- * innerHTML — measuring every node, re-parsing the markup, rebuilding the whole
- * subtree. Pointer-move panning called it on every single move event, with no
- * throttle, so a drag across the board did that work dozens of times per frame
- * (E-11). Coalescing to one redraw per animation frame is the entire fix; the
- * transform itself is a CSS property and stays synchronous, so panning still
- * tracks the pointer exactly.
+ * The board used to be a pannable, zoomable canvas: a 1400x1200 stage
+ * transformed inside a ~400px side panel. In a strip that narrow it did not
+ * work — nodes sat outside the viewport with `overflow: hidden` clipping them,
+ * which is why dropping a step into a loop body appeared to do nothing. The
+ * board is a scrolling vertical list now, so "focus a node" is a scroll, and
+ * the pan/zoom/wire machinery it replaced (about 200 lines and an SVG redraw
+ * on every pointer move) is gone.
  */
-function _scheduleWireRender() {
-  if (_wireFrame !== null) return;
-  _wireFrame = requestAnimationFrame(() => {
-    _wireFrame = null;
-    _renderBoardWires();
-  });
-}
-
-function _fitBoardToContent() {
-  if (!elBoardViewport || !elCanvas) return;
-  const wrappers = Array.from(elCanvas.querySelectorAll(".node-wrapper"));
-  if (!wrappers.length) {
-    _boardState.scale = 1;
-    _boardState.x = 24;
-    _boardState.y = 24;
-    _applyBoardTransform();
-    return;
-  }
-
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  wrappers.forEach((w) => {
-    minX = Math.min(minX, w.offsetLeft);
-    minY = Math.min(minY, w.offsetTop);
-    maxX = Math.max(maxX, w.offsetLeft + w.offsetWidth);
-    maxY = Math.max(maxY, w.offsetTop + w.offsetHeight);
-  });
-
-  const boundsW = Math.max(1, maxX - minX);
-  const boundsH = Math.max(1, maxY - minY);
-  const pad = 120;
-  const vw = elBoardViewport.clientWidth;
-  const vh = elBoardViewport.clientHeight;
-  const fitScale = Math.min((vw - pad) / boundsW, (vh - pad) / boundsH, 1.12);
-
-  _boardState.scale = Math.min(
-    _boardState.maxScale,
-    Math.max(_boardState.minScale, fitScale),
-  );
-  _boardState.x =
-    (vw - boundsW * _boardState.scale) / 2 - minX * _boardState.scale;
-  _boardState.y =
-    (vh - boundsH * _boardState.scale) / 2 - minY * _boardState.scale;
-  _boardState.fittedOnce = true;
-  _applyBoardTransform();
-}
-
-function _collectPipelineLinks(steps, bucket = []) {
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    const next = steps[i + 1];
-    if (next) bucket.push({ from: step.id, to: next.id, kind: "chain" });
-
-    if (
-      step.type === "LOOP" &&
-      Array.isArray(step.children) &&
-      step.children.length
-    ) {
-      bucket.push({ from: step.id, to: step.children[0].id, kind: "loop" });
-      _collectPipelineLinks(step.children, bucket);
-    }
-    if (step.type === "IF_ELSE") {
-      if (Array.isArray(step.ifBranch) && step.ifBranch.length) {
-        bucket.push({ from: step.id, to: step.ifBranch[0].id, kind: "if" });
-        _collectPipelineLinks(step.ifBranch, bucket);
-      }
-      if (Array.isArray(step.elseBranch) && step.elseBranch.length) {
-        bucket.push({ from: step.id, to: step.elseBranch[0].id, kind: "else" });
-        _collectPipelineLinks(step.elseBranch, bucket);
-      }
-    }
-  }
-  return bucket;
-}
-
-function _nodeAnchor(stepId, edge = "bottom") {
-  if (!elBoardStage) return null;
-  const port = document.querySelector(
-    `.node-wrapper[data-id="${stepId}"] .node-card .node-port.${edge === "bottom" ? "out" : "in"}`,
-  );
-  if (port) {
-    const stageRect = elBoardStage.getBoundingClientRect();
-    const r = port.getBoundingClientRect();
-    const x = (r.left + r.width / 2 - stageRect.left) / _boardState.scale;
-    const y = (r.top + r.height / 2 - stageRect.top) / _boardState.scale;
-    return { x, y };
-  }
-
-  const card = document.querySelector(
-    `.node-wrapper[data-id="${stepId}"] .node-card`,
-  );
-  if (!card) return null;
-  const stageRect = elBoardStage.getBoundingClientRect();
-  const r = card.getBoundingClientRect();
-  const x = (r.left + r.width / 2 - stageRect.left) / _boardState.scale;
-  const yRaw = edge === "bottom" ? r.bottom : r.top;
-  const y = (yRaw - stageRect.top) / _boardState.scale;
-  return { x, y };
-}
-
-function _buildWirePath(a, b, kind = "chain") {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const pull = Math.max(30, Math.abs(dy) * 0.45);
-
-  // For chain steps directly below each other, this creates a perfectly straight line or smooth S-curve.
-  const c1x = a.x;
-  const c1y = a.y + pull;
-  const c2x = b.x;
-  const c2y = b.y - pull;
-
-  return `M ${a.x.toFixed(2)} ${a.y.toFixed(2)} C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${b.x.toFixed(2)} ${b.y.toFixed(2)}`;
-}
-
-function _renderBoardWires() {
-  if (!elPipelineWires || !elCanvas || !elBoardViewport) return;
-  const links = _collectPipelineLinks(_pipeline.steps, []);
-
-  const paths = [
-    `<defs>
-      <marker id="wire-arrow-chain" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
-        <path d="M0,0 L6,3 L0,6 Z" fill="rgba(255, 255, 255, 0.4)"></path>
-      </marker>
-      <marker id="wire-arrow-loop" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
-        <path d="M0,0 L6,3 L0,6 Z" fill="rgba(129, 140, 248, 0.7)"></path>
-      </marker>
-      <marker id="wire-arrow-if" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
-        <path d="M0,0 L6,3 L0,6 Z" fill="rgba(74, 222, 128, 0.7)"></path>
-      </marker>
-      <marker id="wire-arrow-else" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
-        <path d="M0,0 L6,3 L0,6 Z" fill="rgba(251, 113, 133, 0.7)"></path>
-      </marker>
-    </defs>`,
-  ];
-
-  for (const link of links) {
-    const a = _nodeAnchor(link.from, "bottom");
-    const b = _nodeAnchor(link.to, "top");
-    if (!a || !b) continue;
-
-    const d = _buildWirePath(a, b, link.kind);
-    const klass =
-      link.kind === "chain" ? "wire-path" : `wire-path ${link.kind}`;
-    const markerId =
-      link.kind === "chain" ? "wire-arrow-chain" : `wire-arrow-${link.kind}`;
-    const dotClass =
-      link.kind === "chain" ? "wire-dot" : `wire-dot ${link.kind}`;
-
-    paths.push(
-      `<path class="wire-path-glow ${link.kind === "chain" ? "" : link.kind}" d="${d}"></path>`,
-    );
-    // Add the tracer path (hidden normally)
-    paths.push(
-      `<path class="wire-path-tracer hidden-tracer" data-to="${link.to}" d="${d}"></path>`,
-    );
-    paths.push(
-      `<path class="${klass}" d="${d}" marker-end="url(#${markerId})"></path>`,
-    );
-    paths.push(
-      `<circle class="${dotClass}" cx="${a.x.toFixed(2)}" cy="${a.y.toFixed(2)}" r="2.4"></circle>`,
-    );
-    paths.push(
-      `<circle class="${dotClass}" cx="${b.x.toFixed(2)}" cy="${b.y.toFixed(2)}" r="3.2"></circle>`,
-    );
-  }
-  elPipelineWires.innerHTML = paths.join("");
-}
-
 function _focusNodeOnBoard(card) {
-  if (!card || !elBoardViewport) return;
-  const vr = elBoardViewport.getBoundingClientRect();
-  const cr = card.getBoundingClientRect();
-  const margin = 80;
-
-  let dx = 0;
-  let dy = 0;
-  if (cr.left < vr.left + margin) dx = vr.left + margin - cr.left;
-  if (cr.right > vr.right - margin) dx = vr.right - margin - cr.right;
-  if (cr.top < vr.top + margin) dy = vr.top + margin - cr.top;
-  if (cr.bottom > vr.bottom - margin) dy = vr.bottom - margin - cr.bottom;
-
-  if (dx || dy) {
-    _boardState.x += dx;
-    _boardState.y += dy;
-    _applyBoardTransform();
-  }
+  if (!card) return;
+  card.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 // ── Palette ───────────────────────────────────────────────────────────────────
@@ -1335,13 +1017,21 @@ function populatePalette() {
   let html = "";
   for (const [cat, items] of Object.entries(cats)) {
     html += `<div class="palette-group"><div class="palette-category">${cat}</div><div class="palette-grid">`;
+    // A row per step, with the description the registry already carried and
+    // the palette threw away — it was in a data- attribute for the search box
+    // and nowhere a reader could see it. Three columns of emoji tiles in a
+    // 400px panel wrapped "UPLOAD_ACTIVITY" onto three lines and told nobody
+    // what any of it did.
     html += items
       .map(
         (
           i,
-        ) => `<div class="palette-item" data-action="add-step" data-type="${i.type}" data-desc="${i.desc}">
-      <div class="palette-item-icon" style="background:var(--step-${i.type});">${i.icon}</div>
-      <div class="palette-item-label">${i.type}</div></div>`,
+        ) => `<div class="palette-item" data-action="add-step" data-type="${i.type}" data-desc="${esc(i.desc)}">
+      <span class="palette-item-bar" style="background:var(--step-${i.type});"></span>
+      <span class="palette-item-text">
+        <span class="palette-item-label">${i.type}</span>
+        <span class="palette-item-desc">${esc(i.desc)}</span>
+      </span></div>`,
       )
       .join("");
     html += `</div></div>`;
@@ -1520,12 +1210,14 @@ function _openPalette(index, parentId = "", branchKey = "") {
 // ── Pipeline renderer ─────────────────────────────────────────────────────────
 function renderPipeline() {
   if (!_pipeline.steps.length) {
-    elCanvas.innerHTML = `<div class="empty-state"><div style="font-size:32px;margin-bottom:16px;">✨</div>
-      <div>Start building your flow.</div>
-      <button class="btn btn-primary" style="margin-top:16px;" data-action="open-palette" data-index="-1" data-parent-id="" data-branch="">+ Add First Step</button></div>`;
-    if (elPipelineWires) elPipelineWires.innerHTML = "";
+    // Three empty slots and a hint. The sparkle emoji this replaced said
+    // nothing about what the board is for; the slots show its shape.
+    elCanvas.innerHTML = `<div class="empty-state">
+      <div class="empty-rack" aria-hidden="true"><span></span><span></span><span></span></div>
+      <p class="prose empty-hint">A pipeline is a list of steps, run top to bottom.<br />Start with the page you want to open.</p>
+      <button class="btn btn-accent" data-action="open-palette" data-index="-1" data-parent-id="" data-branch="">Add first step</button>
+    </div>`;
     _makeKeyboardAccessible(elCanvas);
-    _applyBoardTransform();
     return;
   }
   let html = `<div class="insert-step top-insert" data-action="open-palette" data-index="0" data-parent-id="" data-branch="">+</div>`;
@@ -1536,32 +1228,28 @@ function renderPipeline() {
   bindConfigInputs();
   bindDragAndDrop();
   _makeKeyboardAccessible(elCanvas);
-  requestAnimationFrame(() => {
-    if (!_boardState.fittedOnce) _fitBoardToContent();
-    else _applyBoardTransform();
-  });
 }
 
 function renderStepNode(step, index, total, parentId, branchKey) {
-  const reg = STEP_REGISTRY[step.type] || { icon: "?", desc: "" };
   const isExpanded = _expandedNodeId === step.id;
 
   let html = `<div class="node-wrapper" data-index="${index}" data-id="${step.id}" data-parent-id="${parentId}" data-branch="${branchKey}">`;
-  html += `<div class="node-card ${isExpanded ? "expanded" : ""}" style="--node-step-color:var(--step-${step.type},#64748B);border-left:4px solid var(--node-step-color);" draggable="true" data-drag-id="${step.id}" data-step-type="${step.type}">`;
-  html += `<div class="node-port in" aria-hidden="true"></div>`;
+  // One custom property carries the step's category colour; the stylesheet
+  // spends it on the left bar, the glyph chip and the running state. It used
+  // to also carry an inline `border-left`, which meant the card's own rules
+  // could never restyle that edge.
+  html += `<div class="node-card ${isExpanded ? "expanded" : ""}" style="--step-color:var(--step-${step.type});" draggable="true" data-drag-id="${step.id}" data-step-type="${step.type}">`;
   html += `<div class="node-header" data-action="toggle-expand" data-id="${step.id}">
-    <div class="node-icon-box" style="background:var(--step-${step.type},#64748B);">${reg.icon}</div>
     <div class="node-title-group">
       <div class="node-title">${step.type} <span class="node-status-icon running-spinner">⏳</span></div>
       <div class="node-subtitle">${getStepSubtitle(step)}</div>
     </div>
     <div class="node-actions">
       <button class="btn-icon action-btn" data-action="test-step" data-id="${step.id}" title="Test Step">▶</button>
-      <button class="btn-icon action-btn" style="color:var(--red);" data-action="remove-step" data-id="${step.id}" title="Remove">✕</button>
+      <button class="btn-icon action-btn btn-icon-danger" data-action="remove-step" data-id="${step.id}" title="Remove">✕</button>
     </div>
   </div>`;
   html += `<div class="node-config">${generateConfigHtml(step)}</div>`;
-  html += `<div class="node-port out" aria-hidden="true"></div>`;
   html += `</div>`; // end .node-card
 
   // LOOP container body
@@ -1634,7 +1322,7 @@ function getStepSubtitle(step) {
       return `${selected.length} file(s) -> ${c.selector || "input[type=file]"}`;
     }
     case "AUTO_EXTRACT":
-      return `🤖 AI Extract • conf≥${c.confidenceThreshold ?? 70}%`;
+      return `AI Extract · conf≥${c.confidenceThreshold ?? 70}%`;
     default:
       return STEP_REGISTRY[step.type]?.desc || "";
   }
@@ -1795,7 +1483,7 @@ function _configFields(step) {
       html += `</div>
       <div class="flex gap-2" style="align-items:flex-end;margin-bottom:8px;">
         <div style="flex:1"><label style="margin-top:0;">Value</label><input type="text" id="new-fill-val-${step.id}" placeholder="e.g. John Doe"></div>
-        <button class="btn btn-primary" data-action="add-fill-field" data-id="${step.id}" style="height:28px;">🎯 Pick Field</button>
+        <button class="btn btn-primary" data-action="add-fill-field" data-id="${step.id}" style="height:28px;">Pick Field</button>
       </div>`;
       html += `<label style="margin-top:6px;">Submit Button Selector (optional)</label>`;
       html += selectorRow(step, "submitSelector");
@@ -1813,7 +1501,7 @@ function _configFields(step) {
     html += `<label>Key to Press</label>
     <div class="flex gap-2" style="margin-bottom:6px;align-items:center;">
       <div class="key-display" id="key-disp-${step.id}">${esc(c.key || "Not set")}</div>
-      <button class="btn key-register-btn" id="key-reg-${step.id}" data-action="register-key" data-id="${step.id}">🔴 Register Key</button>
+      <button class="btn key-register-btn" id="key-reg-${step.id}" data-action="register-key" data-id="${step.id}">Register Key</button>
     </div>`;
     // Typed as well as captured: Ctrl+W and its friends cannot be pressed here
     // at all — Chrome closes the tab before this page sees the key.
@@ -1873,7 +1561,7 @@ function _configFields(step) {
     </select>`;
     if (ltype === "elements") {
       html += `<div style="background:rgba(99,102,241,0.08);border:1px solid var(--step-LOOP,#6366F1);border-radius:4px;padding:6px 10px;font-size:11px;color:var(--step-LOOP,#6366F1);margin-bottom:8px;">
-        🔁 Iterates over ALL matched elements automatically.</div>`;
+        Iterates over ALL matched elements automatically.</div>`;
       html += selectorRow(step, "selector");
       html += field(
         step,
@@ -2142,7 +1830,7 @@ function _configFields(step) {
     html += `</div>
     <div class="flex gap-2" style="margin-top:12px;align-items:flex-end;">
       <div style="flex:1"><label style="margin-top:0;">Field Name <span style="color:var(--text-dim);font-weight:400;">(optional)</span></label><input type="text" id="new-ex-name-${step.id}" placeholder="named from the element if blank"></div>
-      <button class="btn btn-primary" data-action="add-extract-field" data-id="${step.id}" style="height:28px;">🎯 Pick Element</button>
+      <button class="btn btn-primary" data-action="add-extract-field" data-id="${step.id}" style="height:28px;">Pick Element</button>
     </div>`;
     html += toggle(
       step,
@@ -2209,20 +1897,15 @@ function _configFields(step) {
 
   // ── AUTO_EXTRACT ──
   if (step.type === "AUTO_EXTRACT") {
-    html += `<div style="background:rgba(139,92,246,0.12);border:1px solid rgba(139,92,246,0.35);border-radius:8px;padding:12px;margin-bottom:12px;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-size:20px;">🤖</span>
-        <div>
-          <div style="font-weight:600;font-size:13px;">Smart Product Auto-Extractor</div>
-          <div style="font-size:11px;color:var(--text-dim);">Product pages. Layers 1 and 2 run in-page with no API call; layer 3 asks Gemini only if confidence is low.</div>
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;color:var(--text-dim);">
-        <div>✅ JSON-LD / Schema.org</div>
-        <div>✅ Open Graph tags</div>
-        <div>✅ Heuristic DOM scorer</div>
-        <div>✅ Gemini Flash fallback</div>
-      </div>
+    html += `<div class="step-note">
+      <div class="step-note-title">Smart Product Auto-Extractor</div>
+      <p class="prose">Product pages. Layers 1 and 2 run in-page with no API call; layer 3 asks Gemini only if confidence is low.</p>
+      <ol class="step-note-layers">
+        <li>JSON-LD / Schema.org</li>
+        <li>Open Graph tags</li>
+        <li>Heuristic DOM scorer</li>
+        <li>Gemini Flash fallback</li>
+      </ol>
     </div>`;
 
     html += field(
@@ -2505,7 +2188,7 @@ function _configFields(step) {
   if (step.type === "PAGE_JSON") {
     const mode = c.mode || "tree";
     html += `<div style="background:rgba(14,165,233,0.10);border:1px solid rgba(14,165,233,0.35);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
-      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">🧬 The page itself, as JSON</div>
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">The page itself, as JSON</div>
       <div style="font-size:11px;color:var(--text-dim);line-height:1.5;">
         No selectors, no guessing about what matters — the page as it actually
         is. Use this when a site publishes no structured data, or when you want
@@ -2569,7 +2252,7 @@ function _configFields(step) {
   // ── PAGE_DATA ──
   if (step.type === "PAGE_DATA") {
     html += `<div style="background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.35);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
-      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">🧾 The page's own data — no selectors</div>
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">The page's own data — no selectors</div>
       <div style="font-size:11px;color:var(--text-dim);line-height:1.5;">
         Most sites publish their content as structured data for search engines:
         JSON-LD, microdata, Open Graph. This reads it straight off the page.
@@ -2682,14 +2365,14 @@ function selectorRow(step, key) {
   const v = step.config[key] || "";
   const isMultiSelect =
     ["EXTRACT", "LOOP"].includes(step.type) && key === "selector";
-  const modeBadge = isMultiSelect ? "🔀 Bulk" : "🎯 Specific";
+  const modeBadge = isMultiSelect ? "Bulk" : "Specific";
   return `<label>${key}</label>
     <div class="flex gap-2" style="margin-bottom:8px;">
       <input type="text" id="cfg-${step.id}-${key}" value="${esc(v)}"
         data-id="${step.id}" data-key="${key}" class="cfg-bind" style="flex:1;">
-      <span class="selector-mode-badge" style="padding:4px 8px; background:var(--bg-hover); border-radius:var(--radius-sm); font-size:10px; white-space:nowrap; display:flex; align-items:center; min-width:70px;">${modeBadge}</span>
-      <button class="btn btn-icon" data-action="pick-selector" data-id="${step.id}" data-key="${key}"
-        style="background:var(--bg-hover);color:var(--text-main);font-size:16px;" title="Pick element">🎯</button>
+      <span class="selector-mode-badge">${modeBadge}</span>
+      <button class="btn" data-action="pick-selector" data-id="${step.id}" data-key="${key}"
+        title="Pick this element on the page">Pick</button>
     </div>`;
 }
 /**
@@ -3055,17 +2738,6 @@ function _moveStep(sourceId, targetId) {
   return true;
 }
 
-/** Shown at most once per panel session. */
-let _zoomHintShown = false;
-
-/** Tell the user how to zoom, the first time they try it the obvious way. */
-function _hintZoomModifier() {
-  if (_zoomHintShown) return;
-  _zoomHintShown = true;
-  const key = navigator.platform?.startsWith("Mac") ? "⌘" : "Ctrl";
-  notify("info-log", `Hold ${key} or Shift while scrolling to zoom the board.`);
-}
-
 // ── Keyboard access ───────────────────────────────────────────────────────────
 /**
  * Elements that behave like buttons but are not buttons.
@@ -3384,7 +3056,7 @@ async function _testStep(e, id) {
 /**
  * Ask before doing something that cannot be undone.
  *
- * "🗑 Clear" wiped the whole pipeline and "🧹 Clear Library" deleted every
+ * "Clear" wiped the whole pipeline and "Clear Library" deleted every
  * stored file, both on a single click with no confirm and no undo (E-14).
  *
  * @param {{ title: string, body: string, confirmLabel: string }} opts
@@ -3564,7 +3236,7 @@ async function _pickSelector(stepId, key) {
         const badge = input.parentElement?.querySelector(
           ".selector-mode-badge",
         );
-        if (badge) badge.textContent = mode ? "🔀 Bulk" : "🎯 Specific";
+        if (badge) badge.textContent = mode ? "Bulk" : "Specific";
         input.dispatchEvent(new Event("change"));
       }
     }
@@ -3594,11 +3266,11 @@ async function _selectSelectorMode(defaultBulk) {
     </div>
     <div style="display: flex; gap: 12px; margin-bottom: 16px;">
       <button class="selector-mode-btn" data-mode="specific" style="flex:1; padding:12px; border-radius:8px; border:2px solid var(--accent); background:rgba(99,102,241,0.1); color:var(--text-main); cursor:pointer; font-weight:600; transition:all 0.2s;">
-        🎯 Specific
+        Specific
         <div style="font-size:10px; color:var(--text-dim); font-weight:normal; margin-top:4px;">Single element</div>
       </button>
       <button class="selector-mode-btn" data-mode="bulk" style="flex:1; padding:12px; border-radius:8px; border:2px solid var(--bg-border); background:transparent; color:var(--text-main); cursor:pointer; font-weight:600; transition:all 0.2s;">
-        🔀 Bulk
+        Bulk
         <div style="font-size:10px; color:var(--text-dim); font-weight:normal; margin-top:4px;">Multiple matches</div>
       </button>
     </div>
@@ -4271,7 +3943,7 @@ function _registerKey(stepId) {
     document.removeEventListener("keydown", onKey, true);
     _keyListening = false;
     if (btn) {
-      btn.textContent = "🔴 Register Key";
+      btn.textContent = "Register Key";
       btn.classList.remove("listening");
     }
     notify(
@@ -4310,27 +3982,11 @@ function listenToSystem() {
           .querySelectorAll(".node-card")
           .forEach((n) => n.classList.remove("running", "success", "error"));
 
-        // Hide all previously active tracers
-        document.querySelectorAll(".wire-path-active-tracer").forEach((t) => {
-          t.classList.remove("wire-path-active-tracer");
-          t.classList.add("hidden-tracer");
-        });
-
         const active = document.querySelector(
           `.node-wrapper[data-id="${info.currentStepId}"] .node-card`,
         );
         if (active) {
           active.classList.add("running");
-
-          // Light up tracer pointing TO this node
-          const tracer = document.querySelector(
-            `path.hidden-tracer[data-to="${info.currentStepId}"]`,
-          );
-          if (tracer) {
-            tracer.classList.remove("hidden-tracer");
-            tracer.classList.add("wire-path-active-tracer");
-          }
-
           _focusNodeOnBoard(active);
         }
         document.getElementById("mon-state").textContent = "Running...";
@@ -4338,12 +3994,6 @@ function listenToSystem() {
       }
       if (info.state === "completed" || info.state === "stopped") {
         stopRunUI();
-
-        // Hide all active tracers on stop/complete
-        document.querySelectorAll(".wire-path-active-tracer").forEach((t) => {
-          t.classList.remove("wire-path-active-tracer");
-          t.classList.add("hidden-tracer");
-        });
 
         document.getElementById("mon-state").textContent =
           info.state === "completed" ? "Success" : "Stopped";

@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 152 findings — 15 blocker · 37 high · 71 medium · 29 low. The
+**Totals:** 153 findings — 15 blocker · 38 high · 71 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -20,7 +20,7 @@ gaps found by reading every step type against its implementation.
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
-| J · Capability gaps             | 22       |
+| J · Capability gaps             | 23       |
 
 ---
 
@@ -127,6 +127,7 @@ decision:
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
+| **J-23** | _this batch_ | New. The board was a 1400x1200 pan/zoom canvas inside a 400px panel, so nested steps were laid out where they could not be seen — the "UI constraints" that made dropping a step into a loop look broken. It is a scrolling list now, and the panel has an actual visual design rather than framework defaults |
 | J-20, J-21, J-22 | _this batch_ | A field picked inside a loop is described relative to the record, which is what makes a grid of product cards scrapeable; steps can be dragged into a loop; and PAGE_JSON returns the page itself as JSON |
 | J-14 … J-19 | _earlier_ | Steps can reach inside iframes; every step type can be tested; the API sniffer's captures survive the run that made them; a table names its own columns; HOVER says when it achieved nothing; a browser shortcut can be typed rather than pressed. All six reported from real use |
 | **J-13** | _earlier_ | Detect Table appended a second loop over the same list every time it was pressed, without a word — which is where a real run's 1,250 rows for 250 countries came from |
@@ -135,7 +136,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 149 of 152 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 150 of 153 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
@@ -1355,6 +1356,56 @@ Not exportable to a standalone script: the walker is two hundred lines with its
 own budgets and filters, and a second copy inlined into every emitted script
 would drift from it. A script that dumps _different_ JSON than the pipeline is
 worse than one that refuses.
+
+### J-23 · HIGH · The board was a canvas in a four-hundred-pixel strip
+
+_Reported as "I don't like how the UI works … even if I keep any activity
+inside the loop it is not working because of UI constraints I think", and then
+"fix the UI, colors, animations, UX properly … not like AI way"._
+
+Two separate faults, one cause.
+
+**The layout.** `#board-stage` was a 1400 x 1200 pannable, zoomable canvas
+inside a `#board-viewport` about 400px wide with `overflow: hidden` — the
+node-graph metaphor desktop automation tools use, in a strip where four hundred
+pixels is the entire width. Steps were routinely laid out where they could not
+be seen and had to be hunted for by dragging. A loop's body was the usual
+casualty: it renders below and to the side of its loop, so the drop target for
+"put this step inside the loop" was frequently off-screen. J-21 fixed the drop
+handler; the drop target still had to be found first.
+
+E-11 (throttle the wire redraw) and E-12 (say which modifier zooms) were
+performance and discoverability fixes for that canvas. The canvas was the
+defect. It is now a scrolling vertical list — which is also the honest shape,
+because a pipeline _is_ a list — and the pan, zoom, fit, wire-render and
+zoom-hint machinery is gone, along with the SVG redraw that ran on every
+pointer move.
+
+**The visual design.** It had never been designed, only assembled: Tailwind's
+default indigo `#6366f1` on blue slate, twelve-pixel radii, soft drop shadows,
+and an emoji in a rounded gradient tile for every step — the exact set of
+defaults that reads as machine-generated. The panel is now a laboratory
+instrument: warm graphite ground, one amber signal colour that means "you can
+act on this", mint reserved so strictly for "running" that a glance answers
+whether a run is alive, hairlines instead of blur, and 120-180ms mechanical
+motion. Typography inverted to match — JetBrains Mono for every label, button
+and number, Inter for prose only, which is what makes it read as lettered
+rather than typeset. Both faces are already bundled, so this needed no new
+asset and no CSP exception (A-09).
+
+Fixed along the way, each of them a real defect rather than a taste call:
+
+- The toolbar was a non-wrapping row of ~560px of controls in a 400px panel —
+  the last two were outside the window with no way to reach them.
+- The `border-left` a step card set inline could never be overridden by the
+  stylesheet, so the card's hover and running states could not restyle it.
+- IF/ELSE branches sat side by side, giving each about 170px — narrower than a
+  single step card.
+- Every toggle in the panel used `display: none` on its checkbox, which takes
+  the control out of the tab order: no toggle could be reached or operated from
+  the keyboard (a second E-09).
+- Zoom in / zoom out / reset / fit were four buttons that, once the board
+  became a list, did nothing.
 
 ---
 

@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 149 findings — 14 blocker · 36 high · 70 medium · 29 low. The
+**Totals:** 152 findings — 15 blocker · 37 high · 71 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -20,7 +20,7 @@ gaps found by reading every step type against its implementation.
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
-| J · Capability gaps             | 19       |
+| J · Capability gaps             | 22       |
 
 ---
 
@@ -127,14 +127,15 @@ decision:
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
-| J-14 … J-19 | _this batch_ | Steps can reach inside iframes; every step type can be tested; the API sniffer's captures survive the run that made them; a table names its own columns; HOVER says when it achieved nothing; a browser shortcut can be typed rather than pressed. All six reported from real use |
+| J-20, J-21, J-22 | _this batch_ | A field picked inside a loop is described relative to the record, which is what makes a grid of product cards scrapeable; steps can be dragged into a loop; and PAGE_JSON returns the page itself as JSON |
+| J-14 … J-19 | _earlier_ | Steps can reach inside iframes; every step type can be tested; the API sniffer's captures survive the run that made them; a table names its own columns; HOVER says when it achieved nothing; a browser shortcut can be typed rather than pressed. All six reported from real use |
 | **J-13** | _earlier_ | Detect Table appended a second loop over the same list every time it was pressed, without a word — which is where a real run's 1,250 rows for 250 countries came from |
 | J-08 … J-12 | _this batch_ | IF_ELSE can ask about emptiness, numbers and patterns; KEYBOARD has a target and a repeat; the sniffer can be filtered; SCREENSHOT can capture the whole page or one element; and Detect Table stops returning a page's own labels as columns |
 | J-06, J-07 | _this batch_ | Extracted values are cleaned as they are read, in one module both emitters share; and PAGE_DATA reads the JSON-LD, microdata and Open Graph every site already publishes — the answer to "turn the page into JSON" for a single record |
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 146 of 149 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 149 of 152 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
@@ -1287,6 +1288,73 @@ So the combo can now be **typed** as well as captured, and a reserved one is
 flagged with what will happen. The step still sends it to the page as a
 synthetic event, which works when the page listens for it; the browser's own
 action is what cannot be suppressed.
+
+### J-20 · BLOCKER · A field picked inside a loop was described page-wide
+
+_Reported as "bulk extract is not working properly … I want to scrape the data
+of the products in cards", alongside a memory of a feature for "choosing the
+elements of a particular element in loop to extract"._
+
+The memory was right about what is needed and wrong that it ever existed.
+`_addExtractField` asked the page for a selector with no idea that the `EXTRACT`
+it was filling sat inside a `LOOP` over `.card`, so it got a page-wide one —
+and `_buildBulkSelector` guessed at one by walking up five levels of
+direct-child combinators and stopping at the first that matched **two**
+elements. On a grid of product cards that lands almost anywhere: two matches is
+nothing on a page of twenty cards, and the `>` chain breaks on the first
+wrapper div a framework inserts.
+
+The fix is not a better guess. **The loop already says what a record is**, so a
+field picked inside it is described relative to that record — `.title`, not
+`.grid > .card:nth-of-type(2) > .title`, which finds the second card's title in
+every row. The same relative-selector idea the structure detector uses.
+
+The picker is told the scope: it outlines the records, and a click outside every
+one of them is refused with a note rather than answered with a page-wide
+selector. Inside a loop the bulk-or-specific question is not asked at all — the
+record is already chosen, and the field is a column within it.
+
+### J-21 · HIGH · Nothing could be dragged into a loop
+
+_Reported as "even if I keep any activity inside the loop it is not working"._
+
+E-05 fixed `_moveStep` so a step could be dragged **between** containers and
+left the harder half untouched: drops were only accepted on another
+`.node-wrapper`. So an empty loop had nothing to drop onto at all, and dropping
+on a loop's own card moved the step to where the loop is — beside it, not
+inside — which is indistinguishable from nothing happening.
+
+The body of a loop and each branch of an `IF_ELSE` are drop targets now, they
+highlight while a step is over them, and a container cannot be dropped into
+itself or into one of its own descendants (it would vanish from the board,
+taking its children with it).
+
+### J-22 · MEDIUM · No way to get the page itself as JSON
+
+_Asked for twice: "I need an activity that returns the entire page in json
+format", then "DOM as json or any type page content to json if user required"._
+
+`PAGE_DATA` (J-07) reads the structured data a site _publishes_. That is the
+clean answer where a site publishes any and no answer at all where it does not.
+
+`PAGE_JSON` is the other one: the page as it actually is, no selectors, works on
+anything. Three shapes, because "as JSON" means different things depending on
+what happens next — a nested **tree** for something that will reason about the
+page, the readable **text** in order for reading or handing to a model, and a
+**flat** row per element, which is also the fastest way to find the selector you
+were looking for.
+
+The hard part was never walking the DOM. It is that a naive dump of a real page
+is megabytes of scripts, minified CSS, SVG path data and layout wrappers, and
+searching it is harder than writing the selector you were avoiding. So the
+default keeps what a reader would call content, every exclusion is a switch, and
+a page that hits the element or depth budget says so instead of quietly handing
+back half of itself.
+
+Not exportable to a standalone script: the walker is two hundred lines with its
+own budgets and filters, and a second copy inlined into every emitted script
+would drift from it. A script that dumps _different_ JSON than the pipeline is
+worse than one that refuses.
 
 ---
 

@@ -1568,7 +1568,7 @@ function renderStepNode(step, index, total, parentId, branchKey) {
   if (step.type === "LOOP") {
     html += `<div class="loop-body">
       <div class="loop-scope-bar"></div>
-      <div class="loop-body-inner">`;
+      <div class="loop-body-inner" data-parent-id="${step.id}" data-branch="children">`;
     const children = step.children || [];
     children.forEach((child, ci) => {
       html += renderStepNode(child, ci, children.length, step.id, "children");
@@ -1586,7 +1586,7 @@ function renderStepNode(step, index, total, parentId, branchKey) {
       const branch = step[bk] || [];
       html += `<div class="if-branch ${isIf ? "if-true" : "if-false"}">`;
       html += `<div class="branch-header">${isIf ? "IF ✓ (met)" : "ELSE ✗ (not met)"}</div>`;
-      html += `<div class="loop-body-inner">`;
+      html += `<div class="loop-body-inner" data-parent-id="${step.id}" data-branch="${bk}">`;
       branch.forEach((child, ci) => {
         html += renderStepNode(child, ci, branch.length, step.id, bk);
       });
@@ -2501,6 +2501,71 @@ function _configFields(step) {
     return html;
   }
 
+  // ── PAGE_JSON ──
+  if (step.type === "PAGE_JSON") {
+    const mode = c.mode || "tree";
+    html += `<div style="background:rgba(14,165,233,0.10);border:1px solid rgba(14,165,233,0.35);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">🧬 The page itself, as JSON</div>
+      <div style="font-size:11px;color:var(--text-dim);line-height:1.5;">
+        No selectors, no guessing about what matters — the page as it actually
+        is. Use this when a site publishes no structured data, or when you want
+        to look at everything before deciding what to scrape.<br><br>
+        Scripts, styles and SVG path data are left out by default: a real page
+        is mostly those, and they bury the content.
+      </div>
+    </div>`;
+
+    html += `<label>Shape</label>
+    <select id="cfg-${step.id}-mode" data-id="${step.id}" data-key="mode" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="tree" ${mode === "tree" ? "selected" : ""}>Tree — the page's structure, nested</option>
+      <option value="text" ${mode === "text" ? "selected" : ""}>Text — every readable line, in order</option>
+      <option value="flat" ${mode === "flat" ? "selected" : ""}>Flat — one row per element</option>
+    </select>`;
+    html += hint(
+      mode === "text"
+        ? "Good for reading, searching, or handing to an AI. The markup is gone."
+        : mode === "flat"
+          ? "One row per element with its text, link and path — the easiest way to find the selector you actually want."
+          : "Keeps the nesting, so the shape of the page survives. The natural choice if something else will read the JSON.",
+    );
+
+    html += `<label>Only this part of the page <span style="color:var(--text-dim);font-weight:400;">(optional)</span></label>`;
+    html += selectorRow(step, "selector");
+    html += hint(
+      "Blank dumps the whole page. Naming one element — a results list, a " +
+        "card — is usually what you want, and keeps the output readable.",
+    );
+
+    html += field(
+      step,
+      "maxNodes",
+      "Stop after this many elements",
+      "number",
+      c.maxNodes ?? 5000,
+    );
+    html += hint(
+      "A truncated read says so rather than quietly handing back half a page.",
+    );
+    html += toggle(step, "includeScripts", "Include scripts and styles too");
+    html += field(
+      step,
+      "storeAs",
+      "Store it as",
+      "text",
+      c.storeAs || "pageJson",
+    );
+    html += hint(
+      "Later steps can reference it. Export as JSON — a page tree does not " +
+        "fit a spreadsheet cell.",
+    );
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
   // ── PAGE_DATA ──
   if (step.type === "PAGE_DATA") {
     html += `<div style="background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.35);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
@@ -2831,6 +2896,40 @@ function bindDragAndDrop() {
       _dragSourceId = null;
     });
   });
+  // The inside of a loop or a branch, so an empty one can be dropped into at
+  // all. Listed first: a wrapper nested inside a container would otherwise
+  // swallow the event on its way up.
+  document
+    .querySelectorAll(".loop-body-inner[data-parent-id]")
+    .forEach((body) => {
+      body.addEventListener("dragover", (e) => {
+        if (!_dragSourceId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = "move";
+        body.classList.add("drop-inside");
+      });
+      body.addEventListener("dragleave", (e) => {
+        if (body.contains(e.relatedTarget)) return;
+        body.classList.remove("drop-inside");
+      });
+      body.addEventListener("drop", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        body.classList.remove("drop-inside");
+        if (!_dragSourceId) return;
+        const moved = _moveStepInto(
+          _dragSourceId,
+          body.dataset.parentId,
+          body.dataset.branch,
+        );
+        _dragSourceId = null;
+        if (!moved) return;
+        saveState();
+        renderPipeline();
+      });
+    });
+
   document.querySelectorAll(".node-wrapper").forEach((w) => {
     w.addEventListener("dragover", (e) => {
       e.preventDefault();
@@ -2883,6 +2982,43 @@ function _containsStep(step, id) {
     }
   }
   return false;
+}
+
+/**
+ * Move a step *into* a container, at the end of its list.
+ *
+ * The other half of E-05. `_moveStep` puts a step where another step is, which
+ * is the only thing a drop could express while drops were accepted on
+ * `.node-wrapper` alone — so an empty loop had nothing to drop onto, and
+ * dropping on a loop's own card moved the step to where the loop is, beside it
+ * rather than inside. Both read as "dragging into a loop does not work".
+ *
+ * @param {string} sourceId
+ * @param {string} parentId  - the LOOP or IF_ELSE to move into
+ * @param {string} branchKey - "children", "ifBranch" or "elseBranch"
+ * @returns {boolean} false when the move was refused
+ */
+function _moveStepInto(sourceId, parentId, branchKey) {
+  const from = _locateStep(_pipeline.steps, sourceId);
+  const target = _locateStep(_pipeline.steps, parentId);
+  if (!from || !target) return false;
+
+  const container = target.list[target.index];
+  const step = from.list[from.index];
+
+  // A container inside itself vanishes from the board, taking its children.
+  if (step.id === container.id || _containsStep(step, container.id)) {
+    notify(
+      "warn-log",
+      "A container cannot be moved inside itself — that would remove it from the board.",
+    );
+    return false;
+  }
+
+  if (!Array.isArray(container[branchKey])) container[branchKey] = [];
+  from.list.splice(from.index, 1);
+  container[branchKey].push(step);
+  return true;
 }
 
 /**
@@ -3894,22 +4030,51 @@ function _fieldNameFromSelector(selector) {
   return cleaned || "field";
 }
 
+/**
+ * The container of the nearest LOOP a step sits inside, if any.
+ *
+ * A field picked inside a loop over `.card` should be described relative to a
+ * card — the loop already says what a record is. Without this the picker
+ * returned a page-wide selector, so every row of the scrape got the same
+ * value, or a value from whichever card happened to be first.
+ *
+ * @param {string} stepId
+ * @returns {string} the loop's selector, or "" when there is no scope
+ */
+function _loopScopeFor(stepId) {
+  let found = _locateStep(_pipeline.steps, stepId);
+  while (found?.parent) {
+    const p = found.parent;
+    if (
+      p.type === "LOOP" &&
+      p.config?.type === "elements" &&
+      p.config?.selector
+    ) {
+      return p.config.selector;
+    }
+    found = _locateStep(_pipeline.steps, p.id);
+  }
+  return "";
+}
+
 async function _addExtractField(stepId) {
   const nameInput = document.getElementById(`new-ex-name-${stepId}`);
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
 
-  // Every other picker asks bulk-or-specific; this one was pinned to bulk, so
-  // an extract field could never be a single named element on the page.
-  // Extract usually wants a column, so bulk stays the default.
-  const bulk = await _selectSelectorMode(true);
+  // Inside a loop, the record is already chosen and the field is a column
+  // within it — so there is nothing to ask about, and the selector comes back
+  // relative to the record. Outside one, extract usually wants a column, so
+  // bulk stays the default.
+  const scopeSelector = _loopScopeFor(stepId);
+  const bulk = scopeSelector ? false : await _selectSelectorMode(true);
   if (bulk === null) return;
 
   try {
     if (!(await _ensureContentReady(tab.id))) return;
     const resp = await chrome.tabs.sendMessage(tab.id, {
       type: "FS_PICK_SELECTOR",
-      payload: { bulk },
+      payload: { bulk, scopeSelector },
     });
     if (!resp?.ok || !resp.result) return;
 
@@ -3922,7 +4087,9 @@ async function _addExtractField(stepId) {
     renderPipeline();
     notify(
       "info-log",
-      `Added field "${name}" — ${bulk ? "all matches" : "this element"}.`,
+      scopeSelector
+        ? `Added field "${name}" — read from each ${scopeSelector} the loop visits.`
+        : `Added field "${name}" — ${bulk ? "all matches" : "this element"}.`,
     );
   } catch {
     notify("error-log", "Refresh the target webpage to connect the picker.");

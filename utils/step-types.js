@@ -204,6 +204,24 @@ export const STEP_TYPES = Object.freeze({
       inFrame: false,
     },
   },
+  PAGE_JSON: {
+    icon: "🧬",
+    cat: "Data",
+    desc: "The whole page as JSON",
+    runsIn: "page",
+    def: {
+      mode: "tree",
+      selector: "",
+      maxNodes: 5000,
+      maxDepth: 25,
+      includeScripts: false,
+      storeAs: "pageJson",
+      inFrame: false,
+    },
+    // Not expressible in a standalone script without carrying the whole DOM
+    // walker; see the note in the emitters.
+    exportable: false,
+  },
   EXPORT: {
     icon: "💾",
     cat: "Data",

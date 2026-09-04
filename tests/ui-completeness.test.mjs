@@ -315,3 +315,107 @@ test("the storage panel shows how full it is", () => {
   assert.match(fn, /pct >= 70\s*\n?\s*\?\s*"var\(--yellow\)"/, "amber at 70%");
   assert.match(fn, /available/, "and reads sensibly when empty");
 });
+
+// ── E-05, continued: dropping into a container ──────────────────────────────
+//
+// Reported from real use: "even if I keep any activity inside the loop it is
+// not working". E-05 fixed _moveStep so a step could be dragged *between*
+// containers, and left the harder half: drops were only accepted on another
+// `.node-wrapper`, so
+//
+//   * an empty loop had nothing to drop onto at all, and
+//   * dropping on the loop's own card moved the step to where the loop is —
+//     beside it, not into it — which looks exactly like nothing happening.
+
+/** _moveStepInto, lifted out of the panel module. */
+function makeMoverInto(steps) {
+  const body =
+    extract(/function _locateStep\(steps, id, parent = null\) \{[\s\S]*?\n\}/) +
+    "\n" +
+    extract(/function _containsStep\(step, id\) \{[\s\S]*?\n\}/) +
+    "\n" +
+    extract(
+      /function _moveStepInto\(sourceId, parentId, branchKey\) \{[\s\S]*?\n\}/,
+    );
+  const pipeline = { steps };
+  const warnings = [];
+  const fn = new Function(
+    "_pipeline",
+    "notify",
+    `${body}; return _moveStepInto;`,
+  )(pipeline, (level, msg) => warnings.push(msg));
+  return { move: fn, pipeline, warnings };
+}
+
+const loopWith = (id, children = []) => ({
+  id,
+  type: "LOOP",
+  config: { type: "elements", selector: ".card" },
+  children,
+});
+
+test("a step can be dropped into an empty loop", () => {
+  const { move, pipeline } = makeMoverInto([{ id: "a" }, loopWith("L")]);
+  assert.equal(move("a", "L", "children"), true);
+  assert.deepEqual(ids(pipeline.steps), ["L"]);
+  assert.deepEqual(ids(pipeline.steps[0].children), ["a"]);
+});
+
+test("a step dropped into a loop that already has steps goes to the end", () => {
+  const { move, pipeline } = makeMoverInto([
+    { id: "a" },
+    loopWith("L", [{ id: "b" }]),
+  ]);
+  assert.equal(move("a", "L", "children"), true);
+  assert.deepEqual(ids(pipeline.steps[0].children), ["b", "a"]);
+});
+
+test("a step can be dropped into either branch of an IF", () => {
+  const steps = [
+    { id: "a" },
+    { id: "F", type: "IF_ELSE", config: {}, ifBranch: [], elseBranch: [] },
+  ];
+  const { move, pipeline } = makeMoverInto(steps);
+  assert.equal(move("a", "F", "elseBranch"), true);
+  // By id, not by index: removing "a" from the root shifts everything left.
+  const branch = pipeline.steps.find((st) => st.id === "F");
+  assert.deepEqual(ids(branch.elseBranch), ["a"]);
+  assert.equal(branch.ifBranch.length, 0);
+});
+
+test("a step already inside the loop is moved, not duplicated", () => {
+  const { move, pipeline } = makeMoverInto([
+    loopWith("L", [{ id: "a" }, { id: "b" }]),
+  ]);
+  assert.equal(move("a", "L", "children"), true);
+  assert.deepEqual(ids(pipeline.steps[0].children), ["b", "a"]);
+});
+
+test("a loop cannot be dropped into itself", () => {
+  // It would vanish from the board, taking its children with it.
+  const { move, warnings, pipeline } = makeMoverInto([
+    loopWith("L", [{ id: "a" }]),
+  ]);
+  assert.equal(move("L", "L", "children"), false);
+  assert.deepEqual(ids(pipeline.steps), ["L"]);
+  assert.ok(warnings.length > 0, "it said nothing about refusing");
+});
+
+test("a loop cannot be dropped into a loop it contains", () => {
+  const inner = loopWith("IN", []);
+  const { move, pipeline } = makeMoverInto([loopWith("OUT", [inner])]);
+  assert.equal(move("OUT", "IN", "children"), false);
+  assert.deepEqual(ids(pipeline.steps), ["OUT"]);
+});
+
+test("the loop body is a drop target in the rendered board", () => {
+  // Without this the handler above has nothing to fire on.
+  assert.match(
+    src,
+    /class="loop-body-inner"[^`]*data-parent-id=/,
+    "the loop body carries no container identity for a drop",
+  );
+  const bind = extract(/function bindDragAndDrop\(\) \{[\s\S]*?\n\}/);
+  assert.match(bind, /loop-body-inner/, "nothing listens on the loop body");
+  assert.match(bind, /_moveStepInto/);
+});

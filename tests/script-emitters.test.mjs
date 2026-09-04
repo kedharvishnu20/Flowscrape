@@ -182,13 +182,18 @@ test("every step the registry calls exportable really is emitted", () => {
   );
 });
 
-test("the four unexportable types are the ones that need the extension", () => {
+test("the unexportable types are the ones that need the extension", () => {
   const notExportable = USER_STEP_TYPES.filter(
     (t) => STEP_TYPES[t].exportable === false,
   );
   assert.deepEqual(notExportable.sort(), [
     "API_SNIFFER",
     "AUTO_EXTRACT",
+    // PAGE_JSON's DOM walker is two hundred lines with its own budgets and
+    // filters; a second copy inlined into every emitted script would drift
+    // from it, and a script that dumps a *different* JSON than the pipeline
+    // is worse than one that refuses.
+    "PAGE_JSON",
     "PDF_EXTRACTION",
     "UPLOAD_ACTIVITY",
   ]);

@@ -6,11 +6,11 @@ tab, and export the results.
 
 No build step. No bundler. Plain ES modules, loaded directly by Chrome.
 
-> **Status.** A full audit found 149 issues; 146 are fixed and three are left
+> **Status.** A full audit found 152 issues; 149 are fixed and three are left
 > alone on purpose (three subsystems that work but that nothing calls — the
 > reasoning is in the audit). Every fix landed with regression tests that were
-> run against the pre-fix code first to confirm they failed: 630 tests, from
-> zero, plus 63 end-to-end checks in a real Chromium with the extension loaded —
+> run against the pre-fix code first to confirm they failed: 660 tests, from
+> zero, plus 69 end-to-end checks in a real Chromium with the extension loaded —
 > which is how four findings were caught, among them an `EXPORT` that had never
 > downloaded anything and page steps that failed after every navigation. [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) is the inventory,
 > [`CHANGELOG.md`](CHANGELOG.md) the summary, and
@@ -32,8 +32,8 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 630 tests, ~35s, no browser needed
-npm run e2e     # 63 checks in a real Chromium with the extension loaded
+npm test        # 660 tests, ~35s, no browser needed
+npm run e2e     # 69 checks in a real Chromium with the extension loaded
 npm run check   # parses every source file as an ES module
 npm run format  # prettier; `npm run format:check` in CI
 ```
@@ -137,8 +137,8 @@ script-gen/
   node-emitter.js              AST → Node (playwright)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         630 tests; node:test, jsdom, fake-indexeddb
-e2e/                           63 checks against a real Chromium
+tests/                         660 tests; node:test, jsdom, fake-indexeddb
+e2e/                           69 checks against a real Chromium
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, architecture, manual, template guide
 examples/                      Pipeline JSON you can import
@@ -155,13 +155,13 @@ as dead has since been deleted or wired up — see the F-01 table there.
 
 ## Step types
 
-Twenty-three, defined in [`utils/step-types.js`](utils/step-types.js).
+Twenty-four, defined in [`utils/step-types.js`](utils/step-types.js).
 
-| Category | Steps                                                                                                  |
-| -------- | ------------------------------------------------------------------------------------------------------ |
-| Action   | `WEBSITE` `NAVIGATE` `CLICK` `FILL` `HOVER` `SELECT` `SCROLL` `KEYBOARD` `DRAG_DROP` `UPLOAD_ACTIVITY` |
-| Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE`                                                                     |
-| Data     | `EXTRACT` `PAGE_DATA` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT`        |
+| Category | Steps                                                                                                       |
+| -------- | ----------------------------------------------------------------------------------------------------------- |
+| Action   | `WEBSITE` `NAVIGATE` `CLICK` `FILL` `HOVER` `SELECT` `SCROLL` `KEYBOARD` `DRAG_DROP` `UPLOAD_ACTIVITY`      |
+| Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE`                                                                          |
+| Data     | `EXTRACT` `PAGE_DATA` `PAGE_JSON` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT` |
 
 `PDF_EXTRACTION` reads the PDF in the service worker, with no dependencies —
 see [`utils/pdf-text.js`](utils/pdf-text.js). It handles uncompressed and

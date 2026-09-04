@@ -450,6 +450,7 @@ const CONTENT_FILES = [
   "content/smart-extractor.js",
   "content/structure-detector.js",
   "content/page-data.js",
+  "content/page-json.js",
   "content/injector.js",
 ];
 
@@ -2456,6 +2457,41 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       initBuffer(runId);
       await _doExport(runId, step.config);
       return;
+
+    case "PAGE_JSON": {
+      const resp = await _sendToPage(tabId, step);
+      if (!resp?.ok) throw new Error(resp?.error || "PAGE_JSON failed");
+      const page = resp.result;
+      ctx[String(step.config.storeAs || "pageJson").trim() || "pageJson"] =
+        page;
+
+      if (!page.found) {
+        _broadcastLog("warn-log", `PAGE_JSON: ${page.reason}`, runId);
+        return;
+      }
+      if (page.truncated) {
+        _broadcastLog("warn-log", `PAGE_JSON: ${page.reason}`, runId);
+      }
+
+      // One row, holding the page. Rows are what the exporters understand, so
+      // this is what makes the JSON downloadable at all — and JSON is the
+      // format to pick, since a tree does not fit a spreadsheet cell.
+      const row = {
+        url: page.url,
+        title: page.title,
+        mode: page.mode,
+        nodes: page.nodes,
+        content: page.tree ?? page.text ?? page.rows,
+      };
+      runState.results.push(row);
+      await pushRow(runId, row);
+      _broadcastLog(
+        "info-log",
+        `PAGE_JSON: read ${page.nodes} elements as ${page.mode}.`,
+        runId,
+      );
+      return;
+    }
 
     case "PAGE_DATA": {
       const resp = await _sendToPage(tabId, step);

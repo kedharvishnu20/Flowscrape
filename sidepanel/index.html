@@ -84,6 +84,7 @@
         --step-EXTRACT: #10b981;
         --step-SCREENSHOT: #ec4899;
         --step-PAGE_DATA: #14b8a6;
+        --step-PAGE_JSON: #0ea5e9;
         --step-EXPORT: #22c55e;
         --step-API: #0891b2;
         --step-API_SNIFFER: #a855f7;
@@ -1349,6 +1350,14 @@
         opacity: 0.5;
       }
 
+      /* The drop-into-a-container affordance: an empty loop has no step to
+         aim at, so the body itself has to look like a target. */
+      .loop-body-inner.drop-inside {
+        outline: 2px dashed var(--accent);
+        outline-offset: -4px;
+        background: rgba(99, 102, 241, 0.08);
+        border-radius: 6px;
+      }
       .loop-body-inner {
         width: 100%;
         max-width: 340px;

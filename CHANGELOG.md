@@ -10,12 +10,12 @@ if any copy of it drifts.
 ## [Unreleased]
 
 Everything below was found by a full-repository audit
-([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 149 findings) and fixed against
+([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 152 findings) and fixed against
 it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-630**, plus **63 end-to-end checks** that load the extension into a real
+660**, plus **69 end-to-end checks** that load the extension into a real
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
@@ -84,6 +84,21 @@ capabilities the configuration promised and the code did not have.
   picks the obvious transforms itself.
 
 ### Fixed — reported from real use
+
+- **A field picked inside a loop was described page-wide** (J-20), which is why
+  scraping a grid of product cards gave wrong answers. The loop already says
+  what a record is, so a field picked inside it is now described _relative to
+  that record_ — `.title`, not `.grid > .card:nth-of-type(2) > .title`, which
+  finds the second card's title in every row. The picker outlines the records
+  and refuses a click outside them.
+- **Nothing could be dragged into a loop** (J-21). Drops were only accepted on
+  another step, so an empty loop had no target at all, and dropping on the
+  loop's card put the step _beside_ it. The body of a loop and each branch of
+  an IF are drop targets now.
+- **`PAGE_JSON`** (J-22) returns the page itself as JSON — a nested tree, the
+  readable text in order, or one flat row per element. No selectors, works on
+  anything. The companion to `PAGE_DATA`, which reads only what a site chooses
+  to publish.
 
 Six findings, all from someone actually running the extension rather than from
 reading the code.

@@ -362,6 +362,14 @@ async function _executeStep(step) {
       };
     }
 
+    case "PAGE_JSON": {
+      const read = globalThis.__fsPageJson;
+      if (typeof read !== "function") {
+        throw new Error("Page-to-JSON reader is not loaded in this page.");
+      }
+      return read(config);
+    }
+
     case "PAGE_DATA": {
       // page-data.js is injected alongside this file and publishes the reader
       // on the shared isolated world, the same way structure-detector.js does.
@@ -1990,6 +1998,9 @@ async function _activateSelectorPicker(payload) {
   if (_pickerActive) return null;
   _pickerActive = true;
   const isBulk = payload?.bulk === true;
+  // Set when the field being picked lives inside a LOOP: the selector comes
+  // back relative to the record rather than to the page.
+  const scopeSelector = String(payload?.scopeSelector || "");
 
   return new Promise((resolve) => {
     _pickerResolve = resolve;
@@ -2017,8 +2028,42 @@ async function _activateSelectorPicker(payload) {
     const tooltip = document.createElement("div");
     tooltip.style.cssText =
       "position:absolute;bottom:-24px;left:-2px;background:#2563eb;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;white-space:nowrap;font-family:sans-serif;pointer-events:none;";
-    tooltip.textContent = "Click to pick · Esc to cancel";
+    tooltip.textContent = scopeSelector
+      ? `Pick a field inside a ${scopeSelector} · Esc to cancel`
+      : "Click to pick · Esc to cancel";
     highlight.appendChild(tooltip);
+
+    /** Say something in the tooltip without ending the pick. */
+    function _pickerNote(text) {
+      tooltip.textContent = text;
+      tooltip.style.background = "#dc2626";
+      setTimeout(() => {
+        tooltip.style.background = "#2563eb";
+        tooltip.textContent = scopeSelector
+          ? `Pick a field inside a ${scopeSelector} · Esc to cancel`
+          : "Click to pick · Esc to cancel";
+      }, 2200);
+    }
+
+    // Outline the records the field will be read from, so it is obvious where
+    // a pick is meaningful.
+    const scopeMarks = [];
+    if (scopeSelector) {
+      try {
+        for (const record of document.querySelectorAll(scopeSelector)) {
+          const r = record.getBoundingClientRect();
+          if (!r.width && !r.height) continue;
+          const mark = document.createElement("div");
+          mark.style.cssText = [
+            "position:fixed;pointer-events:none;border:1px dashed #16a34a;",
+            "border-radius:4px;z-index:2147483646;",
+            `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;`,
+          ].join("");
+          _shadow.appendChild(mark);
+          scopeMarks.push(mark);
+        }
+      } catch {}
+    }
 
     _shadow.appendChild(highlight);
 
@@ -2116,6 +2161,7 @@ async function _activateSelectorPicker(payload) {
       if (_blockTimer) cancelAnimationFrame(_blockTimer);
       overlay.remove();
       highlight.remove();
+      for (const mark of scopeMarks) mark.remove();
 
       const settle = _pickerResolve;
       _pickerResolve = null;
@@ -2132,7 +2178,20 @@ async function _activateSelectorPicker(payload) {
         _pickRealTargetAtPoint(e.clientX, e.clientY) ||
         currentTarget;
 
-      finish(currentTarget ? _buildSelector(currentTarget, isBulk) : null);
+      if (!currentTarget) return finish(null);
+      if (scopeSelector) {
+        const rel = _buildScopedSelector(currentTarget, scopeSelector);
+        if (!rel) {
+          // Outside every record. A page-wide selector here would put the same
+          // value in every row, which is what the unscoped picker did.
+          _pickerNote(
+            `That is not inside a ${scopeSelector}. Pick something within one of the highlighted records.`,
+          );
+          return;
+        }
+        return finish(rel);
+      }
+      finish(_buildSelector(currentTarget, isBulk));
     }
 
     function onKey(e) {
@@ -2155,6 +2214,67 @@ async function _activateSelectorPicker(payload) {
       finish(null);
     }
   });
+}
+
+/**
+ * Describe an element relative to the record that contains it.
+ *
+ * When an EXTRACT sits inside a LOOP over `.card`, the loop already says what
+ * a record is. The field only has to say where *within* a card to look — so
+ * `.title`, not `.grid > .card:nth-of-type(2) > .title`, which finds the second
+ * card's title in every row.
+ *
+ * The unscoped bulk picker guessed at this by walking up five levels of
+ * direct-child combinators and stopping at the first selector matching two
+ * elements. On a grid of product cards that lands almost anywhere, which is
+ * what "bulk extract gives wrong answers" was.
+ *
+ * @param {Element} el
+ * @param {string} scopeSelector - the loop's container selector
+ * @returns {?string} null when the element is not inside any container;
+ *   ":scope" when it *is* the container
+ */
+function _buildScopedSelector(el, scopeSelector) {
+  if (!el || !scopeSelector) return null;
+  let root;
+  try {
+    root = el.closest(scopeSelector);
+  } catch {
+    return null;
+  }
+  if (!root) return null;
+  if (root === el) return ":scope";
+
+  // Prefer a class the element carries and no sibling in the record shares.
+  const parts = [];
+  let node = el;
+  while (node && node !== root && node.parentElement) {
+    const cls = [...node.classList].find(
+      (c) =>
+        !/^(is|has|js|ng|v|active|open|show|hide|selected|disabled)([-_]|$)|\d/.test(
+          c,
+        ),
+    );
+    if (cls) {
+      const short = `.${CSS.escape(cls)}`;
+      const candidate = parts.length ? `${short} ${parts.join(" > ")}` : short;
+      // Only if it is unambiguous inside the record; otherwise keep climbing.
+      try {
+        if (root.querySelectorAll(candidate).length === 1) return candidate;
+      } catch {}
+    }
+    const tag = node.tagName.toLowerCase();
+    const sameTag = [...node.parentElement.children].filter(
+      (c) => c.tagName === node.tagName,
+    );
+    parts.unshift(
+      sameTag.length > 1
+        ? `${tag}:nth-of-type(${sameTag.indexOf(node) + 1})`
+        : tag,
+    );
+    node = node.parentElement;
+  }
+  return parts.join(" > ") || null;
 }
 
 function _buildSelector(el, bulk = false) {

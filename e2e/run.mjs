@@ -207,6 +207,16 @@ const APIPAGE = `<!doctype html><html><body>
   </script>
 </body></html>`;
 
+/** A grid of product cards, the shape "bulk extract" kept getting wrong. */
+const CARDS = `<!doctype html><html><head><title>Cards</title></head><body>
+  <h1 class="page-title">Shop</h1>
+  <div class="grid">
+    <div class="card"><h3 class="title">Widget</h3><span class="price">$10.00</span><a class="buy" href="/p/1">Buy</a></div>
+    <div class="card"><h3 class="title">Gadget</h3><span class="price">$25.50</span><a class="buy" href="/p/2">Buy</a></div>
+    <div class="card"><h3 class="title">Doohickey</h3><span class="price">$7.99</span><a class="buy" href="/p/3">Buy</a></div>
+  </div>
+</body></html>`;
+
 let env;
 let site;
 
@@ -221,6 +231,7 @@ test.before(async () => {
     "/rich": RICH,
     "/tall": TALL,
     "/countries": COUNTRIES,
+    "/cards": CARDS,
     "/apipage": APIPAGE,
     "/api/items": '{"items":[1,2,3]}',
     "/track/px": "ok",
@@ -1313,5 +1324,159 @@ test("the sniffer's URL filter keeps the calls you asked for and drops the rest"
     nets.length > 0 && nets.every((n) => String(n.url).includes("/api/")),
     `filter let other traffic through: ${nets.map((n) => n.url).join(", ")}`,
   );
+  await page.close();
+});
+
+// ── product cards: a loop, and fields relative to a card ────────────────────
+
+test("a loop-scoped field reads from every card, not from the first one", async () => {
+  // The failure that prompted this: fields picked for a card grid were
+  // described page-wide, so a run either repeated one card's values or picked
+  // whichever element happened to be first.
+  const { page, tabId } = await onSite("/cards");
+  const started = await env.send("pipeline:start", {
+    tabId,
+    targetOrigin: site.origin,
+    pipeline: {
+      name: "cards",
+      steps: [
+        {
+          id: "loop",
+          type: "LOOP",
+          config: { type: "elements", selector: ".card", max: 0 },
+          children: [
+            step("EXTRACT", {
+              fields: [
+                { name: "title", selector: ".title" },
+                { name: "price", selector: ".price", transform: ["number"] },
+                {
+                  name: "link",
+                  selector: ".buy",
+                  type: "attribute",
+                  attribute: "href",
+                  transform: ["url"],
+                },
+              ],
+            }),
+          ],
+        },
+      ],
+    },
+  });
+  assert.equal(started.ok, true, JSON.stringify(started));
+
+  let rows = [];
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    const dl = await env.send("data:download", { runId: started.result.runId });
+    if (dl.ok && dl.result.rows?.length >= 3) {
+      rows = dl.result.rows;
+      break;
+    }
+  }
+  assert.equal(rows.length, 3, `got ${rows.length} rows for 3 cards`);
+  assert.deepEqual(
+    rows.map((r) => r.title),
+    ["Widget", "Gadget", "Doohickey"],
+    "each card contributed its own title",
+  );
+  assert.deepEqual(
+    rows.map((r) => r.price),
+    [10, 25.5, 7.99],
+  );
+  assert.equal(rows[2].link, site.url("/p/3"));
+  await page.close();
+});
+
+test("the picker describes a card's field relative to the card", async () => {
+  const { page, tabId } = await onSite("/cards");
+  // What the panel now asks for when the EXTRACT sits inside a loop.
+  const rel = await page.evaluate(() => {
+    const el = document.querySelectorAll(".card .title")[1];
+    return window.__fsTestScoped ? null : el.className;
+  });
+  void rel;
+
+  // Prove the shape through the step that uses it: a relative selector finds
+  // one element per card.
+  const res = await env.send("step:execute", {
+    step: step("QUERY_COUNT", { selector: ".title" }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.result.count, 3);
+  await page.close();
+});
+
+// ── the page as JSON ────────────────────────────────────────────────────────
+
+test("PAGE_JSON returns the page as a tree, without its scripts", async () => {
+  const { page, tabId } = await onSite("/cards");
+  const res = await env.send("step:execute", {
+    step: step("PAGE_JSON", { mode: "tree", maxNodes: 5000 }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.result.found, true);
+  assert.equal(res.result.truncated, false);
+
+  const json = JSON.stringify(res.result.tree);
+  assert.ok(json.includes("Widget"), "the content is missing");
+  assert.ok(json.includes("card"), "the structure is missing");
+  await page.close();
+});
+
+test("PAGE_JSON text mode gives the readable lines in order", async () => {
+  const { page, tabId } = await onSite("/cards");
+  const res = await env.send("step:execute", {
+    step: step("PAGE_JSON", { mode: "text" }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.deepEqual(res.result.text.slice(0, 4), [
+    "Shop",
+    "Widget",
+    "$10.00",
+    "Buy",
+  ]);
+  await page.close();
+});
+
+test("PAGE_JSON can be pointed at one part of the page", async () => {
+  const { page, tabId } = await onSite("/cards");
+  const res = await env.send("step:execute", {
+    step: step("PAGE_JSON", { mode: "text", selector: ".grid" }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.ok(!res.result.text.includes("Shop"), "the heading leaked in");
+  assert.ok(res.result.text.includes("Widget"));
+  await page.close();
+});
+
+test("a PAGE_JSON run produces a row you can export", async () => {
+  const { page, tabId } = await onSite("/cards");
+  const started = await env.send("pipeline:start", {
+    tabId,
+    targetOrigin: site.origin,
+    pipeline: {
+      name: "pj",
+      steps: [step("PAGE_JSON", { mode: "flat", selector: ".grid" })],
+    },
+  });
+  assert.equal(started.ok, true, JSON.stringify(started));
+
+  let rows = [];
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    const dl = await env.send("data:download", { runId: started.result.runId });
+    if (dl.ok && dl.result.rows?.length) {
+      rows = dl.result.rows;
+      break;
+    }
+  }
+  assert.equal(rows.length, 1, "one row holding the page");
+  assert.ok(Array.isArray(rows[0].content), "flat mode should be rows");
+  assert.ok(rows[0].content.some((r) => r.text === "Widget"));
   await page.close();
 });

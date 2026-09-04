@@ -25,6 +25,7 @@ const EXPOSED = [
   "_stepWait",
   "_stepPaginate",
   "_stepHover",
+  "_buildScopedSelector",
 ];
 
 /**

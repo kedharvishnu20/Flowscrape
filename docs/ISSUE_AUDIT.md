@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 157 findings — 17 blocker · 40 high · 71 medium · 29 low. The
+**Totals:** 159 findings — 18 blocker · 40 high · 71 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -20,7 +20,7 @@ gaps found by reading every step type against its implementation.
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
-| J · Capability gaps             | 27       |
+| J · Capability gaps             | 29       |
 
 ---
 
@@ -127,6 +127,7 @@ decision:
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
+| **J-28**, **J-29** | _this batch_ | New. J-28 is a regression J-26's fix introduced and the user caught within the hour: registering injector.js as a content script let it be evaluated twice, and its top-level `const`s collide at instantiation — the whole content script was lost. It is wrapped in a function now. Fixing it also exposed two tests that had been passing vacuously |
 | **J-24** … **J-27** | _this batch_ | New, all four from real use. Neither selector mode did what it said — Specific returned the whole column, Bulk returned every cell in the table. Detect Table dropped every column rendered as icons rather than text. The API sniffer's MAIN-world hook had no isolated-world listener after a navigation, so it captured nothing on any run that navigated. And a paginating loop offered a bulk picker for its one Next button |
 | **J-23** | _this batch_ | New. The board was a 1400x1200 pan/zoom canvas inside a 400px panel, so nested steps were laid out where they could not be seen — the "UI constraints" that made dropping a step into a loop look broken. It is a scrolling list now, and the panel has an actual visual design rather than framework defaults |
 | J-20, J-21, J-22 | _this batch_ | A field picked inside a loop is described relative to the record, which is what makes a grid of product cards scrapeable; steps can be dragged into a loop; and PAGE_JSON returns the page itself as JSON |
@@ -137,7 +138,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 154 of 157 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 156 of 159 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
@@ -1515,6 +1516,45 @@ button is never disabled could not be stopped at all.
 PAGINATE's own logic was correct throughout: against a 24-page paginator with
 Max pages set to 30 it collected 600 rows and stopped at page 24 with "no
 element matched … this looks like the last page".
+
+### J-28 · BLOCKER · The sniffer relay broke the content script it needed
+
+_Reported while testing J-26: `Uncaught SyntaxError: Identifier 'FS_ORIGIN' has
+already been declared`. Introduced by J-26's own fix._
+
+Registering `injector.js` as a content script for the sniffer meant it could be
+evaluated twice in one document — once by that registration, once by the
+on-demand injection a page step triggers. The two genuinely race.
+
+A classic content script's top-level `const` becomes a lexical binding on the
+isolated world's global scope, and that binding is created when the script is
+_instantiated_, before a single statement runs. So the second evaluation threw
+before reaching anything, and took the whole content script with it. The
+`__fsInjected` guard could not help: it sat 260 lines below the first `const`,
+and was never reachable in the case it was written for.
+
+`injector.js` is now wrapped in a function, so its bindings are local and a
+second evaluation is harmless, with the guard moved to the first line so it is a
+clean no-op rather than a second set of listeners. The sniffer's own injection
+also goes through `_ensureInjected` rather than injecting blindly — surviving a
+double injection is not a reason to do one.
+
+Two tests were passing vacuously and were found while fixing this: both sliced a
+function out of `injector.js` with a lazy `[\s\S]*?` anchored on a closing brace
+at a fixed indent. Re-indenting the file made one stop at the first nested
+brace, cutting `_handleEvent` to six of its cases while still asserting over
+what remained. Both now anchor on their own indent and assert the slice reached
+the end of what it claims to cover.
+
+### J-29 · LOW · A designed refusal was logged as a crash
+
+Pressing Test on `API_SNIFFER`, `LOOP` or `EXPORT` returns an explanation —
+these only mean something inside a run (J-15). The explanation is the intended
+answer, but it was thrown as a plain `Error` and logged through the same path as
+a genuine fault, so the console showed a red `handler-error` for a step
+behaving exactly as designed. Red that means nothing is red that hides the
+errors next to it. These now carry a flag that logs them at info level; the
+message the user reads is unchanged.
 
 ---
 

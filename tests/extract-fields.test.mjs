@@ -64,8 +64,11 @@ test("switching away from Attr drops a stale attribute name", () => {
 });
 
 test("attribute extraction refuses to run unconfigured", () => {
+  // Anchored on its own indent: injector.js is wrapped in an IIFE, so this sits
+  // one level further in than when the regex was written, and a lazy `\n\s*\};`
+  // would stop at the first nested closing brace instead of the function's.
   const fn = injectorSrc.match(
-    /const _extractValue = \(el, field\) => \{[\s\S]*?\n  \};/,
+    /\n {4}const _extractValue = \(el, field\) => \{[\s\S]*?\n {4}\};/,
   )?.[0];
   assert.ok(fn, "found _extractValue");
   assert.match(

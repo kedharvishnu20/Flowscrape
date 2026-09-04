@@ -35,10 +35,21 @@ test("injector declares an ownership set for its message listener", () => {
 });
 
 test("every type _handleEvent answers is registered as owned", () => {
+  // Anchored on the function's own indent. `\n}` at column zero no longer ends
+  // it (the file is wrapped in an IIFE), and a lazy `\n\s*\}` stops at the first
+  // nested closing brace — which cut the slice to six cases and made this test
+  // pass without looking at the rest.
   const handler = injectorSrc.match(
-    /async function _handleEvent\([\s\S]*?\n\}/,
+    /\n {2}async function _handleEvent\([\s\S]*?\n {2}\}/,
   )?.[0];
   assert.ok(handler, "found _handleEvent");
+  // The slice must reach the switch's default, or a lazy match could stop at a
+  // nested brace and this comparison would be vacuous.
+  assert.match(
+    handler,
+    /default:\s*\n\s*throw new Error\(`Unhandled event type/,
+    "the _handleEvent slice stops short of the end of its switch",
+  );
 
   // Cases are written either as CE.NAME or as a string literal.
   const handled = new Set(

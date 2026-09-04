@@ -6,6 +6,7 @@
 // overlay engine. So it is evaluated in the page context with `chrome` stubbed
 // and a small epilogue that publishes the handlers under test.
 import { JSDOM } from "jsdom";
+import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
@@ -105,7 +106,15 @@ export async function loadInjector(html = "") {
     "",
   );
 
-  source += `\n;globalThis.__fsTestApi = { ${EXPOSED.join(", ")} };\n`;
+  // injector.js is wrapped in an IIFE so a second evaluation cannot collide with
+  // its own top-level bindings, which means the export has to go *inside* that
+  // function — appended to the file it would see none of these names.
+  const close = source.lastIndexOf("})();");
+  assert.ok(close !== -1, "injector.js is no longer wrapped in an IIFE");
+  source =
+    source.slice(0, close) +
+    `\n;globalThis.__fsTestApi = { ${EXPOSED.join(", ")} };\n` +
+    source.slice(close);
 
   const context = dom.getInternalVMContext();
   vm.runInContext(source, context, { filename: "injector.js" });

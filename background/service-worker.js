@@ -244,9 +244,11 @@ async function _enableSniffer(runId, tabId, targetOrigin) {
   // into the page that is already open so the run does not have to navigate
   // first — traffic that happened before this point is necessarily missed.
   if (tabId) {
-    await chrome.scripting
-      .executeScript({ target: { tabId }, files: [INJECTOR_FILE] })
-      .catch(() => {});
+    // The relay, on the page that is already open. Through _ensureInjected so
+    // a document that already has it is left alone: injector.js survives a
+    // second evaluation now, but not injecting twice is still cheaper than
+    // relying on it.
+    await _ensureInjected(tabId).catch(() => {});
     await chrome.scripting
       .executeScript({
         target: { tabId },
@@ -773,6 +775,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           type,
           message: "Target tab not active/refreshed.",
         });
+      } else if (err.expected) {
+        // A designed refusal — "this step only means something inside a run".
+        // The user still gets the message; the console does not get a red one.
+        logger.info(MODULE, "handler-refused", { type, reason: err.message });
       } else {
         logger.error(MODULE, "handler-error", { type, error: err.message });
       }
@@ -2845,6 +2851,21 @@ _registerHandler("content:ensure", async (payload, sender) => {
  *
  * @type {Record<string, string>}
  */
+/**
+ * Marks a rejection as an explanation rather than a fault.
+ *
+ * These reach the user as the message they should see, so logging them at
+ * error level printed a red `handler-error` in the console for a step that
+ * behaved exactly as designed — noise that hides the real errors next to it.
+ */
+class ExplainedRefusal extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ExplainedRefusal";
+    this.expected = true;
+  }
+}
+
 const RUN_ONLY_STEPS = {
   LOOP: "A loop needs a pipeline to iterate. Press Run to see it work — its steps can be tested one at a time.",
   EXPORT:
@@ -2860,7 +2881,7 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
   const resolvedStep = _resolveConfig(step, testCtx);
   const type = resolvedStep.type;
 
-  if (RUN_ONLY_STEPS[type]) throw new Error(RUN_ONLY_STEPS[type]);
+  if (RUN_ONLY_STEPS[type]) throw new ExplainedRefusal(RUN_ONLY_STEPS[type]);
 
   if (type === "API") return _executeApiStep(resolvedStep.config, testCtx);
 

@@ -218,3 +218,124 @@ test("the data-document type test accepts what APIs actually send", () => {
     assert.ok(!re.test(t), `${t} should not be captured as an API response`);
   }
 });
+
+// ── The relay must not break the page it is registered on ───────────────────
+//
+// Registering injector.js as a content script means it can now be evaluated
+// twice in one document: once by that registration, once by the on-demand
+// injection a page step triggers. The two genuinely race.
+//
+// A classic script's top-level `const` becomes a lexical binding created at
+// instantiation, before any statement runs — so the second evaluation threw
+// `Identifier 'FS_ORIGIN' has already been declared` and took the content
+// script down with it. No runtime guard can catch that; the bindings have to
+// stop being global.
+
+test("injector.js can be evaluated twice in one document", async () => {
+  const { JSDOM } = await import("jsdom");
+  const vm = (await import("node:vm")).default;
+
+  const dom = new JSDOM("<!doctype html><p>x</p>", {
+    url: "https://x.test/",
+    runScripts: "outside-only",
+  });
+  dom.window.chrome = {
+    runtime: {
+      getURL: (p) => `chrome-extension://test/${p}`,
+      onMessage: { addListener() {} },
+      sendMessage: () => Promise.resolve(),
+      lastError: null,
+    },
+  };
+  const src = injector.replace(
+    /import\(chrome\.runtime\.getURL\("content\/overlay-engine\.js"\)\)[\s\S]*?\}\);\s*$/,
+    "",
+  );
+  const ctx = dom.getInternalVMContext();
+  vm.runInContext(src, ctx, { filename: "injector.js" });
+  assert.doesNotThrow(
+    () => vm.runInContext(src, ctx, { filename: "injector.js#2" }),
+    "a second injection throws, so the content script is lost",
+  );
+  dom.window.close();
+});
+
+test("the guard runs before anything it has to protect", () => {
+  // A guard placed after the declarations is decorative: the collision happens
+  // at instantiation, which is before the guard exists.
+  const body = injector.slice(injector.indexOf('"use strict";'));
+  const guard = body.indexOf("globalThis.__fsInjected");
+  const firstConst = body.indexOf("\nconst ");
+  assert.ok(guard !== -1, "no re-entry guard at all");
+  assert.ok(
+    guard < firstConst || firstConst === -1,
+    "a top-level const is declared before the guard",
+  );
+  assert.match(
+    body.slice(guard - 200, guard + 120),
+    /\(\(\) => \{/,
+    "the file is not wrapped, so its bindings are still global",
+  );
+});
+
+test("the sniffer does not inject blindly over a live document", () => {
+  const enable = worker.slice(
+    worker.indexOf("async function _enableSniffer"),
+    worker.indexOf("async function _disableSniffer"),
+  );
+  assert.match(enable, /_ensureInjected\(tabId\)/);
+  assert.ok(
+    !/executeScript\(\{ target: \{ tabId \}, files: \[INJECTOR_FILE\] \}\)/.test(
+      enable,
+    ),
+    "still injecting the relay without checking whether it is already there",
+  );
+});
+
+// ── A designed refusal is not a crash ───────────────────────────────────────
+//
+// Pressing Test on API_SNIFFER, LOOP or EXPORT returns an explanation: these
+// only mean something inside a run. The explanation is the intended answer, but
+// the worker logged it through the same path as a genuine fault, so the console
+// showed a red `handler-error` for a step that behaved exactly as designed —
+// noise that hides the real errors beside it.
+
+test("run-only steps refuse with an explanation, not an error", () => {
+  assert.match(worker, /class ExplainedRefusal extends Error/);
+  assert.match(worker, /throw new ExplainedRefusal\(RUN_ONLY_STEPS\[type\]\)/);
+  const refusal = worker.slice(
+    worker.indexOf("class ExplainedRefusal"),
+    worker.indexOf("const RUN_ONLY_STEPS"),
+  );
+  assert.match(refusal, /this\.expected = true/);
+});
+
+test("the message the user reads is still the message that is sent", () => {
+  // Downgrading the log level must not swallow the reply: the panel shows
+  // err.message, and an empty one would leave Test looking like it did nothing.
+  const katch = worker.slice(
+    worker.indexOf("handler(payload ?? {}, sender)"),
+    worker.indexOf("return true; // keep channel open"),
+  );
+  assert.match(katch, /err\.expected/);
+  assert.match(katch, /handler-refused/);
+  assert.match(
+    katch,
+    /sendResponse\(\{ ok: false, error: err\.message/,
+    "the refusal must still reach the panel",
+  );
+});
+
+test("a real fault is still logged as one", () => {
+  // The branch that downgrades expected refusals must not swallow everything
+  // else with it.
+  const katch = worker.slice(
+    worker.indexOf("handler(payload ?? {}, sender)"),
+    worker.indexOf("return true; // keep channel open"),
+  );
+  assert.match(
+    katch,
+    /\} else \{\s*\n\s*logger\.error\(MODULE, "handler-error"/,
+    "unexpected errors would now be logged nowhere",
+  );
+});

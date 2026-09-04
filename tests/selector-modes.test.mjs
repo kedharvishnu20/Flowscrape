@@ -170,8 +170,9 @@ test("the paginate knobs the worker reads are reachable from the panel", () => {
   // Checked inside the paginate branch, not the whole file: both names occur
   // in the worker-facing code regardless.
   const branch = builder.slice(
-    builder.indexOf('html += selectorRow(step, "selector", "Next button");') - 900,
-    builder.indexOf('html += `<label>On iteration failure</label>'),
+    builder.indexOf('html += selectorRow(step, "selector", "Next button");') -
+      900,
+    builder.indexOf("html += `<label>On iteration failure</label>"),
   );
   assert.match(branch, /"settleMs"/);
   assert.match(branch, /"requireChange"/);

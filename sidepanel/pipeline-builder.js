@@ -211,8 +211,18 @@ async function _downloadRunRows(runId) {
   const rows = (res.result?.rows ?? []).map(
     ({ runId: _runId, ...rest }) => rest,
   );
-  if (rows.length === 0) {
-    logToMonitor("warn-log", "That run stored no rows.");
+  // The captured requests come back in the same reply. This used to read
+  // `rows` alone and announce "That run stored no rows" — so a run whose whole
+  // purpose was the sniffer reported that it had collected nothing, while its
+  // captures sat unread in the response. That is what "the API sniffer is not
+  // working" was, for a sniffer that was working.
+  const networks = res.result?.networks ?? [];
+
+  if (rows.length === 0 && networks.length === 0) {
+    logToMonitor(
+      "warn-log",
+      "That run collected no rows and captured no API calls.",
+    );
     return;
   }
 
@@ -220,15 +230,31 @@ async function _downloadRunRows(runId) {
   // imported it (F-01). It uses the File System Access API's save dialog where
   // the browser has one — which a service worker cannot show, but the side
   // panel can — and falls back to a Blob download everywhere else.
+  const written = [];
   try {
-    await exportRows(rows, "csv", `flowscrape_${runId}.csv`);
+    if (rows.length > 0) {
+      await exportRows(rows, "csv", `flowscrape_${runId}.csv`);
+      written.push(`${rows.length} row${rows.length === 1 ? "" : "s"}`);
+    }
+    if (networks.length > 0) {
+      // A separate file, not merged: an API capture and an extracted row have
+      // nothing in common but the run they came from, and one CSV holding both
+      // would have a column for every field of each.
+      await exportRows(networks, "csv", `flowscrape_${runId}_api.csv`);
+      written.push(
+        `${networks.length} captured request${networks.length === 1 ? "" : "s"}`,
+      );
+    }
   } catch (err) {
     // A cancelled save dialog is a choice, not a failure.
     if (err?.name === "AbortError") return;
     notify("error-log", `Download failed: ${err.message}`);
     return;
   }
-  logToMonitor("info-log", `Downloaded ${rows.length} rows from ${runId}.`);
+  logToMonitor(
+    "info-log",
+    `Downloaded ${written.join(" and ")} from ${runId}.`,
+  );
 }
 
 async function saveState() {
@@ -696,6 +722,10 @@ function bindGlobalControls() {
       };
       btnRun.classList.add("hidden");
       document.getElementById("run-controls")?.classList.remove("hidden");
+      // A previous run's capture count is not this run's.
+      document.getElementById("mon-apis-card")?.classList.add("hidden");
+      const apis = document.getElementById("mon-apis");
+      if (apis) apis.textContent = "0";
       _setPausedUI(false);
       document.querySelector('[data-tab="monitor"]').click();
       startMonitorTimer();
@@ -4077,6 +4107,16 @@ function listenToSystem() {
         const el = document.getElementById("mon-errs");
         if (el) el.textContent = parseInt(el.textContent || "0") + 1;
       }
+    }
+
+    // A live count, because the log deliberately stops naming captures after
+    // the third — on a site that makes forty calls that left the panel silent
+    // for the rest of the run and the sniffer looking stalled.
+    if (msg.type === "pipeline:captures") {
+      const card = document.getElementById("mon-apis-card");
+      const val = document.getElementById("mon-apis");
+      if (card) card.classList.remove("hidden");
+      if (val) val.textContent = String(msg.payload.networks ?? 0);
     }
   });
 }

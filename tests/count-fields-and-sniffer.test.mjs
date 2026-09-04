@@ -339,3 +339,91 @@ test("a real fault is still logged as one", () => {
     "unexpected errors would now be logged nowhere",
   );
 });
+
+// ── J-30: the captures had nowhere to go ────────────────────────────────────
+//
+// With the relay fixed (J-26) the sniffer captures correctly — verified in a
+// browser against an early fetch in <head>, an XHR, a cross-origin call and one
+// fired on a timer: all four stored. It still read as broken, for two reasons
+// that are both about what the user can see.
+//
+// The download button asked for `data:download`, which returns rows *and*
+// networks, then used `rows` alone and announced "That run stored no rows" — so
+// a run whose entire purpose was the sniffer reported collecting nothing while
+// its captures sat unread in the reply it had just received.
+//
+// And the run log deliberately names only the first three captures, so on a
+// site making forty calls the panel went silent for the rest of the run.
+
+test("the download offers the captured requests, not just rows", () => {
+  const fn = builder.slice(
+    builder.indexOf("async function _downloadRunRows"),
+    builder.indexOf("function _removeExtractField"),
+  );
+  assert.match(
+    fn,
+    /res\.result\?\.networks/,
+    "the captures are still discarded",
+  );
+  assert.ok(
+    !/if \(rows\.length === 0\) \{\s*\n\s*logToMonitor\(\s*\n?\s*"warn-log",\s*\n?\s*"That run stored no rows\."/.test(
+      fn,
+    ),
+    "a sniffer-only run is still reported as having collected nothing",
+  );
+  assert.match(
+    fn,
+    /exportRows\(networks,/,
+    "the captures are never written to a file",
+  );
+  // Rows and captures are different shapes; merging them would give one CSV a
+  // column for every field of each.
+  assert.match(fn, /_api\.csv/);
+});
+
+test("a run with captures and no rows still downloads something", () => {
+  const fn = builder.slice(
+    builder.indexOf("async function _downloadRunRows"),
+    builder.indexOf("function _removeExtractField"),
+  );
+  const guard = fn.match(/if \(([^)]*length === 0[^)]*)\) \{/);
+  assert.ok(guard, "no empty-run guard found");
+  assert.match(
+    guard[1],
+    /networks\.length === 0/,
+    "the guard bails out before it has looked at the captures",
+  );
+});
+
+test("the capture count is broadcast as it climbs", () => {
+  const intake = worker.slice(
+    worker.indexOf('_registerHandler("network:sniff"'),
+    worker.indexOf('_registerHandler("network:sniff"') + 3000,
+  );
+  assert.match(intake, /type: "pipeline:captures"/);
+  assert.match(intake, /networks: n/);
+});
+
+test("the panel shows the count and reveals the readout", () => {
+  assert.match(builder, /msg\.type === "pipeline:captures"/);
+  const branch = builder.slice(
+    builder.indexOf('msg.type === "pipeline:captures"'),
+    builder.indexOf('msg.type === "pipeline:captures"') + 500,
+  );
+  assert.match(branch, /mon-apis-card/);
+  assert.match(branch, /classList\.remove\("hidden"\)/);
+  assert.match(branch, /mon-apis/);
+});
+
+test("the readout does not carry a previous run's count", async () => {
+  const html = await read("sidepanel/index.html");
+  assert.match(html, /id="mon-apis-card"/);
+  assert.match(html, /id="mon-apis"/);
+  // Hidden until a run actually captures something: a permanent "0 APIs" on
+  // every run is a readout for something most pipelines never do.
+  assert.match(html, /class="metric-card hidden" id="mon-apis-card"/);
+  assert.match(
+    builder,
+    /getElementById\("mon-apis-card"\)\?\.classList\.add\("hidden"\)/,
+  );
+});

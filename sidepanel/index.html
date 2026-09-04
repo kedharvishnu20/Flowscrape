@@ -2172,6 +2172,15 @@
               <div class="metric-label">Time Elapsed</div>
               <div class="metric-val" id="mon-time">00:00</div>
             </div>
+            <!-- Only shown once a run has the sniffer on: a permanent "0 APIs"
+                 on every run would be a readout for something most pipelines
+                 never do. -->
+            <div class="metric-card hidden" id="mon-apis-card">
+              <div class="metric-label">APIs Captured</div>
+              <div class="metric-val" style="color: var(--live)" id="mon-apis">
+                0
+              </div>
+            </div>
             <div class="metric-card">
               <div class="metric-label">Status</div>
               <div

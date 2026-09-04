@@ -997,6 +997,16 @@ _registerHandler("network:sniff", async (payload, sender) => {
           runId,
         );
       }
+      // The log going quiet after the third capture is why a working sniffer
+      // looked stalled: on a site that makes forty calls you saw three lines
+      // and then nothing for the rest of the run. The count is a readout
+      // instead, so it keeps moving without burying the run's own messages.
+      chrome.runtime
+        .sendMessage({
+          type: "pipeline:captures",
+          payload: { runId, networks: n, tabId: rs.tabId },
+        })
+        .catch(() => {});
       _pushCapture(
         rs,
         "networks",

@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 159 findings — 18 blocker · 40 high · 71 medium · 30 low. The
+**Totals:** 160 findings — 18 blocker · 41 high · 71 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -20,7 +20,7 @@ gaps found by reading every step type against its implementation.
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
-| J · Capability gaps             | 29       |
+| J · Capability gaps             | 30       |
 
 ---
 
@@ -127,6 +127,7 @@ decision:
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
+| **J-30** | _this batch_ | New. The capture engine was correct after J-26 — an early fetch, an XHR, a cross-origin call and a timer-fired one all stored — but the download button discarded the captures and reported "that run stored no rows", and the log names only the first three, so a busy site went silent mid-run |
 | **J-28**, **J-29** | _this batch_ | New. J-28 is a regression J-26's fix introduced and the user caught within the hour: registering injector.js as a content script let it be evaluated twice, and its top-level `const`s collide at instantiation — the whole content script was lost. It is wrapped in a function now. Fixing it also exposed two tests that had been passing vacuously |
 | **J-24** … **J-27** | _this batch_ | New, all four from real use. Neither selector mode did what it said — Specific returned the whole column, Bulk returned every cell in the table. Detect Table dropped every column rendered as icons rather than text. The API sniffer's MAIN-world hook had no isolated-world listener after a navigation, so it captured nothing on any run that navigated. And a paginating loop offered a bulk picker for its one Next button |
 | **J-23** | _this batch_ | New. The board was a 1400x1200 pan/zoom canvas inside a 400px panel, so nested steps were laid out where they could not be seen — the "UI constraints" that made dropping a step into a loop look broken. It is a scrolling list now, and the panel has an actual visual design rather than framework defaults |
@@ -138,7 +139,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 156 of 159 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 157 of 160 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
@@ -1555,6 +1556,40 @@ a genuine fault, so the console showed a red `handler-error` for a step
 behaving exactly as designed. Red that means nothing is red that hides the
 errors next to it. These now carry a flag that logs them at info level; the
 message the user reads is unchanged.
+
+### J-30 · HIGH · The sniffer worked and the panel said it had not
+
+_Reported as "I think the API sniffer is still not working — only for the link I
+provided did it work, the rest not"._
+
+With J-26's relay in place the capture engine is correct. Verified in a browser
+against the four shapes real traffic takes, all four stored:
+
+| traffic                                     | captured |
+| ------------------------------------------- | -------- |
+| `fetch` in `<head>`, before the relay loads | yes      |
+| `XMLHttpRequest`                            | yes      |
+| `fetch` to a different origin               | yes      |
+| `fetch` fired on a timer, long after load   | yes      |
+
+What was broken was everything the user could see.
+
+**The download threw the captures away.** `_downloadRunRows` asked for
+`data:download`, which returns rows _and_ networks — J-16 added them for exactly
+this — then read `rows` alone, announced "That run stored no rows" and wrote no
+file. A run whose whole purpose was the sniffer reported collecting nothing
+while its captures sat unread in the reply it had just received. It now writes
+`flowscrape_<run>_api.csv` alongside the row file, and the empty-run message
+appears only when both are empty.
+
+**The log went quiet.** Captures are named only for the first three, so that a
+busy page cannot bury the run's own messages — sound, but it meant a site making
+forty calls showed three lines and then nothing for the rest of the run. The
+count is a readout in the monitor now, beside Rows Extracted, revealed the first
+time a run captures anything.
+
+So "only the link I provided worked" was precisely backwards: that link was the
+one case with so little traffic that all of it fit in the first three log lines.
 
 ---
 

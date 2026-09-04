@@ -138,6 +138,75 @@
     return tag;
   }
 
+  /**
+   * The column names a table already gives its own columns.
+   *
+   * A real `<table>` says what each column is, in a header row, in words the
+   * page author chose. Deriving a name from the selector that found the cell
+   * instead produced exports like:
+   *
+   *     tdnthoftype,tdnthoftype 2,tdnthoftype 3,tdnthoftype 4
+   *     Clean Code,Robert C. Martin,4.5,26.56
+   *
+   * — right data, every column misnamed, while the page was holding up a sign
+   * saying "name". So read the sign.
+   *
+   * @param {Element} record - one record element, a <tr> or not
+   * @returns {string[]} header text by column index; empty when there is none
+   */
+  function tableHeaders(record) {
+    if (!record || record.tagName !== "TR") return [];
+    const table = record.closest("table");
+    if (!table) return [];
+
+    // Only where the markup says so: a <thead>, or a row of <th>. A first row
+    // of plain <td> is genuinely ambiguous — nothing distinguishes
+    // `<tr><td>name</td></tr>` from a row of data, and a human has to read it
+    // to tell. Guessing wrong either names every column after the first book,
+    // or silently drops a real row from the scrape. So it is left as data,
+    // where the user can see it and delete it.
+    let cells = [...table.querySelectorAll("thead th, thead td")];
+    if (cells.length === 0) {
+      cells = [...(table.querySelector("tr:has(th)")?.children ?? [])].filter(
+        (c) => c.tagName === "TH",
+      );
+    }
+    return cells.map((c) => clean(c.textContent));
+  }
+
+  /**
+   * The 1-based column index a `td:nth-of-type(N)` selector points at.
+   * @returns {number} 0 when the selector is not a positional cell
+   */
+  function cellIndex(selector) {
+    const last =
+      selector
+        .split(/[\s>+~]+/)
+        .filter(Boolean)
+        .shift() ?? "";
+    const m = last.match(/^(?:td|th):nth-of-type\((\d+)\)$/i);
+    return m ? Number(m[1]) : 0;
+  }
+
+  /**
+   * The best name for a column: the one the page gave it, else a guess.
+   *
+   * @param {string} selector
+   * @param {string} kind - "text", "href" or "src"
+   * @param {string[]} headers - the table's header row, if it has one
+   */
+  function nameFrom(selector, kind, headers) {
+    const index = cellIndex(selector);
+    const header = index > 0 ? headers[index - 1] : "";
+    if (!header) return nameFor(selector, kind);
+    const base = header.toLowerCase();
+    // The cell may yield more than one column — its text and a link's href —
+    // so the kind still has to be part of the name.
+    if (kind === "href") return base.endsWith("url") ? base : `${base} url`;
+    if (kind === "src") return base.endsWith("image") ? base : `${base} image`;
+    return base;
+  }
+
   /** A column name guessed from the selector that found it. */
   function nameFor(selector, kind) {
     const last =
@@ -328,11 +397,12 @@
       );
     });
 
+    const headers = tableHeaders(members[0]);
     const named = columns
       .sort((a, b) => b.hits - a.hits || a.depth - b.depth)
       .slice(0, MAX_FIELDS)
       .map((c) => ({
-        name: nameFor(c.selector, c.kind),
+        name: nameFrom(c.selector, c.kind, headers),
         selector: c.selector,
         kind: c.kind,
         coverage: Math.round((c.hits / members.length) * 100),

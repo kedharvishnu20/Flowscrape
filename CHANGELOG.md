@@ -10,12 +10,12 @@ if any copy of it drifts.
 ## [Unreleased]
 
 Everything below was found by a full-repository audit
-([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 143 findings) and fixed against
+([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 149 findings) and fixed against
 it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-607**, plus **55 end-to-end checks** that load the extension into a real
+630**, plus **63 end-to-end checks** that load the extension into a real
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
@@ -82,6 +82,38 @@ capabilities the configuration promised and the code did not have.
   error in a price column with nothing to signal it — and text with no number in
   it becomes empty, never `0`, because `0` is a plausible price. Detect Table
   picks the obvious transforms itself.
+
+### Fixed — reported from real use
+
+Six findings, all from someone actually running the extension rather than from
+reading the code.
+
+- **Nothing could reach inside an iframe** (J-14). The content script was
+  injected into the top document only, and an iframe is a separate document
+  rather than a branch of its parent's DOM — so no step could touch anything
+  in one, on any site. Injection reaches every frame now, and each page step
+  carries a **"Look inside iframes as well"** toggle. A toggle rather than
+  always searching, because searching every frame changes what an ambiguous
+  selector matches and a page can carry a dozen advertising iframes.
+- **Half the step types could not be tested** (J-15) — `Unknown step type:
+LOOP`, `Unknown step type: API_SNIFFER`, and PDF extraction with them. The
+  test path forwarded anything it did not special-case to the page, and ten of
+  the twenty-two types run in the worker. It asks the registry where a step
+  runs now, and the three that genuinely cannot be tested alone say why.
+- **The API sniffer captured and threw the captures away** (J-16). It hooked
+  the page and recorded requests; the run state holding them was deleted the
+  moment the run ended, and `data:download` never returned them. So the only
+  way to see one was inside the export archive.
+- **Detect Table ignored a table's own header row** (J-17), naming columns
+  `tdnthoftype, tdnthoftype 2, …` while the page's `<thead>` said `name,
+author, stars, price`.
+- **`HOVER` reported success whatever happened** (J-18). It can open a
+  JavaScript menu and cannot open a CSS `:hover` one — `:hover` follows the
+  real mouse pointer, which no page may move. It can now be told what should
+  appear, and fails with that explanation when nothing does.
+- **A browser shortcut could not be registered, only triggered** (J-19):
+  pressing Ctrl+W to capture it closed the tab, as it always will. Combos can
+  be typed now, and a reserved one is flagged.
 
 ### Fixed — found by running it on a real website
 

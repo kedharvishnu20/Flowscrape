@@ -177,6 +177,36 @@ const COUNTRIES = `<!doctype html><html><head><title>Countries</title></head><bo
   </div></div>
 </body></html>`;
 
+/** A page whose real content lives inside an iframe, as w3schools' demo does. */
+const FRAMED = `<!doctype html><html><body>
+  <h1 id="outer">Outer page</h1>
+  <iframe id="iframeResult" src="/framed-inner" style="width:600px;height:300px"></iframe>
+</body></html>`;
+const FRAMED_INNER = `<!doctype html><html><body>
+  <h1 id="inner-title">Inside the frame</h1>
+  <div class="framed-item">Alpha</div>
+  <div class="framed-item">Beta</div>
+  <input id="framed-input" type="text">
+  <button id="framed-btn">Go</button>
+  <div id="framed-clicked">no</div>
+  <script>
+    document.getElementById('framed-btn').addEventListener('click', () => {
+      document.getElementById('framed-clicked').textContent = 'yes';
+    });
+  </script>
+</body></html>`;
+
+/** A page that calls an API when you click, plus a tracking beacon to filter out. */
+const APIPAGE = `<!doctype html><html><body>
+  <button id="go">Load</button>
+  <script>
+    document.getElementById('go').addEventListener('click', async () => {
+      await fetch('/api/items');
+      await fetch('/track/px');
+    });
+  </script>
+</body></html>`;
+
 let env;
 let site;
 
@@ -191,6 +221,11 @@ test.before(async () => {
     "/rich": RICH,
     "/tall": TALL,
     "/countries": COUNTRIES,
+    "/apipage": APIPAGE,
+    "/api/items": '{"items":[1,2,3]}',
+    "/track/px": "ok",
+    "/framed": FRAMED,
+    "/framed-inner": FRAMED_INNER,
   });
   env = await launch();
 });
@@ -1141,6 +1176,142 @@ test("a detected country table gives one row per country, with clean columns", a
     antarctica[areaKey],
     14000000,
     `"1.4E7" was read as ${antarctica[areaKey]}`,
+  );
+  await page.close();
+});
+
+// ── inside an iframe ────────────────────────────────────────────────────────
+
+test("without the toggle, a selector inside an iframe is not found", async () => {
+  // Not a regression — the honest default. An iframe is a separate document,
+  // so `#inner-title` genuinely is not in this page, and searching every frame
+  // by default would change what an ambiguous selector matches.
+  const { page, tabId } = await onSite("/framed");
+  const res = await env.send("step:execute", {
+    step: step("EXTRACT", {
+      fields: [{ name: "t", selector: "#inner-title" }],
+    }),
+    tabId,
+  });
+  const rows = res.ok ? res.result : [];
+  assert.ok(
+    rows.length === 0 || !rows[0]?.t,
+    `it reached into the frame without being asked: ${JSON.stringify(rows)}`,
+  );
+  await page.close();
+});
+
+test("with the toggle on, a step reads inside the iframe", async () => {
+  const { page, tabId } = await onSite("/framed");
+  const res = await env.send("step:execute", {
+    step: step("EXTRACT", {
+      inFrame: true,
+      fields: [{ name: "t", selector: "#inner-title" }],
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.deepEqual(res.result, [{ t: "Inside the frame" }]);
+  await page.close();
+});
+
+test("with the toggle on, a step clicks inside the iframe", async () => {
+  const { page, tabId } = await onSite("/framed");
+  const res = await env.send("step:execute", {
+    step: step("CLICK", { selector: "#framed-btn", inFrame: true }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  const frame = page.frames().find((f) => f.url().includes("framed-inner"));
+  assert.equal(await frame.locator("#framed-clicked").textContent(), "yes");
+  await page.close();
+});
+
+test("with the toggle on, a step types inside the iframe", async () => {
+  const { page, tabId } = await onSite("/framed");
+  const res = await env.send("step:execute", {
+    step: step("FILL", {
+      selector: "#framed-input",
+      text: "hello",
+      inFrame: true,
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  const frame = page.frames().find((f) => f.url().includes("framed-inner"));
+  assert.equal(await frame.locator("#framed-input").inputValue(), "hello");
+  await page.close();
+});
+
+test("the top document still wins when the selector matches there too", async () => {
+  // The toggle must not change which element a working selector finds.
+  const { page, tabId } = await onSite("/framed");
+  const res = await env.send("step:execute", {
+    step: step("EXTRACT", {
+      inFrame: true,
+      fields: [{ name: "t", selector: "h1" }],
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.result[0].t, "Outer page");
+  await page.close();
+});
+
+test("a selector that is nowhere says it looked in the frames too", async () => {
+  const { page, tabId } = await onSite("/framed");
+  const res = await env.send("step:execute", {
+    step: step("CLICK", { selector: "#nowhere", inFrame: true }),
+    tabId,
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /frame/i, `unhelpful error: ${res.error}`);
+  await page.close();
+});
+
+// ── the API sniffer, from the outside ───────────────────────────────────────
+
+async function sniffRun(tabId, config) {
+  const started = await env.send("pipeline:start", {
+    tabId,
+    targetOrigin: site.origin,
+    pipeline: {
+      name: "sniff",
+      steps: [
+        step("API_SNIFFER", { enabled: true, ...config }),
+        step("WAIT", { mode: "fixed", ms: 400 }),
+        step("CLICK", { selector: "#go" }),
+        step("WAIT", { mode: "fixed", ms: 1500 }),
+      ],
+    },
+  });
+  assert.equal(started.ok, true, JSON.stringify(started));
+  await new Promise((r) => setTimeout(r, 5000));
+  const dl = await env.send("data:download", { runId: started.result.runId });
+  return dl.result.networks ?? [];
+}
+
+test("the sniffer captures the calls a page makes during a run", async () => {
+  // Reported as "the API sniffer is not working". It was capturing; the
+  // captures lived only on the run state, which is deleted the moment the run
+  // finishes — so by the time anyone looked, they were gone.
+  const { page, tabId } = await onSite("/apipage");
+  const nets = await sniffRun(tabId, {});
+  assert.ok(
+    nets.length >= 2,
+    `captured ${nets.length}: ${JSON.stringify(nets)}`,
+  );
+  assert.ok(nets.some((n) => String(n.url).includes("/api/items")));
+  await page.close();
+});
+
+test("the sniffer's URL filter keeps the calls you asked for and drops the rest", async () => {
+  const { page, tabId } = await onSite("/apipage");
+  const nets = await sniffRun(tabId, { urlFilter: "/api/" });
+  assert.ok(
+    nets.length > 0 && nets.every((n) => String(n.url).includes("/api/")),
+    `filter let other traffic through: ${nets.map((n) => n.url).join(", ")}`,
   );
   await page.close();
 });

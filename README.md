@@ -6,11 +6,11 @@ tab, and export the results.
 
 No build step. No bundler. Plain ES modules, loaded directly by Chrome.
 
-> **Status.** A full audit found 143 issues; 140 are fixed and three are left
+> **Status.** A full audit found 149 issues; 146 are fixed and three are left
 > alone on purpose (three subsystems that work but that nothing calls — the
 > reasoning is in the audit). Every fix landed with regression tests that were
-> run against the pre-fix code first to confirm they failed: 607 tests, from
-> zero, plus 55 end-to-end checks in a real Chromium with the extension loaded —
+> run against the pre-fix code first to confirm they failed: 630 tests, from
+> zero, plus 63 end-to-end checks in a real Chromium with the extension loaded —
 > which is how four findings were caught, among them an `EXPORT` that had never
 > downloaded anything and page steps that failed after every navigation. [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md) is the inventory,
 > [`CHANGELOG.md`](CHANGELOG.md) the summary, and
@@ -32,8 +32,8 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 607 tests, ~30s, no browser needed
-npm run e2e     # 55 checks in a real Chromium with the extension loaded
+npm test        # 630 tests, ~35s, no browser needed
+npm run e2e     # 63 checks in a real Chromium with the extension loaded
 npm run check   # parses every source file as an ES module
 npm run format  # prettier; `npm run format:check` in CI
 ```
@@ -137,8 +137,8 @@ script-gen/
   node-emitter.js              AST → Node (playwright)
 
 mcp/                           Standalone MCP server (see mcp/README.md)
-tests/                         607 tests; node:test, jsdom, fake-indexeddb
-e2e/                           55 checks against a real Chromium
+tests/                         630 tests; node:test, jsdom, fake-indexeddb
+e2e/                           63 checks against a real Chromium
 scripts/check-syntax.mjs       Parses every source file
 docs/                          Audit, architecture, manual, template guide
 examples/                      Pipeline JSON you can import

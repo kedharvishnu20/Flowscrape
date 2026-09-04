@@ -1641,7 +1641,30 @@ function getStepSubtitle(step) {
 }
 
 // ── Config HTML generators ────────────────────────────────────────────────────
+/**
+ * The config panel for one step: its own fields, then the options every page
+ * step shares.
+ *
+ * The shared part is appended here rather than inside each of the twenty
+ * type-specific blocks, because twenty copies of a toggle is twenty places for
+ * one of them to be forgotten — which is precisely how IF_ELSE shipped without
+ * the "optional" toggle (E-15).
+ */
 function generateConfigHtml(step) {
+  let html = _configFields(step);
+  if (STEP_TYPES[step.type]?.runsIn === "page") {
+    html += toggle(step, "inFrame", "Look inside iframes as well");
+    html += hint(
+      "An iframe is a separate page embedded in this one, and its contents " +
+        "are invisible to a selector by default — which is why nothing could " +
+        "reach them. With this on, the step tries the page first and then each " +
+        "frame, and uses the first one where the selector matches.",
+    );
+  }
+  return html;
+}
+
+function _configFields(step) {
   const c = step.config;
   let html = "";
 
@@ -1788,10 +1811,26 @@ function generateConfigHtml(step) {
   // ── KEYBOARD ──
   if (step.type === "KEYBOARD") {
     html += `<label>Key to Press</label>
-    <div class="flex gap-2" style="margin-bottom:10px;align-items:center;">
+    <div class="flex gap-2" style="margin-bottom:6px;align-items:center;">
       <div class="key-display" id="key-disp-${step.id}">${esc(c.key || "Not set")}</div>
       <button class="btn key-register-btn" id="key-reg-${step.id}" data-action="register-key" data-id="${step.id}">🔴 Register Key</button>
     </div>`;
+    // Typed as well as captured: Ctrl+W and its friends cannot be pressed here
+    // at all — Chrome closes the tab before this page sees the key.
+    html += `<div class="flex gap-2" style="margin-bottom:8px;align-items:center;">
+      <span style="flex:0 0 auto;font-size:10px;color:var(--text-dim);">or type it instead</span>
+      <input type="text" class="key-manual-input" data-id="${step.id}"
+        value="${esc(c.key || "")}" placeholder="Ctrl+Shift+K" style="flex:1;font-size:11px;">
+    </div>`;
+    if (_isBrowserReservedKey(c.key)) {
+      html += `<div style="background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.35);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:11px;color:var(--text-dim);line-height:1.5;">
+        <b>${esc(c.key)} is a browser shortcut.</b> Chrome acts on it before the
+        page does, so pressing it here would ${esc(c.key).toLowerCase().includes("w") ? "close the tab" : "open a tab or window"}
+        rather than register it — type it in the box instead. The step still
+        sends it to the page, which works if the page listens for it, but the
+        browser's own action cannot be suppressed by any extension.
+      </div>`;
+    }
     html += `<label>Send it to <span style="color:var(--text-dim);font-weight:400;">(optional)</span></label>`;
     html += selectorRow(step, "selector");
     html += hint(
@@ -2301,10 +2340,28 @@ function generateConfigHtml(step) {
   // ── HOVER ──
   if (step.type === "HOVER") {
     html += selectorRow(step, "selector");
+    html += `<label>Wait for this to appear <span style="color:var(--text-dim);font-weight:400;">(optional)</span></label>`;
+    html += selectorRow(step, "revealSelector");
     html += hint(
-      "Fires the pointer and mouse events a real hover fires, so menus and " +
-        "tooltips that only exist on hover open before the next step runs.",
+      "Name the menu or tooltip the hover should open, and the step waits for " +
+        "it and fails if it never comes. Left blank, the step cannot tell " +
+        "whether the hover achieved anything.",
     );
+    if (c.revealSelector) {
+      html += field(
+        step,
+        "timeout",
+        "Give up after (ms)",
+        "number",
+        c.timeout ?? 3000,
+      );
+    }
+    html += `<div style="background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.35);border-radius:6px;padding:8px 10px;margin:6px 0 10px;font-size:11px;color:var(--text-dim);line-height:1.5;">
+      <b>A menu that opens only through CSS cannot be opened here.</b>
+      JavaScript menus open fine. A <span class="mono">:hover</span> rule follows
+      the real mouse pointer, and no extension may move it without attaching a
+      debugger to the browser. If the menu also opens on click, use CLICK.
+    </div>`;
     html += toggle(
       step,
       "optional",
@@ -3044,6 +3101,22 @@ function bindDelegatedEvents() {
       if (!field) return;
       field[target.dataset.prop] = target.value;
       saveState();
+      return;
+    }
+
+    if (target.classList.contains("key-manual-input")) {
+      const step = _findStepDeep(_pipeline.steps, target.dataset.id);
+      if (!step) return;
+      const before = _isBrowserReservedKey(step.config.key);
+      step.config.key = target.value.trim();
+      saveState();
+      const disp = document.getElementById(`key-disp-${step.id}`);
+      if (disp) disp.textContent = step.config.key || "Not set";
+      // Only when the verdict changes, or the caret jumps on every keystroke
+      // (E-10).
+      if (before !== _isBrowserReservedKey(step.config.key)) {
+        _rerenderCardConfig(step);
+      }
       return;
     }
 
@@ -3934,6 +4007,44 @@ function _uploadStepToggleFile(stepId, fileId, checked) {
 // ── Keyboard register ─────────────────────────────────────────────────────────
 /** How long the panel waits for a keystroke before giving up. */
 const KEY_CAPTURE_SECONDS = 15;
+
+/**
+ * Combos Chrome handles before any page or extension sees them.
+ *
+ * Reported from a real session: pressing Ctrl+W to register it closed the tab.
+ * It always will. `preventDefault` does not reach browser-level shortcuts —
+ * a page that could block Ctrl+W could trap you on itself — so these can only
+ * be typed, never captured, and the step can still send them as synthetic
+ * events for a page that listens for them.
+ */
+const BROWSER_RESERVED_KEYS = Object.freeze([
+  "w",
+  "t",
+  "n",
+  "q",
+  "shift+w",
+  "shift+t",
+  "shift+n",
+  "shift+q",
+]);
+
+/**
+ * Will the browser take this combo before the page gets it?
+ * @param {string} combo - e.g. "Ctrl+W"
+ * @returns {boolean}
+ */
+function _isBrowserReservedKey(combo) {
+  const parts = String(combo || "")
+    .toLowerCase()
+    .split("+")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const key = parts.pop() ?? "";
+  const ctrlish = parts.includes("ctrl") || parts.includes("meta");
+  if (!ctrlish) return false;
+  const rest = parts.filter((p) => p !== "ctrl" && p !== "meta").join("+");
+  return BROWSER_RESERVED_KEYS.includes(rest ? `${rest}+${key}` : key);
+}
 
 function _registerKey(stepId) {
   if (_keyListening) return;

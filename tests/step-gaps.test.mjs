@@ -490,3 +490,110 @@ test("SCREENSHOT's defaults describe the areas it can capture", async () => {
   assert.equal(def.area, "viewport", "the old behaviour is still the default");
   assert.ok("selector" in def);
 });
+
+// ── HOVER, and what a synthetic hover cannot do ─────────────────────────────
+//
+// Reported as "hover not working". Measured in a real browser, it half works:
+//
+//   JS listener (mouseover)      → fires
+//   CSS :hover rule              → does not apply
+//
+// That second line is not a bug in this code and cannot be fixed from a
+// content script. `:hover` is driven by the browser's real pointer position,
+// and no page script may move the cursor — a page that could would be able to
+// fake clicks on anything. So a menu that opens via JavaScript opens, and a
+// menu that opens purely through CSS does not.
+//
+// What was wrong is that the step reported success either way. Now it can be
+// asked what should appear, and says plainly when nothing did.
+
+test("hover reports what it dispatched", async () => {
+  const page = await loadInjector(`<div class="menu">Menu</div>`);
+  const out = await page.api._stepHover({ selector: ".menu" });
+  assert.equal(out.hovered, true);
+  page.close();
+});
+
+test("hover can wait for the thing it is supposed to reveal", async () => {
+  const page = await loadInjector(
+    `<div class="menu">Menu</div><div class="drop" style="display:none">Item</div>`,
+  );
+  const { document } = page;
+  document.querySelector(".menu").addEventListener("mouseover", () => {
+    document.querySelector(".drop").style.display = "block";
+  });
+
+  const out = await page.api._stepHover({
+    selector: ".menu",
+    revealSelector: ".drop",
+    timeout: 2000,
+  });
+  assert.equal(out.revealed, true);
+  page.close();
+});
+
+test("a hover that reveals nothing fails, and explains why", async () => {
+  // The CSS-only case. Silence here is the worst outcome: the run carries on
+  // and every step after it works on a menu that never opened.
+  const page = await loadInjector(
+    `<div class="menu">Menu</div><div class="drop" style="display:none">Item</div>`,
+  );
+  await assert.rejects(
+    () =>
+      page.api._stepHover({
+        selector: ".menu",
+        revealSelector: ".drop",
+        timeout: 300,
+      }),
+    /CSS|pointer|real mouse/i,
+  );
+  page.close();
+});
+
+test("hover's defaults mention what it can be asked to wait for", async () => {
+  const { STEP_TYPES } = await import("../utils/step-types.js");
+  assert.ok("revealSelector" in STEP_TYPES.HOVER.def);
+});
+
+// ── keys the browser takes first ────────────────────────────────────────────
+
+test("a browser-reserved combo can be typed, because it cannot be pressed", async () => {
+  // Reported from a real session: pressing Ctrl+W to register it closed the
+  // tab. It always will. Ctrl+W, Ctrl+T, Ctrl+N and their friends are handled
+  // by Chrome before any page or extension page sees them, and preventDefault
+  // does not reach that far — a page that could block Ctrl+W could trap you on
+  // itself. So the panel offers a box to type the combo into instead.
+  const panel = await readFile(
+    new URL("../sidepanel/pipeline-builder.js", import.meta.url),
+    "utf8",
+  );
+  const body = panel.slice(panel.indexOf("function _configFields"));
+  assert.match(body, /key-manual-input|type it instead/i);
+});
+
+test("the panel warns about a combo the browser will intercept", async () => {
+  const panel = await readFile(
+    new URL("../sidepanel/pipeline-builder.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(panel, /BROWSER_RESERVED_KEYS|_isBrowserReservedKey/);
+
+  // The list and the check together — the check reads the list.
+  const list = panel.match(
+    /const BROWSER_RESERVED_KEYS = Object\.freeze\(\[[\s\S]*?\]\);/,
+  );
+  const fn = panel.match(
+    /function _isBrowserReservedKey\(combo\) \{[\s\S]*?\n\}/,
+  );
+  assert.ok(list && fn, "no check for reserved combos");
+  const reserved = new Function(
+    `${list[0]}\n${fn[0]}; return _isBrowserReservedKey;`,
+  )();
+
+  for (const combo of ["Ctrl+W", "ctrl+w", "Ctrl+T", "Ctrl+N", "Meta+W"]) {
+    assert.equal(reserved(combo), true, `${combo} is not flagged`);
+  }
+  for (const combo of ["Enter", "Ctrl+Enter", "Escape", "Ctrl+A", "Tab"]) {
+    assert.equal(reserved(combo), false, `${combo} is wrongly flagged`);
+  }
+});

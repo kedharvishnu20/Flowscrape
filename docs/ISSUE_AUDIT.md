@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 143 findings — 13 blocker · 34 high · 67 medium · 29 low. The
+**Totals:** 149 findings — 14 blocker · 36 high · 70 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -20,7 +20,7 @@ gaps found by reading every step type against its implementation.
 | G · MCP integration             | 9        |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
-| J · Capability gaps             | 13       |
+| J · Capability gaps             | 19       |
 
 ---
 
@@ -127,13 +127,14 @@ decision:
 | **A-11** | `19e3725` | New. The PDF reader mis-framed every stream after the first, because `endstream` ends in `stream`. Found by running it against a Chrome-printed PDF in the e2e suite |
 | **A-12** | _this batch_ | New. `EXPORT` downloaded nothing in any real browser: MV3 service workers have no `URL.createObjectURL`, and the unit harness stubbed one in |
 | **A-13**, plus the step-capability work | _this batch_ | New. Every page step after a navigation failed, because the on-demand content script is destroyed with its document and only the start of a run re-injected it. Found by the paginating e2e check. Landed alongside the J findings below |
-| **J-13** | _this batch_ | Detect Table appended a second loop over the same list every time it was pressed, without a word — which is where a real run's 1,250 rows for 250 countries came from |
+| J-14 … J-19 | _this batch_ | Steps can reach inside iframes; every step type can be tested; the API sniffer's captures survive the run that made them; a table names its own columns; HOVER says when it achieved nothing; a browser shortcut can be typed rather than pressed. All six reported from real use |
+| **J-13** | _earlier_ | Detect Table appended a second loop over the same list every time it was pressed, without a word — which is where a real run's 1,250 rows for 250 countries came from |
 | J-08 … J-12 | _this batch_ | IF_ELSE can ask about emptiness, numbers and patterns; KEYBOARD has a target and a repeat; the sniffer can be filtered; SCREENSHOT can capture the whole page or one element; and Detect Table stops returning a page's own labels as columns |
 | J-06, J-07 | _this batch_ | Extracted values are cleaned as they are read, in one module both emitters share; and PAGE_DATA reads the JSON-LD, microdata and Open Graph every site already publishes — the answer to "turn the page into JSON" for a single record |
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 140 of 143 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 146 of 149 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
@@ -1165,6 +1166,127 @@ Fixed where the mistake is made. An existing element-loop over the same
 selector is looked for first — depth-first, since a detected table can be
 dropped inside another container — and the user is asked whether to replace it.
 Declining leaves the pipeline untouched and says so.
+
+### J-14 · BLOCKER · Nothing could reach inside an iframe
+
+_Reported from a real session: "this tool cannot interact with the elements in
+the iframe"._
+
+The content script was injected with `allFrames` left at its default of false,
+so it only ever existed in the top document. An iframe is a separate document
+rather than a branch of its parent's DOM, so every selector was resolved
+against a document that does not contain the frame's contents — and no step
+could touch anything inside one, on any site.
+
+Injection now reaches every frame, and the user's suggestion was the right
+design: a **toggle on each page step** rather than searching frames always.
+Searching every frame by default changes what an ambiguous selector matches,
+and a page can carry a dozen advertising iframes that each happen to hold a
+`.title`. With the toggle on, the step tries the page first and then each frame
+in turn.
+
+Two things surfaced with it, both caught in a real browser:
+
+- `chrome.tabs.sendMessage` without a `frameId` delivers to **every** frame and
+  returns whichever answers first. Once the script was in all frames, an
+  advert's iframe could answer a step aimed at the page. Both the step message
+  and the injection ping are addressed to frame 0 now.
+- The walk has to know the difference between _ran_ and _found_. `EXTRACT` does
+  not fail when a field misses — by design, since B-08 — so the top document
+  "succeeded" with `[{t: null}]` and the walk stopped before reaching the frame
+  that had the element.
+
+`injector.js` also guards against being evaluated twice, because with
+`allFrames` the same file lands in several documents and a frame that is
+already set up gets it again on the next injection. Two listeners in one
+document means every reply is sent twice and the second one loses, which is how
+A-08 silently disabled the ethics gate.
+
+### J-15 · HIGH · Half the step types could not be tested
+
+_Reported as `Unknown step type: LOOP`, `Unknown step type: API_SNIFFER`, and
+"pdf extract is not working"._
+
+The single-step test path special-cased a handful of types and forwarded
+everything else to the page. Ten of the twenty-two run in the **worker**, so
+half of them arrived at `injector.js`, which refuses them by design (B-32), and
+the panel showed a message that reads like the step is broken.
+
+A hand-kept list of exceptions is what drifted. The registry already says where
+each type runs, so the router asks it (G-01), and the three that genuinely
+cannot be tested alone say why instead of failing:
+
+| Step          | What "Test" now says                               |
+| ------------- | -------------------------------------------------- |
+| `LOOP`        | needs a pipeline to iterate; press Run             |
+| `EXPORT`      | needs the rows a run collected                     |
+| `API_SNIFFER` | records for the whole run, not at this point in it |
+
+`PDF_EXTRACTION` and `AUTO_EXTRACT` are wired up, because they can genuinely
+run on their own.
+
+### J-16 · HIGH · The API sniffer captured, and threw the captures away
+
+_Reported as "api sniffer is not working"._
+
+It was working. Measured in a real browser it hooked the page and logged
+`Sniffer: 1 request captured` — and then `data:download` returned `{runId,
+rows}` and nothing else, and the run state holding the captures was deleted the
+moment the run finished. So the only way to see a captured request was to open
+the export archive, and a user who looked anywhere else saw a sniffer that had
+apparently done nothing.
+
+Captures now outlive the run that made them (bounded to the last few runs, on
+top of the per-run caps from D-10), `data:download` returns them, and the
+monitor says as they arrive — thinned, because a busy page makes hundreds of
+requests and one line each would bury the run's own messages.
+
+### J-17 · MEDIUM · Detect Table ignored a table's own header row
+
+_Reported with the export it produced._
+
+    tdnthoftype,tdnthoftype 2,tdnthoftype 3,tdnthoftype 4
+    Clean Code,Robert C. Martin,4.5,26.56
+
+An ordinary HTML table whose `<thead>` says, in so many words, what each column
+is — and every column was named after the selector that found the cell, while
+the page was holding up a sign saying "name". It reads the sign now.
+
+Only where the markup actually says so: a `<thead>`, or a row of `<th>`. A
+first row of plain `<td>` is genuinely ambiguous, and guessing wrong either
+names every column after the first book or silently drops a real row from the
+scrape — so it is left as data, where it can be seen and deleted.
+
+### J-18 · MEDIUM · `HOVER` reported success whatever happened
+
+_Reported as "hover not working". It half works, and the half that does not
+cannot be fixed from a content script._
+
+Measured in a real browser: a JavaScript `mouseover` listener fires, and a CSS
+`:hover` rule does not apply. `:hover` follows the browser's real pointer
+position, and no page may move the cursor — one that could would be able to
+fake a click on anything. So a menu built in JavaScript opens and a CSS-only
+menu does not, and no extension can change that without attaching a debugger to
+the browser.
+
+What was wrong is that the step reported success either way. Given
+`revealSelector` it now waits for the thing the hover is meant to bring up and
+fails with that explanation when nothing comes — silence here means every step
+afterwards works on a menu that never opened. The panel says the same, next to
+the field.
+
+### J-19 · MEDIUM · A browser shortcut could not be registered, only triggered
+
+_Reported as: pressing Ctrl+W to register it closed the tab._
+
+It always will. Ctrl+W, Ctrl+T, Ctrl+N and their friends are handled by Chrome
+before any page or extension page sees the keystroke, and `preventDefault` does
+not reach that far — a page that could block Ctrl+W could trap you on itself.
+
+So the combo can now be **typed** as well as captured, and a reserved one is
+flagged with what will happen. The step still sends it to the page as a
+synthetic event, which works when the page listens for it; the browser's own
+action is what cannot be suppressed.
 
 ---
 

@@ -213,16 +213,26 @@ const OWNED_MESSAGE_TYPES = new Set([
   "FS_DETECT_STRUCTURE",
 ]);
 
-chrome.runtime.onMessage.addListener((msg, sender, respond) => {
-  const { type, payload } = msg ?? {};
-  if (!type || !OWNED_MESSAGE_TYPES.has(type)) return false;
+// Injected into every frame now (see _ensureInjected), and a frame that is
+// already set up gets the file again on the next injection. Two listeners in
+// one document means every reply is sent twice and the second one loses, which
+// is exactly how A-08 silently disabled the ethics gate. So register once.
+if (globalThis.__fsInjected) {
+  // Already live in this document; nothing further to do.
+} else {
+  globalThis.__fsInjected = true;
 
-  _handleEvent(type, payload, null)
-    .then((result) => respond({ ok: true, result }))
-    .catch((err) => respond({ ok: false, error: err.message }));
+  chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+    const { type, payload } = msg ?? {};
+    if (!type || !OWNED_MESSAGE_TYPES.has(type)) return false;
 
-  return true;
-});
+    _handleEvent(type, payload, null)
+      .then((result) => respond({ ok: true, result }))
+      .catch((err) => respond({ ok: false, error: err.message }));
+
+    return true;
+  });
+}
 
 // ── Step dispatcher ────────────────────────────────────────────────────────────
 async function _handleEvent(type, payload, id) {
@@ -1503,7 +1513,30 @@ async function _stepFill(
   return { typed: true, ...result };
 }
 
-async function _stepHover({ selector }, context = {}) {
+/**
+ * Hover an element — as far as a page script is allowed to.
+ *
+ * Measured in a real browser, a synthetic hover half works:
+ *
+ *   * a JavaScript `mouseover` / `mouseenter` listener fires — menus built
+ *     that way open;
+ *   * a CSS `:hover` rule does **not** apply.
+ *
+ * The second is not a defect here and cannot be fixed from a content script.
+ * `:hover` follows the browser's real pointer, and no page may move the
+ * cursor — one that could would be able to fake a click on anything. So a
+ * CSS-only dropdown cannot be opened this way by any extension that does not
+ * attach a debugger to the browser.
+ *
+ * What *was* wrong is that this reported success either way. Given
+ * `revealSelector` it waits for the thing the hover is meant to bring up, and
+ * says plainly when nothing came — because silence here means every step after
+ * it works on a menu that never opened.
+ */
+async function _stepHover(
+  { selector, revealSelector = "", timeout = 3000 },
+  context = {},
+) {
   const el =
     _queryScoped(selector, context, false)[0] || _getScopedRoot(context);
   if (!el) throw new Error(`Hover target not found: ${selector}`);
@@ -1519,12 +1552,32 @@ async function _stepHover({ selector }, context = {}) {
     clientX: cx,
     clientY: cy,
   };
-  el.dispatchEvent(new MouseEvent("mouseenter", init));
-  el.dispatchEvent(new MouseEvent("mouseover", init));
-  el.dispatchEvent(new MouseEvent("mousemove", init));
+  // pointerover/pointerenter before the mouse events, in that order: that is
+  // the sequence a real pointer produces, and libraries that listen for the
+  // pointer events ignore a mouse event arriving first.
+  el.dispatchEvent(new PointerEvent("pointerover", { ...init, pointerId: 1 }));
   el.dispatchEvent(new PointerEvent("pointerenter", { ...init, pointerId: 1 }));
+  el.dispatchEvent(new MouseEvent("mouseover", init));
+  el.dispatchEvent(new MouseEvent("mouseenter", init));
   el.dispatchEvent(new PointerEvent("pointermove", { ...init, pointerId: 1 }));
-  return { hovered: true, x: cx, y: cy };
+  el.dispatchEvent(new MouseEvent("mousemove", init));
+
+  if (!revealSelector) return { hovered: true, x: cx, y: cy, revealed: null };
+
+  const deadline = Date.now() + (Number(timeout) || 3000);
+  while (Date.now() < deadline) {
+    if (_queryScoped(revealSelector, context, false).some(_isVisible)) {
+      return { hovered: true, x: cx, y: cy, revealed: true };
+    }
+    await _sleep(100);
+  }
+  throw new Error(
+    `Hovered "${selector}" but "${revealSelector}" never appeared. ` +
+      `If this menu opens through a CSS :hover rule, no extension can open it ` +
+      `without attaching a debugger to the browser: :hover follows the real ` +
+      `mouse pointer, which a page is not allowed to move. Try CLICK if the ` +
+      `menu also opens on click.`,
+  );
 }
 
 /**

@@ -31,7 +31,7 @@
 
 import { logger } from "../utils/logger.js";
 import { extractPdfText } from "../utils/pdf-text.js";
-import { ALL_STEP_TYPES } from "../utils/step-types.js";
+import { ALL_STEP_TYPES, STEP_TYPES } from "../utils/step-types.js";
 import { applyTransforms } from "../utils/value-transforms.js";
 import { evaluateCondition } from "../utils/conditions.js";
 import { matchesSnifferFilter } from "../utils/sniffer-filter.js";
@@ -465,14 +465,23 @@ const CONTENT_FILES = [
 async function _ensureInjected(tabId) {
   if (!tabId) throw new Error("No tab to inject into");
 
+  // Aimed at the top document: an unqualified sendMessage reaches every frame
+  // and returns the first answer, so an iframe could report "already injected"
+  // for a page whose top document has no script at all.
   const alive = await chrome.tabs
-    .sendMessage(tabId, { type: "fs:ping" })
+    .sendMessage(tabId, { type: "fs:ping" }, { frameId: 0 })
     .catch(() => null);
   if (alive?.ok) return;
 
   try {
     await chrome.scripting.executeScript({
-      target: { tabId },
+      // Every frame, not just the top document. An iframe is a separate
+      // document rather than a branch of its parent's DOM, so a script in the
+      // top frame cannot see into one at all — which is why nothing could
+      // touch an element inside an iframe. injector.js guards against being
+      // evaluated twice, so re-injecting a frame that is already set up is
+      // harmless.
+      target: { tabId, allFrames: true },
       files: CONTENT_FILES,
     });
   } catch (err) {
@@ -483,6 +492,157 @@ async function _ensureInjected(tabId) {
         `on chrome:// pages, the Web Store and PDF viewers.`,
     );
   }
+}
+
+/**
+ * Every frame id in a tab, the top document first.
+ *
+ * Discovered by running a trivial script in all frames. `chrome.webNavigation`
+ * would also do it and would cost another permission — C-07 cut four unused
+ * ones, and adding one back for a list this cheap would be a poor trade.
+ *
+ * @returns {Promise<number[]>}
+ */
+async function _frameIds(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => 1,
+    });
+    const ids = results.map((r) => r.frameId).filter((id) => id !== undefined);
+    // 0 is the top document; try it first so a selector that matches there
+    // behaves exactly as it did before the toggle existed.
+    return [...new Set([0, ...ids])];
+  } catch {
+    return [0];
+  }
+}
+
+/**
+ * Did this step actually find anything, or merely not throw?
+ *
+ * The frame walk needs the difference. EXTRACT does not fail when a field
+ * misses — by design, since B-08: it returns the row with nulls rather than
+ * inventing data — so the top document "succeeded" with `[{t: null}]` and the
+ * walk stopped before reaching the frame that had the element. CLICK is the
+ * same shape: `{clicked: 0}` is a successful message and an unsuccessful step.
+ *
+ * @param {*} result
+ * @returns {boolean} true when nothing was found
+ */
+function _looksEmpty(result) {
+  if (result === null || result === undefined) return true;
+
+  if (Array.isArray(result)) {
+    if (result.length === 0) return true;
+    return result.every(
+      (row) =>
+        row &&
+        typeof row === "object" &&
+        Object.values(row).every(
+          (v) => v === null || v === undefined || v === "",
+        ),
+    );
+  }
+
+  if (typeof result === "object") {
+    if (result.clicked === 0 || result.matched === 0) return true;
+    if (result.exists === false) return true;
+    if (Array.isArray(result.records) && result.records.length === 0) {
+      return result.found === false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Send a step to each frame in turn, and take the first that succeeds.
+ *
+ * Only used when a step asks for it. Searching every frame by default would
+ * change what an ambiguous selector matches — a page can carry a dozen
+ * advertising iframes that each happen to contain a `.title` — so it is a
+ * toggle on the step, as it should be.
+ *
+ * @param {number} tabId
+ * @param {object} payload - a resolved step
+ * @returns {Promise<{ok: boolean, result?: any, error?: string}>}
+ */
+async function _sendToFrames(tabId, payload) {
+  await _ensureInjected(tabId);
+  const frames = await _frameIds(tabId);
+  const failures = [];
+  let lastEmpty = null;
+
+  for (const frameId of frames) {
+    let resp;
+    try {
+      resp = await chrome.tabs.sendMessage(
+        tabId,
+        { type: "step:execute", payload },
+        { frameId },
+      );
+    } catch (err) {
+      // A frame with no content script — a cross-origin one Chrome refused to
+      // inject, or one that has since navigated. Not this step's problem.
+      failures.push(`frame ${frameId}: ${err.message}`);
+      continue;
+    }
+    if (resp?.ok && !_looksEmpty(resp.result)) return resp;
+    if (resp?.ok) {
+      // Ran, found nothing. Keep the last one: if no frame has the element
+      // either, this is the answer the step would have given without the
+      // toggle, and changing that would make the toggle alter results rather
+      // than widen the search.
+      lastEmpty = resp;
+      failures.push(`frame ${frameId}: nothing matched`);
+      continue;
+    }
+    failures.push(`frame ${frameId}: ${resp?.error ?? "no answer"}`);
+  }
+
+  if (lastEmpty) return lastEmpty;
+  return {
+    ok: false,
+    error:
+      `Not found in the page or in any of its ${Math.max(0, frames.length - 1)} frame(s). ` +
+      failures.slice(0, 3).join("; "),
+  };
+}
+
+/**
+ * What finished runs captured, so it outlives the run state.
+ *
+ * Bounded twice over: each run's captures are already capped (D-10, D-11), and
+ * only the few most recent runs are kept — a worker that hoards every run's
+ * screenshots is the memory leak those caps exist to prevent.
+ *
+ * @type {Map<string, {networks: object[], screenshots: object[]}>}
+ */
+const _finishedCaptures = new Map();
+const FINISHED_CAPTURE_RUNS = 5;
+
+function _keepCaptures(runId, runState) {
+  if (!runState) return;
+  const networks = runState.networks ?? [];
+  const screenshots = runState.screenshots ?? [];
+  if (networks.length === 0 && screenshots.length === 0) return;
+
+  _finishedCaptures.set(runId, { networks, screenshots });
+  while (_finishedCaptures.size > FINISHED_CAPTURE_RUNS) {
+    _finishedCaptures.delete(_finishedCaptures.keys().next().value);
+  }
+}
+
+/** A run's captures, live or just finished. */
+function _capturesFor(runId) {
+  const live = _runStates.get(runId);
+  if (live) {
+    return {
+      networks: live.networks ?? [],
+      screenshots: live.screenshots ?? [],
+    };
+  }
+  return _finishedCaptures.get(runId) ?? { networks: [], screenshots: [] };
 }
 
 /** Chrome's ways of saying "there is no content script on that tab". */
@@ -509,15 +669,30 @@ const _GONE =
  * @returns {Promise<{ok: boolean, result?: any, error?: string}>}
  */
 async function _sendToPage(tabId, payload) {
+  // "Look inside frames too" — off by default, so a page without iframes
+  // behaves exactly as it always did.
+  if (payload?.config?.inFrame) return _sendToFrames(tabId, payload);
+
+  // frameId 0 — the top document — explicitly. Without it Chrome delivers the
+  // message to *every* frame and hands back whichever answers first, so once
+  // the script was injected into all frames an advert's iframe could answer a
+  // step aimed at the page. Caught by an e2e check that asserted a selector
+  // inside an iframe is *not* found without the toggle.
+  const to = { frameId: 0 };
   try {
-    return await chrome.tabs.sendMessage(tabId, {
-      type: "step:execute",
-      payload,
-    });
+    return await chrome.tabs.sendMessage(
+      tabId,
+      { type: "step:execute", payload },
+      to,
+    );
   } catch (err) {
     if (!_GONE.test(err.message)) throw err;
     await _ensureInjected(tabId);
-    return chrome.tabs.sendMessage(tabId, { type: "step:execute", payload });
+    return chrome.tabs.sendMessage(
+      tabId,
+      { type: "step:execute", payload },
+      to,
+    );
   }
 }
 
@@ -757,6 +932,16 @@ _registerHandler("network:sniff", async (payload, sender) => {
         responseBody: payload.resBody || "",
         type: payload.apiType,
       };
+      // Announced, but only every so often: a busy page makes hundreds of
+      // requests and one line each would bury the run's own messages.
+      const n = (rs.networks?.length ?? 0) + 1;
+      if (n <= 3 || n % 25 === 0) {
+        _broadcastLog(
+          "info-log",
+          `Sniffer: ${n} request${n === 1 ? "" : "s"} captured (latest: ${entry.method} ${String(entry.url).slice(0, 80)})`,
+          runId,
+        );
+      }
       _pushCapture(
         rs,
         "networks",
@@ -2529,6 +2714,11 @@ async function _executePipeline(runId, pipeline, targetTabId) {
     await markRunCompleted(runId).catch(() => {});
   }
 
+  // Keep what the run captured. Rows survive in IndexedDB; screenshots and
+  // sniffed requests lived only on the run state, so deleting it threw them
+  // away at the exact moment the user goes looking for them — which is why
+  // the sniffer appeared to capture nothing when it had captured plenty.
+  _keepCaptures(runId, _runStates.get(runId));
   _runStates.delete(runId);
   if (_runStates.size === 0) {
     _stopHeartbeat();
@@ -2561,47 +2751,70 @@ _registerHandler("content:ensure", async (payload, sender) => {
   return { ready: true };
 });
 
+/**
+ * Steps that only mean something inside a run.
+ *
+ * A LOOP has nothing to iterate, an EXPORT has no rows, and API_SNIFFER is a
+ * run-wide capture that does nothing as a step. Saying so is the point: these
+ * used to be forwarded to the page, which answered "Unknown step type: LOOP"
+ * — a message that reads like the step is broken.
+ *
+ * @type {Record<string, string>}
+ */
+const RUN_ONLY_STEPS = {
+  LOOP: "A loop needs a pipeline to iterate. Press Run to see it work — its steps can be tested one at a time.",
+  EXPORT:
+    "An export needs the rows a run collected. Press Run; the file is written when the run reaches this step.",
+  API_SNIFFER:
+    "The sniffer records network traffic for the whole run rather than doing anything at this point in it. Press Run, then look at the monitor.",
+};
+
 _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
   const { step, tabId } = payload;
   const targetTabId = tabId ?? sender.tab?.id;
   const testCtx = payload?.context || {};
   const resolvedStep = _resolveConfig(step, testCtx);
+  const type = resolvedStep.type;
 
-  if (resolvedStep.type === "API") {
-    return _executeApiStep(resolvedStep.config, testCtx);
+  if (RUN_ONLY_STEPS[type]) throw new Error(RUN_ONLY_STEPS[type]);
+
+  if (type === "API") return _executeApiStep(resolvedStep.config, testCtx);
+
+  if (type === "PDF_EXTRACTION") {
+    return _executePdfExtraction(resolvedStep.config, null);
   }
 
-  if (resolvedStep.type === "UPLOAD_ACTIVITY") {
-    if (!targetTabId) {
-      throw new Error("No target tab specified for UPLOAD_ACTIVITY test");
-    }
+  if (!targetTabId) {
+    throw new Error("No target tab specified for execution test");
+  }
+
+  if (type === "UPLOAD_ACTIVITY") {
     return _executeUploadActivityStep(resolvedStep.config, targetTabId, null);
   }
-
-  if (!targetTabId)
-    throw new Error("No target tab specified for execution test");
 
   // Testing a single step is the other path that needs the page set up (C-09).
   await _ensureInjected(targetTabId);
 
-  if (resolvedStep.type === "SCREENSHOT") {
-    // Runs in the worker, so forwarding it to the page — which is what the
-    // fall-through did — reached injector.js's deliberate refusal and made
-    // "Test" fail on every screenshot step.
+  if (type === "SCREENSHOT") {
     return _takeShot(targetTabId, resolvedStep.config, null);
   }
 
-  if (resolvedStep.type === "PAGINATE") {
-    // Same helper the run uses, rather than a second copy that drifts (B-27).
+  if (type === "PAGINATE") {
+    // The same helper the run uses, rather than a second copy that drifts.
     return _executePaginate(targetTabId, resolvedStep.config);
   }
 
-  if (resolvedStep.type === "WEBSITE" || resolvedStep.type === "NAVIGATE") {
+  if (type === "AUTO_EXTRACT") {
+    return _executeAutoExtract(resolvedStep.config, targetTabId, null, {
+      extracted: {},
+    });
+  }
+
+  if (type === "WEBSITE" || type === "NAVIGATE") {
     await chrome.tabs.update(targetTabId, { url: resolvedStep.config.url });
     // Wait the same way a run does. Returning the moment the tab was told to
     // navigate meant testing a step reported success against the page being
-    // replaced, so "Test step" and "Run" disagreed about what the step did —
-    // the same drift between two copies of a dispatch that B-27 was about.
+    // replaced, so "Test step" and "Run" disagreed about what the step did.
     const loaded =
       resolvedStep.config.wait === false
         ? false
@@ -2610,6 +2823,26 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
             Number(resolvedStep.config.timeoutMs) || NAV_TIMEOUT_MS,
           );
     return { navigated: true, url: resolvedStep.config.url, loaded };
+  }
+
+  // WAIT is the one type that runs in both places: a fixed wait needs no page,
+  // and every other mode watches the DOM. Mirrors _dispatchStep.
+  const isPageWait =
+    type === "WAIT" && (resolvedStep.config.mode || "fixed") !== "fixed";
+  if (type === "WAIT" && !isPageWait) {
+    await _sleep(Number(resolvedStep.config.ms) || 1000);
+    return { waited: true, mode: "fixed" };
+  }
+
+  // Everything left should be a page step. Checked against the registry rather
+  // than assumed: a background type reaching injector.js gets "Unknown step
+  // type", which is how testing LOOP, API_SNIFFER and PDF_EXTRACTION all
+  // failed with a message that read like the step was broken. A hand-kept list
+  // of exceptions is what drifted; the registry already knows (G-01).
+  if (STEP_TYPES[type]?.runsIn === "background" && !isPageWait) {
+    throw new Error(
+      `${type} runs in the extension, not in the page, and testing it on its own is not wired up. Please report this.`,
+    );
   }
 
   // _sendToPage puts the content script back if the page has navigated since
@@ -2627,8 +2860,9 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
     throw err;
   }
 
-  if (!resp || !resp.ok)
+  if (!resp || !resp.ok) {
     throw new Error(resp?.error || "Test failed inside content environment");
+  }
   return resp.result;
 });
 
@@ -2836,7 +3070,12 @@ _registerHandler("data:download", async (payload) => {
     throw new Error("data:download requires a runId");
   }
   const rows = await readAllRows(runId);
-  return { runId, rows };
+  // Screenshots and captured requests too. They were reachable only inside the
+  // export archive, so a run with the sniffer on looked as though it had done
+  // nothing at all — which is how "the API sniffer is not working" was
+  // reported for a sniffer that was working and had nowhere to put its answer.
+  const { networks, screenshots } = _capturesFor(runId);
+  return { runId, rows, networks, screenshots };
 });
 
 // ── Side panel connection ───────────────────────────────────────────────────────

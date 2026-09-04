@@ -55,7 +55,12 @@ export const STEP_TYPES = Object.freeze({
     cat: "Action",
     desc: "Click element",
     runsIn: "page",
-    def: { selector: "", all: false, fallbackToLoopItem: false },
+    def: {
+      selector: "",
+      all: false,
+      fallbackToLoopItem: false,
+      inFrame: false,
+    },
   },
   FILL: {
     icon: "✏️",
@@ -70,6 +75,7 @@ export const STEP_TYPES = Object.freeze({
       append: false,
       fields: [],
       submitSelector: "",
+      inFrame: false,
     },
   },
   HOVER: {
@@ -77,14 +83,14 @@ export const STEP_TYPES = Object.freeze({
     cat: "Action",
     desc: "Hover element",
     runsIn: "page",
-    def: { selector: "" },
+    def: { selector: "", revealSelector: "", timeout: 3000, inFrame: false },
   },
   SELECT: {
     icon: "📑",
     cat: "Action",
     desc: "Dropdown select",
     runsIn: "page",
-    def: { selector: "", value: "" },
+    def: { selector: "", value: "", inFrame: false },
   },
   SCROLL: {
     icon: "↕️",
@@ -97,6 +103,7 @@ export const STEP_TYPES = Object.freeze({
       maxScrolls: 50,
       settleMs: 1200,
       selector: "",
+      inFrame: false,
     },
   },
   KEYBOARD: {
@@ -104,21 +111,26 @@ export const STEP_TYPES = Object.freeze({
     cat: "Action",
     desc: "Press key",
     runsIn: "page",
-    def: { key: "Enter", selector: "", repeat: 1, delayMs: 50 },
+    def: { key: "Enter", selector: "", repeat: 1, delayMs: 50, inFrame: false },
   },
   DRAG_DROP: {
     icon: "✋",
     cat: "Action",
     desc: "Drag & Drop",
     runsIn: "page",
-    def: { source: "", target: "" },
+    def: { source: "", target: "", inFrame: false },
   },
   UPLOAD_ACTIVITY: {
     icon: "🛰",
     cat: "Action",
     desc: "Upload from Storage",
     runsIn: "page",
-    def: { selector: "input[type=file]", fileIds: [], optional: false },
+    def: {
+      selector: "input[type=file]",
+      fileIds: [],
+      optional: false,
+      inFrame: false,
+    },
     // Not expressible in an exported script: needs the file bytes from the extension's storage library.
     exportable: false,
   },
@@ -140,7 +152,13 @@ export const STEP_TYPES = Object.freeze({
     desc: "Conditional branch",
     runsIn: "page",
     container: "branches",
-    def: { condition: "exists", selector: "", value: "", attr: "" },
+    def: {
+      condition: "exists",
+      selector: "",
+      value: "",
+      attr: "",
+      inFrame: false,
+    },
   },
   LOOP: {
     icon: "🔁",
@@ -155,7 +173,7 @@ export const STEP_TYPES = Object.freeze({
     cat: "Flow",
     desc: "Next page",
     runsIn: "page",
-    def: { selector: "", settleMs: 1500, requireChange: false },
+    def: { selector: "", settleMs: 1500, requireChange: false, inFrame: false },
   },
 
   // ── Data ──────────────────────────────────────────────────────────────────
@@ -164,7 +182,7 @@ export const STEP_TYPES = Object.freeze({
     cat: "Data",
     desc: "Extract data",
     runsIn: "page",
-    def: { fields: [] },
+    def: { fields: [], inFrame: false },
   },
   SCREENSHOT: {
     icon: "📸",
@@ -178,7 +196,13 @@ export const STEP_TYPES = Object.freeze({
     cat: "Data",
     desc: "Read the page's own data",
     runsIn: "page",
-    def: { source: "auto", type: "", flatten: true, storeAs: "pageData" },
+    def: {
+      source: "auto",
+      type: "",
+      flatten: true,
+      storeAs: "pageData",
+      inFrame: false,
+    },
   },
   EXPORT: {
     icon: "💾",

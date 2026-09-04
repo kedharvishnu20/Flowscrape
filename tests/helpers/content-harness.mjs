@@ -24,6 +24,7 @@ const EXPOSED = [
   "_stepScroll",
   "_stepWait",
   "_stepPaginate",
+  "_stepHover",
 ];
 
 /**

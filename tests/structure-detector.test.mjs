@@ -581,3 +581,126 @@ test("an existing loop over the same selector is found, whatever it is nested in
     null,
   );
 });
+
+// ── a real <table> names its own columns ─────────────────────────────────────
+//
+// From a second real run. The page is an ordinary HTML table whose <thead>
+// says, in so many words, what each column is — and the export came back:
+//
+//   tdnthoftype,tdnthoftype 2,tdnthoftype 3,tdnthoftype 4
+//   Clean Code,Robert C. Martin,4.5,26.56
+//
+// The data is right and every column is misnamed, because the name was derived
+// from the selector that found the cell (`td:nth-of-type(1)`) while the page
+// was holding up a sign saying "name".
+
+const BOOKS = `<table class="table">
+  <thead><tr><th>name</th><th>author</th><th>stars</th><th>price</th></tr></thead>
+  <tbody>
+    <tr><td>Clean Code</td><td>Robert C. Martin</td><td>4.5</td><td>26.56</td></tr>
+    <tr><td>The Legend of Zelda</td><td>Shigeru Miyamoto</td><td>4.5</td><td>27.56</td></tr>
+    <tr><td>Superintelligence</td><td>Nick Bostrom</td><td>4</td><td>9.93</td></tr>
+    <tr><td>Life 3.0</td><td>Max Tegmark</td><td>4</td><td>10</td></tr>
+  </tbody>
+</table>`;
+
+test("a table's columns are named by its own header row", () => {
+  const { candidates } = read(BOOKS);
+  const table = candidates[0];
+  assert.deepEqual(
+    table.fields.map((f) => f.name),
+    ["name", "author", "stars", "price"],
+  );
+});
+
+test("the rows line up with the names the header gave them", () => {
+  const { candidates } = read(BOOKS);
+  assert.deepEqual(candidates[0].sampleRows[0], {
+    name: "Clean Code",
+    author: "Robert C. Martin",
+    stars: "4.5",
+    price: "26.56",
+  });
+});
+
+test("a <th> row is a header even without a <thead>", () => {
+  const { candidates } = read(`<table>
+    <tr><th>title</th><th>writer</th></tr>
+    <tr><td>Clean Code</td><td>Robert C. Martin</td></tr>
+    <tr><td>Life 3.0</td><td>Max Tegmark</td></tr>
+    <tr><td>Superintelligence</td><td>Nick Bostrom</td></tr>
+  </table>`);
+  const names = candidates[0].fields.map((f) => f.name);
+  assert.ok(
+    names.includes("title") && names.includes("writer"),
+    `got ${names.join(", ")}`,
+  );
+});
+
+test("a first row of plain <td> is treated as data, not as a header", () => {
+  // Deliberate. <table><tr><td>name</td></tr><tr><td>Clean Code</td></tr> is
+  // genuinely ambiguous — nothing in the markup says the first row is special,
+  // and a human has to read it to tell. Guessing wrong either names every
+  // column after the first book, or silently drops a real row from the scrape.
+  // <thead> and <th> are the page saying so; anything else is a guess, and the
+  // columns fall back to being named from the selector.
+  const { candidates } = read(`<table>
+    <tr><td>title</td><td>writer</td></tr>
+    <tr><td>Clean Code</td><td>Robert C. Martin</td></tr>
+    <tr><td>Life 3.0</td><td>Max Tegmark</td></tr>
+    <tr><td>Superintelligence</td><td>Nick Bostrom</td></tr>
+  </table>`);
+  const names = candidates[0].fields.map((f) => f.name);
+  assert.ok(
+    !names.includes("title"),
+    `the first row was guessed to be a header: ${names.join(", ")}`,
+  );
+  // And it stays in the rows, where the user can see and delete it.
+  assert.equal(candidates[0].count, 4);
+});
+
+test("a table with no header falls back to naming from the selector", () => {
+  // No sign to read, so the old behaviour — but it must not crash or invent a
+  // name from the first row's data, which would make the column name change
+  // whenever the data does.
+  const { candidates } = read(`<table><tbody>
+    <tr><td>Clean Code</td><td>Robert C. Martin</td></tr>
+    <tr><td>Life 3.0</td><td>Max Tegmark</td></tr>
+    <tr><td>Superintelligence</td><td>Nick Bostrom</td></tr>
+  </tbody></table>`);
+  const names = candidates[0].fields.map((f) => f.name);
+  assert.equal(names.length, 2);
+  assert.ok(!names.includes("Clean Code"), `named from data: ${names}`);
+});
+
+test("a header cell that is blank does not produce a blank column name", () => {
+  const { candidates } = read(`<table>
+    <thead><tr><th></th><th>author</th></tr></thead>
+    <tbody>
+      <tr><td>Clean Code</td><td>Robert C. Martin</td></tr>
+      <tr><td>Life 3.0</td><td>Max Tegmark</td></tr>
+      <tr><td>Superintelligence</td><td>Nick Bostrom</td></tr>
+    </tbody></table>`);
+  for (const f of candidates[0].fields) {
+    assert.ok(f.name.trim().length > 0, "a column came back with no name");
+  }
+});
+
+test("a link inside a table cell still gets its own named column", () => {
+  const { candidates } = read(`<table>
+    <thead><tr><th>title</th><th>author</th></tr></thead>
+    <tbody>
+      <tr><td><a href="/b/1">Clean Code</a></td><td>Robert C. Martin</td></tr>
+      <tr><td><a href="/b/2">Life 3.0</a></td><td>Max Tegmark</td></tr>
+      <tr><td><a href="/b/3">Superintelligence</a></td><td>Nick Bostrom</td></tr>
+    </tbody></table>`);
+  const names = candidates[0].fields.map((f) => f.name);
+  assert.ok(
+    names.some((n) => n.includes("title")),
+    `the header name was lost: ${names.join(", ")}`,
+  );
+  assert.ok(
+    names.some((n) => /url/.test(n)),
+    `no column for the link: ${names.join(", ")}`,
+  );
+});

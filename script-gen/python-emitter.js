@@ -231,7 +231,7 @@ function _emitStep(step) {
     case "CLICK":
       return [
         `# CLICK: ${config.selector ?? ""}`,
-        `await page.click("${_escStr(config.selector ?? "")}")`,
+        `await page.click("${_escStr(_sel(config.selector ?? ""))}")`,
         `await page.wait_for_load_state("networkidle")`,
         "",
       ];
@@ -239,13 +239,13 @@ function _emitStep(step) {
       const timeout = Number(config.timeout) || 15000;
       if (config.mode === "selector-visible") {
         return [
-          `await page.wait_for_selector("${_escStr(config.selector ?? "")}", state="visible", timeout=${timeout})`,
+          `await page.wait_for_selector("${_escStr(_sel(config.selector ?? ""))}", state="visible", timeout=${timeout})`,
           "",
         ];
       }
       if (config.mode === "selector-gone") {
         return [
-          `await page.wait_for_selector("${_escStr(config.selector ?? "")}", state="hidden", timeout=${timeout})`,
+          `await page.wait_for_selector("${_escStr(_sel(config.selector ?? ""))}", state="hidden", timeout=${timeout})`,
           "",
         ];
       }
@@ -271,7 +271,7 @@ function _emitStep(step) {
       const amount = config.amount ?? config.value ?? 300;
       if (config.mode === "selector" && config.selector) {
         return [
-          `await page.locator("${_escStr(config.selector)}").scroll_into_view_if_needed()`,
+          `await page.locator("${_escStr(_sel(config.selector))}").scroll_into_view_if_needed()`,
           "",
         ];
       }
@@ -310,7 +310,7 @@ function _emitStep(step) {
       ];
       if (config.type === "elements" && config.selector) {
         lines.push(
-          `elements = await page.locator("${_escStr(config.selector)}").all()`,
+          `elements = await page.locator("${_escStr(_sel(config.selector))}").all()`,
         );
         lines.push(`for i, el in enumerate(elements[:${config.max ?? 10}]):`);
       } else {
@@ -322,7 +322,7 @@ function _emitStep(step) {
         // times over.
         lines.push(
           `    if i > 0:`,
-          `        _next = page.locator("${_escStr(config.selector)}").first`,
+          `        _next = page.locator("${_escStr(_sel(config.selector))}").first`,
           `        if await _next.count() == 0 or not await _next.is_enabled():`,
           `            print(f"Pagination: stopped after {i} page(s).")`,
           `            break`,
@@ -340,7 +340,7 @@ function _emitStep(step) {
     case "IF_ELSE": {
       const condition = config.condition || "exists";
       const lines = [
-        `# IF_ELSE: ${condition} - ${_escStr(config.selector ?? "")}`,
+        `# IF_ELSE: ${condition} - ${_escStr(_sel(config.selector ?? ""))}`,
       ];
       const test = _conditionPy(condition, config);
       if (test === null) {
@@ -355,7 +355,7 @@ function _emitStep(step) {
         return lines;
       }
       lines.push(
-        `_loc = page.locator("${_escStr(config.selector ?? "")}")`,
+        `_loc = page.locator("${_escStr(_sel(config.selector ?? ""))}")`,
         `if ${test}:`,
       );
       for (const child of step.ifBranch ?? []) {
@@ -378,14 +378,14 @@ function _emitStep(step) {
     case "HOVER":
       return [
         `# HOVER: ${config.selector ?? ""}`,
-        `await page.hover("${_escStr(config.selector ?? "")}")`,
+        `await page.hover("${_escStr(_sel(config.selector ?? ""))}")`,
         "",
       ];
 
     case "SELECT":
       return [
         `# SELECT: ${config.selector ?? ""}`,
-        `await page.select_option("${_escStr(config.selector ?? "")}", "${_escStr(config.value ?? "")}")`,
+        `await page.select_option("${_escStr(_sel(config.selector ?? ""))}", "${_escStr(config.value ?? "")}")`,
         "",
       ];
 
@@ -498,7 +498,7 @@ function _emitStep(step) {
       // carried on believing it had turned one. `break` is not emitted here:
       // a top-level PAGINATE has no loop to leave. A paginating LOOP emits
       // its own.
-      const sel = _escStr(config.selector ?? "");
+      const sel = _escStr(_sel(config.selector ?? ""));
       return [
         `# PAGINATE: ${config.selector ?? ""}`,
         `_next = page.locator("${sel}").first`,
@@ -514,7 +514,7 @@ function _emitStep(step) {
     case "DRAG_DROP":
       return [
         `# DRAG_DROP: ${config.source ?? ""} -> ${config.target ?? ""}`,
-        `await page.drag_and_drop("${_escStr(config.source ?? "")}", "${_escStr(config.target ?? "")}")`,
+        `await page.drag_and_drop("${_escStr(_sel(config.source ?? ""))}", "${_escStr(_sel(config.target ?? ""))}")`,
         "",
       ];
 
@@ -550,11 +550,11 @@ function _emitFill(config) {
   for (const field of fields) {
     if (!field?.selector) continue;
     lines.push(
-      `await page.fill("${_escStr(field.selector)}", fs_env("${_escStr(field.value ?? "")}"))`,
+      `await page.fill("${_escStr(_sel(field.selector))}", fs_env("${_escStr(field.value ?? "")}"))`,
     );
   }
   if (config.submitSelector) {
-    lines.push(`await page.click("${_escStr(config.submitSelector)}")`);
+    lines.push(`await page.click("${_escStr(_sel(config.submitSelector))}")`);
     lines.push(`await page.wait_for_load_state("networkidle")`);
   }
   lines.push("");
@@ -601,10 +601,10 @@ function _emitExtract(config) {
     // return the same number rather than the script quietly omitting a column.
     const read =
       field.type === "count"
-        ? `str(await page.locator("${_escStr(selector)}").first.locator("${_escStr(countSelector ?? "")}").count())`
+        ? `str(await page.locator("${_escStr(_sel(selector))}").first.locator("${_escStr(_sel(countSelector ?? ""))}").count())`
         : attribute
-          ? `await page.get_attribute("${_escStr(selector)}", "${attribute}")`
-          : `await page.inner_text("${_escStr(selector)}")`;
+          ? `await page.get_attribute("${_escStr(_sel(selector))}", "${attribute}")`
+          : `await page.inner_text("${_escStr(_sel(selector))}")`;
     if (field.type === "count" && !countSelector) {
       lines.push(
         `# INVALID: field "${name}" is set to Count but names nothing to count.`,
@@ -635,7 +635,7 @@ function _emitFormFill(config) {
     "    for row in reader:",
   ];
   for (const mapping of config.fieldMappings ?? []) {
-    const sel = _escStr(mapping.selector ?? "");
+    const sel = _escStr(_sel(mapping.selector ?? ""));
     const col = _escStr(mapping.column ?? "");
     const type = mapping.inputType ?? "text";
     if (type === "select") {
@@ -652,7 +652,9 @@ function _emitFormFill(config) {
     }
   }
   if (config.submitSelector) {
-    lines.push(`        await page.click("${_escStr(config.submitSelector)}")`);
+    lines.push(
+      `        await page.click("${_escStr(_sel(config.submitSelector))}")`,
+    );
   }
   const delay = (config.interRowDelay?.min ?? 1200) / 1000;
   lines.push(`        await asyncio.sleep(${delay} + random.random())`);
@@ -705,6 +707,24 @@ function _emitApi(config) {
     "",
   );
   return lines;
+}
+
+/**
+ * Translate FlowScrape's piercing combinator into Playwright's.
+ *
+ * CSS cannot cross a shadow boundary, so a selector for an element inside a web
+ * component is written `app-root >>> .price` here. Playwright spells the same
+ * idea `>>` — find the left side, then search the right side within it — and
+ * its CSS engine pierces open shadow roots, so the two mean exactly the same
+ * thing. Without this the emitted script carries a selector Playwright reads as
+ * malformed CSS and matches nothing.
+ */
+function _sel(selector) {
+  return String(selector ?? "")
+    .split(">>>")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" >> ");
 }
 
 function _escStr(s) {

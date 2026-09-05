@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 160 findings — 18 blocker · 41 high · 71 medium · 30 low. The
+**Totals:** 161 findings — 19 blocker · 41 high · 71 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,6 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
+| K · Capability review           | 1        |
 
 ---
 
@@ -139,7 +140,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 157 of 160 findings fixed; A-05, A-06 and A-07 left by
+**Still open: nothing.** 158 of 161 findings fixed; A-05, A-06 and A-07 left by
 decision, as set out above. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
@@ -1590,6 +1591,64 @@ time a run captures anything.
 
 So "only the link I provided worked" was precisely backwards: that link was the
 one case with so little traffic that all of it fit in the first three log lines.
+
+## Section K — the capability review
+
+Findings from `CAPABILITY_REVIEW.md`, recorded here as they are closed.
+
+### K-01 · BLOCKER · Nothing could see inside a web component
+
+`_queryScoped` — the resolver behind CLICK, FILL, EXTRACT, HOVER, SELECT,
+IF_ELSE, PAGINATE, SCROLL and the picker — used plain `querySelectorAll`, which
+does not cross a shadow root. On a site built from web components every
+selector matched nothing and the tool reported "not found" for elements plainly
+on the screen. The same shape of failure as the iframe gap (J-14): a boundary
+selectors cannot cross.
+
+Two halves, because the problem has two.
+
+**Reading.** CSS has no piercing combinator — `>>>` was specified and removed,
+and nothing replaced it — so a selector into a component cannot be _written_.
+`app-root >>> .price` means "find app-root, step into its shadow root, find
+.price there", and it chains. A plain selector that matches nothing also falls
+back to searching open shadow roots, because a selector copied out of devtools
+carries no record of the boundary it sits behind. The fallback is second, not
+first: walking every shadow root is far more work than one `querySelectorAll`,
+and pages without components pay nothing for it.
+
+**Writing.** The picker already targeted shadow elements correctly —
+`composedPath()` crosses open boundaries — it just could not describe what it
+had picked. It now emits the host chain and the element separately, joined by
+the combinator.
+
+Three defects surfaced while building it:
+
+- `relSelector` in the detector walked by `parentElement`, which is `null` at
+  the top of a shadow root (the parent is a DocumentFragment). The loop was
+  guarded on it, so it never ran a single iteration and every element inside a
+  component came back with no selector at all.
+- The detector's `columnsOf` walked `record.querySelectorAll("*")`. A record
+  built from components has no light-DOM children, so it found nothing, the
+  record was dropped for having fewer than two columns, and **Detect Table
+  reported "no tables found" on a whole class of modern site**.
+- The picker's host chain recursed through `_buildSelector`, which re-walked
+  the chain from the document each time, naming the outermost host once per
+  level: `shop-card >>> shop-card >>> shop-badge >>> .rating`.
+
+Closed shadow roots stay unreachable, which is correct — `element.shadowRoot`
+is `null` for them and no API hands one over. `a >>> b` on a host with no open
+root finds nothing rather than falling back to the host's light DOM, which
+would match something else entirely and report success.
+
+Both emitters translate `>>>` to Playwright's `>>`, which means the same thing
+— find the left side, search the right side inside it — and whose CSS engine
+pierces open shadow roots. Without that an exported scrape would quietly return
+empty rows where the run returned data.
+
+Verified in Chromium against real custom elements: a bare `.title` finds all
+three cards, the explicit path works two components deep, CLICK reaches a
+button inside a component and the page receives the event, and Detect Table
+returns the grid with its three real columns and no duplicates.
 
 ---
 

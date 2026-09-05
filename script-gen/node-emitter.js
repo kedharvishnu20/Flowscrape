@@ -150,18 +150,18 @@ function _emitNodeStep(step) {
     case "API":
       return _apiNode(config);
     case "CLICK":
-      return [`await page.click('${esc(config.selector ?? "")}');`, ""];
+      return [`await page.click('${esc(_sel(config.selector ?? ""))}');`, ""];
     case "WAIT": {
       const timeout = Number(config.timeout) || 15000;
       if (config.mode === "selector-visible") {
         return [
-          `await page.waitForSelector('${esc(config.selector ?? "")}', { state: 'visible', timeout: ${timeout} });`,
+          `await page.waitForSelector('${esc(_sel(config.selector ?? ""))}', { state: 'visible', timeout: ${timeout} });`,
           "",
         ];
       }
       if (config.mode === "selector-gone") {
         return [
-          `await page.waitForSelector('${esc(config.selector ?? "")}', { state: 'hidden', timeout: ${timeout} });`,
+          `await page.waitForSelector('${esc(_sel(config.selector ?? ""))}', { state: 'hidden', timeout: ${timeout} });`,
           "",
         ];
       }
@@ -191,7 +191,7 @@ function _emitNodeStep(step) {
       const amount = config.amount ?? config.value ?? 300;
       if (config.mode === "selector" && config.selector) {
         return [
-          `await page.locator('${esc(config.selector)}').scrollIntoViewIfNeeded();`,
+          `await page.locator('${esc(_sel(config.selector))}').scrollIntoViewIfNeeded();`,
           "",
         ];
       }
@@ -230,7 +230,7 @@ function _emitNodeStep(step) {
       ];
       if (config.type === "elements" && config.selector) {
         lines.push(
-          `const elements = await page.locator('${esc(config.selector)}').all();`,
+          `const elements = await page.locator('${esc(_sel(config.selector))}').all();`,
         );
         lines.push(
           `for (let i = 0; i < Math.min(elements.length, ${config.max ?? 10}); i++) {`,
@@ -245,7 +245,7 @@ function _emitNodeStep(step) {
         // scraped page one N times over.
         lines.push(
           `  if (i > 0) {`,
-          `    const _next = page.locator('${esc(config.selector)}').first();`,
+          `    const _next = page.locator('${esc(_sel(config.selector))}').first();`,
           `    if ((await _next.count()) === 0 || !(await _next.isEnabled())) {`,
           `      console.log(\`Pagination: stopped after \${i} page(s).\`);`,
           `      break;`,
@@ -264,7 +264,7 @@ function _emitNodeStep(step) {
     case "IF_ELSE": {
       const condition = config.condition || "exists";
       const lines = [
-        `// IF_ELSE: ${condition} - ${esc(config.selector ?? "")}`,
+        `// IF_ELSE: ${condition} - ${esc(_sel(config.selector ?? ""))}`,
       ];
       const test = _conditionNode(condition, config, esc);
       if (test === null) {
@@ -283,7 +283,7 @@ function _emitNodeStep(step) {
       // that compiles the emitted output rather than pattern-matching it.
       lines.push(
         `{`,
-        `  const _loc = page.locator('${esc(config.selector ?? "")}');`,
+        `  const _loc = page.locator('${esc(_sel(config.selector ?? ""))}');`,
         `  if (${test}) {`,
       );
       for (const child of step.ifBranch ?? []) {
@@ -301,11 +301,11 @@ function _emitNodeStep(step) {
       return _emitNodeFill(config, esc);
 
     case "HOVER":
-      return [`await page.hover('${esc(config.selector)}');`, ""];
+      return [`await page.hover('${esc(_sel(config.selector))}');`, ""];
 
     case "SELECT":
       return [
-        `await page.selectOption('${esc(config.selector)}', '${esc(config.value)}');`,
+        `await page.selectOption('${esc(_sel(config.selector))}', '${esc(config.value)}');`,
         "",
       ];
 
@@ -404,7 +404,7 @@ function _emitNodeStep(step) {
       // nothing and reports success — the same defect the extension's PAGINATE
       // step had. `break` is not emitted here because a top-level PAGINATE has
       // no loop to break out of; a paginating LOOP emits its own (see below).
-      const sel = esc(config.selector ?? "");
+      const sel = esc(_sel(config.selector ?? ""));
       return [
         `{`,
         `  const _next = page.locator('${sel}').first();`,
@@ -421,7 +421,7 @@ function _emitNodeStep(step) {
 
     case "DRAG_DROP":
       return [
-        `await page.dragAndDrop('${esc(config.source)}', '${esc(config.target)}');`,
+        `await page.dragAndDrop('${esc(_sel(config.source))}', '${esc(_sel(config.target))}');`,
         "",
       ];
 
@@ -457,11 +457,11 @@ function _emitNodeFill(config, esc) {
   for (const field of fields) {
     if (!field?.selector) continue;
     lines.push(
-      `await page.fill('${esc(field.selector)}', fsEnv('${esc(field.value ?? "")}'));`,
+      `await page.fill('${esc(_sel(field.selector))}', fsEnv('${esc(field.value ?? "")}'));`,
     );
   }
   if (config.submitSelector) {
-    lines.push(`await page.click('${esc(config.submitSelector)}');`);
+    lines.push(`await page.click('${esc(_sel(config.submitSelector))}');`);
     lines.push(`await page.waitForLoadState('networkidle');`);
   }
   lines.push("");
@@ -493,6 +493,24 @@ function _transformNode(expr, field) {
   return out;
 }
 
+/**
+ * Translate FlowScrape's piercing combinator into Playwright's.
+ *
+ * CSS cannot cross a shadow boundary, so a selector for an element inside a web
+ * component is written `app-root >>> .price` here. Playwright spells the same
+ * idea `>>` — find the left side, then search the right side within it — and
+ * its CSS engine pierces open shadow roots, so the two mean exactly the same
+ * thing. Without this the emitted script carries a selector Playwright reads as
+ * malformed CSS and matches nothing.
+ */
+function _sel(selector) {
+  return String(selector ?? "")
+    .split(">>>")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" >> ");
+}
+
 function _extractNode(config) {
   const lines = ["const extracted = {};"];
   for (const field of config.fields ?? []) {
@@ -508,10 +526,10 @@ function _extractNode(config) {
     // repetition, and both scripts must count the same thing the run does.
     const read =
       field.type === "count"
-        ? `String(await page.locator('${selector}').first().locator('${countSelector ?? ""}').count())`
+        ? `String(await page.locator('${_sel(selector)}').first().locator('${_sel(countSelector ?? "")}').count())`
         : attribute
-          ? `await page.getAttribute('${selector}', '${attribute}')`
-          : `await page.innerText('${selector}')`;
+          ? `await page.getAttribute('${_sel(selector)}', '${attribute}')`
+          : `await page.innerText('${_sel(selector)}')`;
     const expr = _transformNode(read, field);
     if (expr === null) {
       lines.push(
@@ -533,11 +551,11 @@ function _formFillNode(config) {
   ];
   for (const m of config.fieldMappings ?? []) {
     lines.push(
-      `  await page.fill('${m.selector ?? ""}', row['${m.column ?? ""}'] ?? '');`,
+      `  await page.fill('${_sel(m.selector ?? "")}', row['${m.column ?? ""}'] ?? '');`,
     );
   }
   if (config.submitSelector)
-    lines.push(`  await page.click('${config.submitSelector}');`);
+    lines.push(`  await page.click('${_sel(config.submitSelector)}');`);
   lines.push(
     `  await sleep(jitter(${config.interRowDelay?.min ?? 1200}, ${config.interRowDelay?.max ?? 3000}));`,
   );

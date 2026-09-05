@@ -230,7 +230,7 @@ Ordered by (pain removed ÷ work).
 ## 9. Suggested order
 
 **First — correctness gaps that silently return nothing:**
-shadow DOM; captcha detect-and-stop; per-step retry; ASSERT.
+~~shadow DOM~~ (done, K-01); captcha detect-and-stop; per-step retry; ASSERT.
 
 **Second — the features that look present and are not:**
 proxy application during a run; MCP `run_pipeline`.

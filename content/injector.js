@@ -123,34 +123,152 @@
     return text;
   }
 
+  /**
+   * The piercing combinator.
+   *
+   * CSS has no way to cross a shadow boundary — `>>>` was specified and then
+   * removed, and nothing replaced it. So a selector for an element inside a web
+   * component simply cannot be written in CSS, which is why every step in this
+   * file reported "not found" for elements plainly on the screen.
+   *
+   * `app-root >>> .price` means: find `app-root`, step into its shadow root,
+   * find `.price` there. It chains, so `a >>> b >>> c` walks two boundaries.
+   * Playwright spells the same idea `>>`, which is what the emitters translate
+   * it to.
+   */
+  const PIERCE = ">>>";
+
+  /**
+   * Every open shadow root under `node`, including `node` itself.
+   *
+   * Closed roots are unreachable by design — `element.shadowRoot` is null for
+   * them and no API returns one — so a selector into a closed component cannot
+   * be resolved by anything, and saying so beats searching forever.
+   */
+  function _shadowRootsUnder(node, out = []) {
+    if (!node) return out;
+    out.push(node);
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT);
+    let current = walker.currentNode;
+    while (current) {
+      if (current.shadowRoot) _shadowRootsUnder(current.shadowRoot, out);
+      current = walker.nextNode();
+    }
+    return out;
+  }
+
+  /**
+   * Query `root` and every open shadow root beneath it.
+   *
+   * Deliberately a fallback rather than the default: walking every shadow root
+   * on a large page is far more work than one querySelectorAll, and the vast
+   * majority of pages have none at all. _queryScoped only reaches for this when
+   * the plain query found nothing, so pages without web components pay nothing.
+   */
+  function _deepQueryAll(root, selector, all = true) {
+    const results = [];
+    const seen = new Set();
+    for (const scope of _shadowRootsUnder(root)) {
+      try {
+        for (const el of scope.querySelectorAll(selector)) {
+          if (seen.has(el)) continue;
+          seen.add(el);
+          results.push(el);
+          if (!all) return results;
+        }
+      } catch {
+        // An invalid selector is invalid in every scope; stop rather than
+        // throwing the same error once per shadow root.
+        return results;
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Resolve a selector that may carry `>>>`.
+   *
+   * Each segment is resolved inside the previous segment's shadow root, so the
+   * path is explicit and cannot accidentally match a different component with
+   * the same inner class.
+   */
+  function _pierceQueryAll(root, selector, all = true) {
+    const segments = selector.split(PIERCE).map((p) => p.trim());
+    let scopes = [root];
+
+    for (let i = 0; i < segments.length; i++) {
+      const part = segments[i];
+      if (!part) return [];
+      const last = i === segments.length - 1;
+      const found = [];
+      const seen = new Set();
+
+      for (const scope of scopes) {
+        let matches;
+        try {
+          matches = scope.querySelectorAll(part);
+        } catch {
+          return [];
+        }
+        for (const el of matches) {
+          if (seen.has(el)) continue;
+          seen.add(el);
+          if (last) {
+            found.push(el);
+            if (!all) return found;
+          } else if (el.shadowRoot) {
+            // A host with no open shadow root cannot be stepped into; skip it
+            // rather than silently searching its light DOM, which would match
+            // the wrong thing and look like success.
+            found.push(el.shadowRoot);
+          }
+        }
+      }
+      if (found.length === 0) return [];
+      scopes = found;
+    }
+    return scopes;
+  }
+
+  /**
+   * One query, plain first and piercing only if that finds nothing.
+   *
+   * @param {Document|Element|ShadowRoot} root
+   * @param {string} selector
+   * @param {boolean} all
+   */
+  function _resolveIn(root, selector, all) {
+    if (selector.includes(PIERCE)) {
+      return _pierceQueryAll(root, selector, all);
+    }
+    try {
+      const direct = all
+        ? Array.from(root.querySelectorAll(selector))
+        : [root.querySelector(selector)].filter(Boolean);
+      if (direct.length > 0) return direct;
+    } catch {
+      return [];
+    }
+    // Nothing in the light DOM. A selector copied from devtools does not carry
+    // the boundary it sits behind, so try the shadow roots before giving up.
+    return _deepQueryAll(root, selector, all);
+  }
+
   function _queryScoped(selector, context, all = false) {
     const root = _getScopedRoot(context);
     const resolved = _normalizeScopedSelector(selector, context);
     if (root) {
       if (!resolved) return all ? [root] : [root];
-      try {
-        const scoped = all
-          ? Array.from(root.querySelectorAll(resolved))
-          : [root.querySelector(resolved)].filter(Boolean);
-        if (scoped.length > 0) return scoped;
+      const scoped = _resolveIn(root, resolved, all);
+      if (scoped.length > 0) return scoped;
 
-        // If a full-page selector was provided inside LOOP child step,
-        // allow document-level fallback when scoped lookup finds nothing.
-        if (resolved.startsWith(":scope")) return [];
-        return all
-          ? Array.from(document.querySelectorAll(resolved || "*"))
-          : [document.querySelector(resolved)].filter(Boolean);
-      } catch {
-        return [];
-      }
+      // If a full-page selector was provided inside LOOP child step,
+      // allow document-level fallback when scoped lookup finds nothing.
+      if (resolved.startsWith(":scope")) return [];
+      return _resolveIn(document, resolved || "*", all);
     }
     if (!resolved) return [];
-    try {
-      if (all) return Array.from(document.querySelectorAll(resolved || "*"));
-      return [document.querySelector(resolved)].filter(Boolean);
-    } catch {
-      return [];
-    }
+    return _resolveIn(document, resolved || "*", all);
   }
 
   /**
@@ -1232,36 +1350,6 @@
         return 0;
       });
       return list;
-    };
-
-    const _deepQueryAll = (root, selector) => {
-      const results = [];
-      const seen = new Set();
-
-      const visit = (node) => {
-        if (!node || seen.has(node)) return;
-        seen.add(node);
-
-        try {
-          if (node.querySelectorAll) {
-            results.push(...node.querySelectorAll(selector));
-          }
-        } catch {}
-
-        const treeWalker = document.createTreeWalker(
-          node,
-          NodeFilter.SHOW_ELEMENT,
-        );
-        let current = treeWalker.currentNode;
-        while (current) {
-          const shadow = current.shadowRoot;
-          if (shadow) visit(shadow);
-          current = treeWalker.nextNode();
-        }
-      };
-
-      visit(root);
-      return results;
     };
 
     const _findPopupTrigger = (anchor) => {
@@ -2472,9 +2560,105 @@
     return parts.join(" > ") || null;
   }
 
+  /**
+   * The chain of shadow hosts between the document and `el`, outermost first.
+   *
+   * `getRootNode()` returns the ShadowRoot an element lives in; its `host` is
+   * the element in the parent tree. Walking that gives the boundaries a
+   * selector has to cross.
+   */
+  /**
+   * Describe `el` relative to the shadow root that contains it.
+   *
+   * Ids and classes inside a component are scoped to it, so they are usually
+   * both short and unambiguous there — which is the one good thing about the
+   * boundary that otherwise makes this hard.
+   */
+  function _selectorWithin(el, root, bulk) {
+    const tag = el.tagName.toLowerCase();
+    const stable = (c) =>
+      c.length > 1 &&
+      !/^(is|has|js|ng|v|active|open|show|hide|selected|disabled|hover)([-_]|$)/.test(
+        c,
+      ) &&
+      !/\d/.test(c);
+
+    const tryUnique = (sel) => {
+      try {
+        const n = root.querySelectorAll(sel).length;
+        return bulk ? n >= 1 : n === 1;
+      } catch {
+        return false;
+      }
+    };
+
+    if (el.id) {
+      const byId = `#${CSS.escape(el.id)}`;
+      if (tryUnique(byId)) return byId;
+    }
+    for (const attr of ["data-testid", "aria-label", "name", "role"]) {
+      const v = el.getAttribute?.(attr);
+      if (!v || v.length > 120) continue;
+      const sel = `${tag}[${attr}="${CSS.escape(v)}"]`;
+      if (tryUnique(sel)) return sel;
+    }
+    const cls = Array.from(el.classList || []).filter(stable);
+    for (let n = 1; n <= Math.min(2, cls.length); n++) {
+      const sel = `${tag}.${cls
+        .slice(0, n)
+        .map((c) => CSS.escape(c))
+        .join(".")}`;
+      if (tryUnique(sel)) return sel;
+    }
+    if (cls.length) {
+      return `${tag}.${CSS.escape(cls[0])}`;
+    }
+    // Positional within the shadow root, which is a small tree.
+    const parent = el.parentElement;
+    if (parent) {
+      const sameTag = [...parent.children].filter(
+        (c) => c.tagName === el.tagName,
+      );
+      if (sameTag.length > 1) {
+        return `${tag}:nth-of-type(${sameTag.indexOf(el) + 1})`;
+      }
+    }
+    return tag;
+  }
+
+  function _shadowHostChain(el) {
+    const hosts = [];
+    let node = el;
+    for (let i = 0; i < 10; i++) {
+      const root = node?.getRootNode?.();
+      if (!root || root === document || !root.host) break;
+      hosts.unshift(root.host);
+      node = root.host;
+    }
+    return hosts;
+  }
+
   function _buildSelector(el, bulk = false) {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return "*";
     if (el.tagName.toLowerCase() === "html") return "html";
+
+    // Inside a web component, no plain CSS selector can reach this element —
+    // the boundary is not expressible. Describe the hosts and the element
+    // separately and join them with the piercing combinator.
+    const hosts = _shadowHostChain(el);
+    if (hosts.length > 0) {
+      // Each host is described relative to the root *it* lives in. Recursing
+      // into _buildSelector for every host re-walked the whole chain from the
+      // document each time, so a component two levels deep named its outermost
+      // host twice: `shop-card >>> shop-card >>> shop-badge >>> .rating`.
+      const parts = hosts.map((host, i) =>
+        i === 0
+          ? _buildSelector(host, false)
+          : _selectorWithin(host, host.getRootNode(), false),
+      );
+      parts.push(_selectorWithin(el, el.getRootNode(), bulk));
+      return parts.join(` ${PIERCE} `);
+    }
     if (el.tagName.toLowerCase() === "body") return "body";
 
     // 0. Intelligent Bulk Engine (for LOOP and EXTRACT)

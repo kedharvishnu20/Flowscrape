@@ -103,24 +103,45 @@
    * @returns {string} "" when nothing usable was found
    */
   function relSelector(el, root) {
+    // A shadow boundary is not expressible in CSS, so the path is emitted with
+    // FlowScrape's piercing combinator and resolved by _queryScoped. Built
+    // outermost-first by walking hosts, because the two sides of a boundary are
+    // separate trees and `parentElement` is null at the top of each.
+    const host = el.getRootNode?.()?.host;
+    if (host && host !== root && root.contains?.(host)) {
+      const inner = relSelector(el, el.getRootNode());
+      const outer = relSelector(host, root);
+      return outer ? `${outer} >>> ${inner}` : inner;
+    }
+    if (host === root || (host && !root.contains?.(host))) {
+      // The record *is* the host, or sits inside it: describe within the root.
+      root = el.getRootNode();
+    }
+
     const parts = [];
     let node = el;
-    while (node && node !== root && node.parentElement) {
+    // parentNode, not parentElement: the top of a shadow root has a
+    // DocumentFragment for a parent, so parentElement is null there and a loop
+    // guarded on it never ran a single iteration — every element in a
+    // component came back with no selector at all.
+    while (node && node !== root) {
+      const parent = node.parentNode;
+      if (!parent) break;
       const cls = identityClass(node);
       if (cls) {
         const short = `.${CSS.escape(cls)}`;
         return parts.length ? `${short} ${parts.join(" > ")}` : short;
       }
       const tag = node.tagName.toLowerCase();
-      const sameTag = [...node.parentElement.children].filter(
+      const siblings = [...(parent.children ?? [])].filter(
         (c) => c.tagName === node.tagName,
       );
       parts.unshift(
-        sameTag.length > 1
-          ? `${tag}:nth-of-type(${sameTag.indexOf(node) + 1})`
+        siblings.length > 1
+          ? `${tag}:nth-of-type(${siblings.indexOf(node) + 1})`
           : tag,
       );
-      node = node.parentElement;
+      node = parent;
     }
     return parts.join(" > ");
   }
@@ -250,6 +271,28 @@
     }
   }
 
+  /**
+   * Every element inside a record, including the ones behind shadow roots.
+   *
+   * A record built from web components has no children in the light DOM at
+   * all — `<shop-card>` is an empty tag and its title, price and rating live
+   * in its shadow root. `record.querySelectorAll("*")` returned nothing, so
+   * the record had no columns, and a table needs two: Detect Table reported
+   * "no tables found" on a whole class of modern site.
+   */
+  function descendants(record) {
+    const out = [];
+    const visit = (node) => {
+      for (const el of node.querySelectorAll("*")) {
+        out.push(el);
+        if (el.shadowRoot) visit(el.shadowRoot);
+      }
+    };
+    visit(record);
+    if (record.shadowRoot) visit(record.shadowRoot);
+    return out;
+  }
+
   /** Group the page's elements into candidate record sets. */
   function findRecordSets() {
     const sets = [];
@@ -377,7 +420,7 @@
 
     for (const record of members) {
       const seen = new Set();
-      for (const el of record.querySelectorAll("*")) {
+      for (const el of descendants(record)) {
         if (NOISE.has(el.tagName)) continue;
 
         const full = clean(el.textContent);
@@ -422,8 +465,13 @@
         // show a value without writing it down, and this used to `continue`
         // straight past them. That is why a books table detected as "10 rows x
         // 3 columns" with the rating column missing.
+        // A shadow host has no text of its own — its content is a separate
+        // tree, walked here in its own right. Offering the host's attributes
+        // as a column duplicates whatever its insides already yield.
         const graphic =
-          !value && !href && !src ? graphicValues(el, record) : [];
+          !value && !href && !src && !el.shadowRoot
+            ? graphicValues(el, record)
+            : [];
         if (!value && !href && !src && graphic.length === 0) continue;
 
         const selector = relSelector(el, record);

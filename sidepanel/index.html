@@ -2317,6 +2317,66 @@
             </div>
           </div>
 
+          <!-- AI Gateway (K-17): bring-your-own-key, entirely optional. Every
+               free layer lives elsewhere; this is only for what nothing free
+               can do. The local/compatible provider costs nothing and sends
+               nothing off the machine — first-class here, not an afterthought. -->
+          <div class="accordion-section">
+            <div class="accordion-header">
+              <span>AI Gateway (Bring Your Own Key)</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
+            </div>
+            <div class="accordion-content">
+              <p>
+                Optional. Nothing here is required to run a pipeline — it's only
+                for steps that ask a model a question directly. A local model
+                (Ollama, LM Studio, llama.cpp) costs nothing and never leaves
+                this machine.
+              </p>
+              <label>Provider</label>
+              <select id="gateway-provider">
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="openai-compatible">
+                  Local / OpenAI-compatible (Ollama, LM Studio, ...)
+                </option>
+              </select>
+              <label>API Key</label>
+              <div class="flex gap-2 mb-2">
+                <input
+                  type="text"
+                  placeholder="leave blank for a local server"
+                  id="gateway-key"
+                />
+              </div>
+              <label>Model</label>
+              <div class="flex gap-2 mb-2">
+                <input
+                  type="text"
+                  placeholder="e.g. claude-opus-5"
+                  id="gateway-model"
+                />
+              </div>
+              <label id="gateway-base-url-label">
+                Base URL (required for Local / OpenAI-compatible)
+              </label>
+              <div class="flex gap-2 mb-2">
+                <input
+                  type="text"
+                  placeholder="http://localhost:11434/v1"
+                  id="gateway-base-url"
+                />
+              </div>
+              <div class="flex gap-2">
+                <button class="btn" id="btn-gateway-save">Save</button>
+                <button class="btn" id="btn-gateway-test">
+                  Test Connection
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- Overlays (Moved from overlay-panel.js structure but styled natively) -->
           <div class="accordion-section">
             <div class="accordion-header">

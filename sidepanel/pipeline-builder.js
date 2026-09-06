@@ -110,6 +110,7 @@ async function init() {
   bindPalette();
   bindDelegatedEvents();
   bindKeyboardActivation();
+  _loadGatewayConfig();
 
   const savedState = await chrome.storage.local.get([
     SK.PIPELINE,
@@ -775,6 +776,12 @@ function bindGlobalControls() {
     ?.addEventListener("click", () =>
       _saveAndValidateKey("gemini", "Gemini", "key-gemini"),
     );
+  document
+    .getElementById("btn-gateway-save")
+    ?.addEventListener("click", () => _saveGatewayConfig());
+  document
+    .getElementById("btn-gateway-test")
+    ?.addEventListener("click", () => _testGatewayConnection());
   document
     .getElementById("btn-update-proxies")
     ?.addEventListener("click", async () => {
@@ -2630,6 +2637,73 @@ async function _saveAndValidateKey(provider, label, inputId) {
       "warn-log",
       `${label} key saved; validation was inconclusive (${result.error || "no validator"}).`,
     );
+  }
+}
+
+// ── AI gateway settings (K-17) ────────────────────────────────────────────────
+
+/** Read the four gateway fields as one payload — shared by save and test. */
+function _readGatewayFields() {
+  return {
+    provider: document.getElementById("gateway-provider")?.value || "anthropic",
+    apiKey: document.getElementById("gateway-key")?.value.trim() || "",
+    model: document.getElementById("gateway-model")?.value.trim() || "",
+    baseUrl: document.getElementById("gateway-base-url")?.value.trim() || "",
+  };
+}
+
+/** Restore the saved provider/model/baseUrl on panel load — the key itself
+ *  is session-only and never sent back to the panel (key:get never returns a
+ *  value either — see key-validation.test.mjs). */
+async function _loadGatewayConfig() {
+  const res = await chrome.runtime
+    .sendMessage({ type: "gateway:config-get" })
+    .catch(() => null);
+  const cfg = res?.result;
+  if (!cfg) return;
+  const providerEl = document.getElementById("gateway-provider");
+  const modelEl = document.getElementById("gateway-model");
+  const baseUrlEl = document.getElementById("gateway-base-url");
+  if (providerEl && cfg.provider) providerEl.value = cfg.provider;
+  if (modelEl && cfg.model) modelEl.value = cfg.model;
+  if (baseUrlEl && cfg.baseUrl) baseUrlEl.value = cfg.baseUrl;
+}
+
+async function _saveGatewayConfig() {
+  const fields = _readGatewayFields();
+  const res = await chrome.runtime
+    .sendMessage({ type: "gateway:save", payload: fields })
+    .catch(() => null);
+  if (!res?.ok) {
+    notify(
+      "error-log",
+      `Failed to save AI gateway settings: ${res?.error || "unknown error"}.`,
+    );
+    return;
+  }
+  // The key field is cleared after a successful save so it does not sit in
+  // the DOM (and a screenshot / screen share) any longer than it has to —
+  // the same reasoning C-04 applies to logs applies here to the page itself.
+  const keyEl = document.getElementById("gateway-key");
+  if (keyEl && fields.apiKey) keyEl.value = "";
+  notify("info-log", `AI gateway settings saved (${fields.provider}).`);
+}
+
+async function _testGatewayConnection() {
+  const fields = _readGatewayFields();
+  logToMonitor("info-log", `Testing ${fields.provider}…`);
+  const res = await chrome.runtime
+    .sendMessage({ type: "gateway:test", payload: fields })
+    .catch(() => null);
+  const result = res?.result;
+  if (!res?.ok || !result) {
+    notify("error-log", "Could not run the connection test.");
+    return;
+  }
+  if (result.ok) {
+    notify("info-log", `Connection OK (${result.model || fields.provider}).`);
+  } else {
+    notify("error-log", `Connection failed: ${result.error}`);
   }
 }
 

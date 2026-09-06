@@ -2052,3 +2052,50 @@ comparison in the page would be a second definition to drift from the first —
 the G-01 rule. The page side is `_queryScoped`, so an assertion sees exactly
 what the steps it guards see: shadow roots, `>>>` paths, XPath and a loop's
 scoped root included.
+
+### K-17 · MEDIUM · Nothing could ask a model a question outside the free layers
+
+FlowScrape's free layers (`smart-extractor.js`, structured-data, the ethics
+and robots gates) cover what can be done without paying. Nothing covered the
+rest: a page a selector genuinely cannot describe, a screenshot that needs a
+human-language answer, a captcha another part of this codebase solves but has
+no model to reason about. There was no bring-your-own-key path at all, paid
+or free.
+
+`utils/ai-gateway.js` is that path, and it is opt-in end to end — nothing
+wires it to a step or to captcha solving; this only stands up the gateway and
+its settings, for the parent session to connect. One interface,
+`askVision({ prompt, image }, config)` / `askText({ prompt }, config)`, covers
+four providers — Anthropic, OpenAI, Google Gemini, and a user-supplied
+OpenAI-compatible base URL, which is how a local Ollama, LM Studio or
+llama.cpp endpoint is used. The local provider is not a footnote: it is
+listed first in the settings UI's intent (see the accordion's own copy), it
+is the only provider that does not require a key, and it is exactly as
+supported as the paid three — same request path, same `testConnection`.
+
+The module never touches `chrome.storage` itself — it takes `provider`,
+`apiKey`, `model` and `baseUrl` as plain arguments, which is what makes it
+testable with a stubbed `fetch` and nothing else, and what keeps the
+dependency direction this codebase already uses (`background/` depends on
+`utils/`, never the reverse — see `step-types.js`'s docblock). The one place
+that connects a stored key to it is a new pair of `service-worker.js`
+handlers, `gateway:save` / `gateway:test`, which read/write the key through
+`api-key-manager.js`'s existing encrypted, session-only storage under
+`gateway:<provider>` — a new namespace, not a new mechanism, and deliberately
+kept apart from the pre-existing `openai`/`gemini` entries in the API Keys
+panel, which feed the captcha and LLM-extraction paths this feature does not
+touch.
+
+Every failure — no key, an unreachable endpoint, a timeout, a refusal, a rate
+limit, a malformed body, a response so large it stopped looking like a real
+answer — comes back as `{ ok: false, code, error }`, never a thrown string
+and never a silent null; a caller shows `.error` to the user the same way
+`validateApiKey()`'s callers already do. A local endpoint that is not running
+fails in well under a second (`fetch` rejects immediately on a refused
+connection); a request timeout bounds the case where something answers the
+socket and then never responds. The Gemini key travels as a URL query
+parameter — the one provider that has no header auth for this endpoint — and
+every error path for it is worded to name only "Google Gemini", never the URL
+it built, so the key cannot end up in a log or in a message sent back to the
+panel; `tests/ai-gateway.test.mjs` asserts this directly for both a network
+failure and a rejected key, across all four providers.

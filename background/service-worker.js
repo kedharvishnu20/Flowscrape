@@ -90,6 +90,11 @@ import {
 
 const MODULE = "service-worker";
 const STORAGE_FILES_KEY = "fs_storage_files_v1";
+// Non-secret AI-gateway settings (provider/model/baseUrl). The key itself
+// never lives here — it goes through api-key-manager.js's encrypted,
+// session-only storage under provider id `gateway:<provider>`, same as every
+// other credential this extension holds (K-17).
+const STORAGE_GATEWAY_KEY = "fs_gateway_config_v1";
 
 // ── Restricted sites that block automated file uploads ────────────────────────
 const RESTRICTED_UPLOAD_SITES = Object.freeze({
@@ -3472,6 +3477,63 @@ _registerHandler("key:set", async (payload) => {
   const { setApiKey } = await import("./api-key-manager.js");
   await setApiKey(payload.provider, payload.value);
   return { ok: true };
+});
+
+// ── AI gateway (K-17): bring-your-own-key settings ─────────────────────────
+//
+// This is the only place that connects a stored key to the provider-agnostic
+// utils/ai-gateway.js module — the module itself never touches chrome.storage
+// (see its module docblock). The gateway's own provider ids ("gateway:openai",
+// "gateway:anthropic", ...) are kept distinct from the existing "openai" and
+// "gemini" entries in the API Keys panel above: those feed the captcha/LLM-
+// extraction paths another part of this codebase owns, and conflating the two
+// would mean changing one silently changes the other's behavior.
+_registerHandler("gateway:save", async (payload) => {
+  const { GATEWAY_PROVIDERS } = await import("../utils/ai-gateway.js");
+  const { provider, apiKey, model, baseUrl } = payload ?? {};
+  if (!GATEWAY_PROVIDERS[provider]) {
+    return { ok: false, error: `Unknown provider "${provider}"` };
+  }
+  // An empty key field means "keep whatever is already saved" — the model or
+  // base URL is the common thing to change, and re-pasting the key every time
+  // would be needless friction (and a needless chance to fat-finger it).
+  if (apiKey) {
+    const { setApiKey } = await import("./api-key-manager.js");
+    await setApiKey(`gateway:${provider}`, apiKey);
+  }
+  await chrome.storage.local.set({
+    [STORAGE_GATEWAY_KEY]: {
+      provider,
+      model: model || "",
+      baseUrl: baseUrl || "",
+    },
+  });
+  logger.info(MODULE, "gateway-config-saved", { provider });
+  // NEVER log apiKey, baseUrl (a local base URL is not secret, but stays out
+  // of the log for the same reason a proxy line does — C-03).
+  return { ok: true };
+});
+
+_registerHandler("gateway:config-get", async () => {
+  const stored = await chrome.storage.local.get(STORAGE_GATEWAY_KEY);
+  return (
+    stored[STORAGE_GATEWAY_KEY] ?? {
+      provider: "anthropic",
+      model: "",
+      baseUrl: "",
+    }
+  );
+});
+
+_registerHandler("gateway:test", async (payload) => {
+  const { testConnection } = await import("../utils/ai-gateway.js");
+  const { getApiKey } = await import("./api-key-manager.js");
+  const { provider, apiKey, model, baseUrl } = payload ?? {};
+  // The field may be blank because the user is testing a key saved earlier —
+  // fall back to storage rather than treating "blank box" as "no key".
+  const key =
+    apiKey || (await getApiKey(`gateway:${provider}`).catch(() => null));
+  return testConnection({ provider, apiKey: key, model, baseUrl });
 });
 
 // Wire up proxy update button

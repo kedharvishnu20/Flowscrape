@@ -4109,6 +4109,21 @@ function listenToSystem() {
       }
     }
 
+    // A captcha is the one pause the user has to act on, so it says what to do
+    // rather than leaving them to work out why the run stopped.
+    if (msg.type === "pipeline:captcha") {
+      _setPausedUI(true);
+      const state = document.getElementById("mon-state");
+      if (state) {
+        state.textContent = "Captcha";
+        state.style.color = "var(--yellow, #E8B33A)";
+      }
+      notify(
+        "warn-log",
+        `Solve the ${msg.payload.type} captcha in the page, then press Resume.`,
+      );
+    }
+
     // A live count, because the log deliberately stops naming captures after
     // the third — on a site that makes forty calls that left the panel silent
     // for the rest of the run and the sniffer looking stalled.

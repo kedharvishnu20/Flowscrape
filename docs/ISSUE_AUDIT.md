@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 161 findings — 19 blocker · 41 high · 71 medium · 30 low. The
+**Totals:** 162 findings — 19 blocker · 42 high · 71 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 1        |
+| K · Capability review           | 2        |
 
 ---
 
@@ -72,9 +72,10 @@ code the way the rest of the docs did.
 | D-03, D-04, D-05, D-06, D-08      | `c7ccc95`     | `exporters/row-formatters.js` replaces four implementations                          |
 | H-01…H-07, H-10, F-05, G-04, I-05 | _docs commit_ | README rewritten from the code; LICENSE added; duplicate README removed              |
 
-**Not fixed by decision:** A-05, A-06, A-07 (proxy rotation, captcha solving,
-FORM_FILL). All three are unreachable, so they behave identically whether
-removed or kept. Enabling them adds a class of capability that was never asked
+**Not fixed by decision:** A-05 and A-07 (proxy rotation, FORM_FILL). A-06 was
+a third until K-02 closed it — the detector half is live, the solver half is
+still deliberately unwired. Both remaining ones are unreachable, so they behave
+identically whether removed or kept. Enabling them adds a class of capability that was never asked
 for; deleting them forecloses that. Each module now states plainly that nothing
 calls it, and B-19 — the one dangerous latent bug among them — is fixed. Their
 own defects are still fixed as defects: B-33 (captcha poll recursion) and B-34
@@ -140,8 +141,9 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 158 of 161 findings fixed; A-05, A-06 and A-07 left by
-decision, as set out above. The count grew from the original 126 because four
+**Still open: nothing.** 160 of 162 findings fixed; A-05 and A-07 left by
+decision, as set out above. A-06 was a third — the dead captcha detector — and
+is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
 stream framing), A-12 (`EXPORT` downloading nothing at all) and A-13 (every page
@@ -240,6 +242,12 @@ The Settings tab's "Update Pool" button parses and persists proxies (`proxy:upda
 ### A-06 · BLOCKER · Captcha solving is entirely unreachable
 
 `solveCaptcha()` (459 lines of provider integration for 2captcha / Anti-Captcha / CapSolver) is exposed via the `captcha:solve` message. Nothing sends it. `content/captcha-detector.js` is never imported by any file and is not in `manifest.json`'s content scripts, so nothing ever detects a captcha in the first place. There is no captcha step type in `STEP_REGISTRY`.
+
+**Closed by K-02, in half.** Detection is live: a run now pauses and names the
+challenge rather than scraping past it into empty rows, and the unloadable
+detector is replaced. `solveCaptcha` is still unreachable, and deliberately so —
+stopping and saying why is most of the value, needs no key, and raises no
+question about whether the challenge should be defeated at all.
 
 ### A-07 · BLOCKER · `FORM_FILL` is a phantom step type
 
@@ -675,7 +683,6 @@ Every file is re-rendered on each change, with no aggregate size indicator to wa
 | `exporters/text-exporters.js`  | 149   | No importer — SW re-implements CSV/JSON/JSONL/TSV inline.                                 |
 | `utils/deduplicator.js`        | 86    | No importer (see D-07).                                                                   |
 | `utils/levenshtein.js`         | 108   | No importer — `field-auto-mapper.js` re-implements Levenshtein locally at line 53.        |
-| `content/captcha-detector.js`  | 229   | Not in manifest, never imported (see A-06).                                               |
 | `content/smart-sleep.js`       | 164   | Never imported; `injector.js` re-implements `_sleep`/`_waitForSelector`/`_waitDOMStable`. |
 | `content/field-auto-mapper.js` | 333   | Never imported (see A-07).                                                                |
 | `content/form-filler.js`       | 456   | Only via the unreachable `FS_FORM_FILL_ROW` path (see A-07).                              |
@@ -1649,6 +1656,58 @@ Verified in Chromium against real custom elements: a bare `.title` finds all
 three cards, the explicit path works two components deep, CLICK reaches a
 button inside a component and the page receives the event, and Detect Table
 returns the grid with its three real columns and no duplicates.
+
+### K-02 · HIGH · A captcha produced empty rows and said nothing
+
+`content/captcha-detector.js` was 342 lines detecting reCAPTCHA v2/v3,
+hCaptcha, Turnstile and image captchas — in no manifest entry and no import.
+It was an ES module importing the overlay engine, which a content script cannot
+do, so it never ran a line. `solveCaptcha` was reachable through a message
+nothing sent, and the panel stored a 2Captcha key nothing spent. Recorded as
+A-06 and left by decision; the decision is now made.
+
+**Detect and stop, not solve.** A scraper that halts and says why is far more
+useful than one that returns nothing, needs no key, and raises no question about
+whether it should be defeating the challenge at all.
+
+The module answers a narrower question than the old one: not "does this page use
+a captcha" but **"is one in the way right now"**. reCAPTCHA v3 runs invisibly on
+an enormous share of the web and challenges almost nobody; a hidden widget in a
+login form nobody is filling in blocks nothing. Stopping for those would cry
+wolf on most of the internet and the warning would be ignored exactly when it
+counted. So the test is whether something is rendered and blocking — a widget or
+challenge iframe with a real box, or a full-page interstitial that replaced the
+site. Anything weaker is reported as `present` and never stops a run.
+
+**The trigger is where this could have gone wrong.** Waiting for a step to throw
+would have missed nearly every blocked scrape, because EXTRACT does not fail on
+a miss — deliberately, so that a genuinely empty column is not a crash (B-08).
+A captcha wall therefore produced a run of empty rows in silence. The check runs
+when a page step comes back **empty**, reusing the same `_looksEmpty` the
+iframe work introduced, and again when a suspect step throws.
+
+**It pauses; it does not fail.** Resume already exists (E-01), the person is
+right there, and a run that dies here throws away its rows for a thirty-second
+obstacle. The step is retried against the solved page, and the progress counter
+and saved cursor are advanced on the retry — a bare `continue` would have left a
+resumed run repeating the step it had just finished.
+
+The checker is injected on demand rather than added to `CONTENT_FILES`: the
+capability review found that payload to be the one load cost worth cutting, and
+this is 4 KB most runs never need.
+
+Verified in Chromium across the four cases that matter:
+
+| page                                   | verdict      | run           |
+| -------------------------------------- | ------------ | ------------- |
+| invisible v3 widget above a real table | not blocking | 3 rows        |
+| `recaptcha/api.js` and nothing else    | nothing      | 3 rows        |
+| a rendered widget with no data behind  | blocking     | paused, named |
+| a Cloudflare interstitial              | blocking     | paused, named |
+
+The old ES-module detector is deleted rather than left beside this one: two
+detectors are two definitions of the same thing (G-01), and that one could never
+run.
 
 ---
 

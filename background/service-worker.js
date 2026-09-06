@@ -2610,7 +2610,24 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       return;
 
     default: {
-      const resp = await _sendToPage(tabId, step);
+      let resp = await _sendToPage(tabId, step);
+
+      // Being blocked does not look like an error from here. EXTRACT does not
+      // fail on a miss — by design, so a genuinely empty column is not a
+      // crash (B-08) — so a captcha wall produced a run of empty rows and said
+      // nothing. An empty result from a step that should have found something
+      // is the moment to ask why.
+      if (
+        resp?.ok &&
+        CAPTCHA_SUSPECT_STEPS.has(step.type) &&
+        _looksEmpty(resp.result) &&
+        (await _pauseForCaptcha(runId, tabId, step.type))
+      ) {
+        if (await _awaitResume(runId)) {
+          resp = await _sendToPage(tabId, step);
+        }
+      }
+
       if (!resp?.ok) throw new Error(resp?.error || "Step failed");
 
       if (step.type === "EXTRACT" && Array.isArray(resp.result)) {
@@ -2679,6 +2696,112 @@ function _runDomain(runState) {
  *   level a non-optional failure stops the run, whereas nested it propagates so
  *   the enclosing LOOP can apply its own onFail setting.
  */
+/**
+ * Steps whose failure is most often a captcha rather than a bad selector.
+ * Checking after every step would cost an injection per step for a condition
+ * that is rare; checking when a page step cannot find what it wants is the
+ * moment the answer is worth having.
+ */
+const CAPTCHA_SUSPECT_STEPS = new Set([
+  "CLICK",
+  "FILL",
+  "EXTRACT",
+  "SELECT",
+  "HOVER",
+  "PAGINATE",
+  "AUTO_EXTRACT",
+  "PAGE_DATA",
+]);
+
+const CAPTCHA_FILE = "content/captcha-check.js";
+
+/**
+ * Is a captcha standing in the way right now?
+ *
+ * Injected on demand rather than bundled into CONTENT_FILES: it is 4 KB that
+ * most runs never need, and the capability review found the injection payload
+ * to be the one load cost worth cutting.
+ *
+ * @returns {Promise<null|{blocking:boolean, type:string, sitekey:?string,
+ *   where:string, reason:string}>}
+ */
+async function _checkCaptcha(tabId) {
+  if (!tabId) return null;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: [CAPTCHA_FILE],
+    });
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => globalThis.__fsCheckCaptcha?.() ?? null,
+    });
+    return result ?? null;
+  } catch {
+    // A page that refuses injection cannot be checked, and saying nothing is
+    // better than claiming there is no captcha.
+    return null;
+  }
+}
+
+/**
+ * Stop on a captcha instead of scraping past it.
+ *
+ * Paused, not failed: the person is right there and can solve it, and Resume
+ * already exists. A run that fails here throws away the rows it has and makes
+ * the user start again for a thirty-second obstacle.
+ *
+ * Returns true when the run was paused, so the caller can retry the step.
+ */
+async function _pauseForCaptcha(runId, tabId, stepType) {
+  const runState = _runStates.get(runId);
+  if (!runState?.active || runState.paused) return false;
+
+  const found = await _checkCaptcha(tabId);
+  if (!found?.blocking) return false;
+
+  runState.paused = true;
+  runState.pausedForCaptcha = true;
+  const label =
+    {
+      recaptcha: "reCAPTCHA",
+      hcaptcha: "hCaptcha",
+      turnstile: "Cloudflare Turnstile",
+      cloudflare: "Cloudflare challenge",
+      image: "image captcha",
+    }[found.type] ?? found.type;
+  const kept = runState.results.length;
+  _broadcastLog(
+    "warn-log",
+    `Paused: ${label} is in the way (${found.where}), so ${stepType} found nothing. ` +
+      `Solve it in the tab, then press Resume` +
+      (kept
+        ? ` — the ${kept} row${kept === 1 ? "" : "s"} collected so far are kept.`
+        : "."),
+    runId,
+  );
+  chrome.runtime
+    .sendMessage({
+      type: "pipeline:captcha",
+      payload: {
+        runId,
+        tabId: runState.tabId,
+        type: found.type,
+        sitekey: found.sitekey,
+        where: found.where,
+      },
+    })
+    .catch(() => {});
+  return true;
+}
+
+/** Hold until the user resumes, or the run ends. */
+async function _awaitResume(runId) {
+  const rs = _runStates.get(runId);
+  while (rs?.paused && rs?.active) await _sleep(500);
+  return Boolean(rs?.active);
+}
+
 async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
   const runState = _runStates.get(runId);
 
@@ -2727,6 +2850,41 @@ async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
     try {
       await _dispatchStep(resolvedStep, tabId, runId, ctx);
     } catch (err) {
+      // "Not found" on a page step is what being blocked looks like from here.
+      // Ask once, and if a captcha is in the way pause and retry the step
+      // rather than reporting a selector problem that is not one.
+      if (
+        CAPTCHA_SUSPECT_STEPS.has(resolvedStep.type) &&
+        (await _pauseForCaptcha(runId, tabId, resolvedStep.type))
+      ) {
+        while (runState.paused && runState.active) {
+          await _sleep(500);
+        }
+        if (!runState.active) break;
+        let recovered = false;
+        try {
+          await _dispatchStep(resolvedStep, tabId, runId, ctx);
+          recovered = true;
+        } catch {
+          // Still failing after the pause — report it normally, with the
+          // original error.
+        }
+        // Not `continue`: the progress counter and cursor are updated at the
+        // bottom of this loop, and skipping them would leave a resumed run
+        // repeating the step it just completed.
+        if (recovered) {
+          if (progress) {
+            progress.count += 1;
+            await saveCursor({
+              runId,
+              rowIndex: progress.count,
+              stepIndex: progress.count,
+            }).catch(() => {});
+          }
+          continue;
+        }
+      }
+
       const optional = Boolean(resolvedStep.config?.optional);
       _broadcastLog(
         optional ? "warn-log" : "error-log",
@@ -3000,6 +3158,9 @@ _registerHandler(MSG.PIPELINE_RESUME, async (payload) => {
   const rs = _runStates.get(payload?.runId);
   if (!rs) return { ok: false, paused: false };
   rs.paused = false;
+  // The next captcha in the same run should stop it again; leaving this set
+  // would let one solved challenge stand in for every later one.
+  rs.pausedForCaptcha = false;
   logger.info(MODULE, "pipeline-resumed", { runId: rs.runId });
   _broadcastLog("info-log", "Resumed.", rs.runId);
   return { ok: true, paused: false };

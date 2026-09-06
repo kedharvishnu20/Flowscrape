@@ -160,7 +160,7 @@ Twenty-five, defined in [`utils/step-types.js`](utils/step-types.js).
 | Category | Steps                                                                                                       |
 | -------- | ----------------------------------------------------------------------------------------------------------- |
 | Action   | `WEBSITE` `NAVIGATE` `CLICK` `FILL` `HOVER` `SELECT` `SCROLL` `KEYBOARD` `DRAG_DROP` `UPLOAD_ACTIVITY`      |
-| Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE` `ASSERT`                                                                 |
+| Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE` `ASSERT` `ASSERT`                                                        |
 | Data     | `EXTRACT` `PAGE_DATA` `PAGE_JSON` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT` |
 
 `PDF_EXTRACTION` reads the PDF in the service worker, with no dependencies —

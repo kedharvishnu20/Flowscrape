@@ -25,7 +25,7 @@ Five things matter more than everything else in this document.
 
 ## 2. Every activity, against what the job actually needs
 
-24 user-facing step types (`utils/step-types.js`), plus 6 internal. Grouped by
+25 user-facing step types (`utils/step-types.js`), plus 6 internal. Grouped by
 how much is missing.
 
 ### Solid — no change needed
@@ -58,15 +58,15 @@ how much is missing.
 
 ### Missing entirely
 
-| Proposed step              | Why                                                                                                                                  |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `DOWNLOAD_FILE`            | Images, PDFs and CSVs from a scrape. The single most common thing a scraper does that this cannot do at all                          |
-| `COOKIES` / `SESSION`      | Save the logged-in state after a manual login and reuse it. Today every run re-logs-in, which is slow and gets accounts flagged      |
-| `SET_HEADERS`              | User-agent and `Accept-Language` per run. Fixed values are a fingerprint                                                             |
-| `SOLVE_CAPTCHA`            | See §4                                                                                                                               |
-| `RETRY` / step-level retry | The registry has `optional` (keep going on failure) but no "try three times". A flaky selector fails the row rather than the attempt |
-| `DEDUPE`                   | "Scrape only what is new since last run". Needs a key column and a persisted seen-set                                                |
-| ~~`ASSERT`~~               | **Closed by K-13.** Exists, does not exist, a count comparison, or text equals/contains — and `optional` still lets a run past one   |
+| Proposed step                  | Why                                                                                                                                |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `DOWNLOAD_FILE`                | Images, PDFs and CSVs from a scrape. The single most common thing a scraper does that this cannot do at all                        |
+| `COOKIES` / `SESSION`          | Save the logged-in state after a manual login and reuse it. Today every run re-logs-in, which is slow and gets accounts flagged    |
+| `SET_HEADERS`                  | User-agent and `Accept-Language` per run. Fixed values are a fingerprint                                                           |
+| `SOLVE_CAPTCHA`                | See §4                                                                                                                             |
+| ~~`RETRY` / step-level retry~~ | **Closed by K-12.** Any step takes `retries` and `retryDelayMs`; a retry queues behind the rate limiter like a first attempt       |
+| `DEDUPE`                       | "Scrape only what is new since last run". Needs a key column and a persisted seen-set                                              |
+| ~~`ASSERT`~~                   | **Closed by K-13.** Exists, does not exist, a count comparison, or text equals/contains — and `optional` still lets a run past one |
 
 ---
 

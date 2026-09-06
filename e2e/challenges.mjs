@@ -89,6 +89,14 @@ async function serve(challenge) {
 }
 
 /** Substitute the server's origin into anything the fixture left a slot for. */
+// `t.diagnostic` only prints once the test resolves, which is useless for
+// finding where a run hangs. This goes straight to stderr, so the last line you
+// see names the statement that never came back.
+const TRACE = process.env.CHALLENGE_TRACE === "1";
+const trace = (id, what) => {
+  if (TRACE) console.error(`[trace] ${id}: ${what}`);
+};
+
 const withOrigin = (value, origin) =>
   JSON.parse(JSON.stringify(value).replaceAll("<origin>", origin));
 
@@ -122,10 +130,13 @@ for (const challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
       t.diagnostic("serving the saved page");
     }
 
+    trace(challenge.id, "serving");
     const site = await serve(challenge);
+    trace(challenge.id, "opening a page");
     const page = await env.ctx.newPage();
     try {
       t.diagnostic(`opening ${site.origin}${challenge.start}`);
+      trace(challenge.id, "goto");
       await page.goto(site.origin + challenge.start);
       await page.waitForLoadState("domcontentloaded");
       await page.waitForTimeout(400);
@@ -134,7 +145,13 @@ for (const challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
       // so `active: true` handed later tests the panel's own tab and the run
       // hung trying to inject into an extension page.
       const target = site.origin + challenge.start;
-      const tabId = await env.sw.evaluate(async (url) => {
+      // Asked through the panel page, not through `sw.evaluate`: MV3 terminates
+      // an idle service worker, and a Playwright handle on a terminated worker
+      // never resolves — which is what hung the batch run after the second
+      // challenge, while every challenge on its own finished before the worker
+      // ever went idle.
+      trace(challenge.id, "tab lookup");
+      const tabId = await env.panel.evaluate(async (url) => {
         const tabs = await chrome.tabs.query({});
         return tabs.find((t) => t.url === url || t.url?.startsWith(url))?.id;
       }, target);
@@ -142,6 +159,7 @@ for (const challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
 
       // Detect Table, where the challenge says what it should find.
       if (challenge.detect) {
+        trace(challenge.id, "detect");
         const det = await env.send("content:detect", { tabId });
         assert.equal(det.ok, true, JSON.stringify(det));
         const table = det.result.candidates?.[0];
@@ -155,6 +173,7 @@ for (const challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
       }
 
       t.diagnostic(`tab ${tabId}; starting the pipeline`);
+      trace(challenge.id, "pipeline:start");
       const started = await env.send("pipeline:start", {
         tabId,
         targetOrigin: site.origin,
@@ -178,6 +197,7 @@ for (const challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
       let networks = [];
       for (let i = 0; i < 60; i++) {
         await new Promise((r) => setTimeout(r, 250));
+        trace(challenge.id, `data:download #${i}`);
         const dl = await env.send("data:download", { runId });
         if (dl.ok) {
           rows = dl.result.rows ?? [];
@@ -198,6 +218,7 @@ for (const challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
         `${challenge.technique}: ${problem}\nrows: ${JSON.stringify(rows.slice(0, 3))}`,
       );
     } finally {
+      trace(challenge.id, "closing");
       await page.close().catch(() => {});
       await site.close();
     }

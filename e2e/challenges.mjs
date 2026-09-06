@@ -11,22 +11,17 @@
 // top of challenges/index.mjs. Nothing else changes: the same pipeline and the
 // same assertions run against the real markup.
 //
-// KNOWN LIMITATION — run one at a time:
+// `CHALLENGE=iframe npm run challenges` runs one, for iterating on a fixture.
 //
-//     CHALLENGE=iframe npm run challenges
-//
-// Every challenge passes on its own. Running the whole file in one process
-// stalls after the second one, and I have not found why: it is not the tab
-// lookup (fixed, and it stalled anyway), not shared browser state (each test
-// gets its own profile now, and it stalled anyway), and not the file timeout
-// (raised to 900s, and it stalled anyway). node:test's per-test `timeout`
-// option is not the tool for narrowing it either — it aborts the test's async
-// context, which severs the panel bridge and turns every challenge into a
-// timeout, which is a false lead I followed for a while.
-//
-// The fixtures and the assertions are the valuable part and they are correct;
-// the batch runner is not finished. Saying so beats a suite that looks green
-// because nobody ran it past the second case.
+// This file used to stall after the second challenge, and the reason is worth
+// keeping: `server.close()` stops accepting connections and then waits for
+// every open one to end, and Chrome holds its keep-alive sockets open long
+// after the page that opened them is gone. So each challenge sat in teardown
+// waiting out sockets, and waited longer for every challenge before it — 72s,
+// 86s, 121s, 177s, 291s — until the file hit its timeout, while the actual
+// work in each one took under a second. Tracing where the time went, rather
+// than guessing at browser state, is what found it: the whole suite now runs
+// in about ten seconds.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
@@ -84,7 +79,18 @@ async function serve(challenge) {
   const { port } = server.address();
   return {
     origin: `http://127.0.0.1:${port}`,
-    close: () => new Promise((r) => server.close(r)),
+    /**
+     * `server.close()` stops accepting and then waits for every open connection
+     * to end, and Chrome keeps its keep-alive sockets long after the page that
+     * opened them is gone. That wait was the entire cost of a challenge: the
+     * work took under a second and the test took seventy, and it grew with each
+     * challenge that had left sockets behind until the file hit its timeout.
+     */
+    close: () =>
+      new Promise((r) => {
+        server.closeAllConnections();
+        server.close(r);
+      }),
   };
 }
 
@@ -233,8 +239,14 @@ for (const challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
           `panel ${grown.nodes} nodes, ${grown.tabs} tabs, ${Date.now() - t0}ms`,
         );
       }
+      const tClose = Date.now();
       await page.close().catch(() => {});
+      const tPage = Date.now();
       await site.close();
+      trace(
+        challenge.id,
+        `page.close ${tPage - tClose}ms, site.close ${Date.now() - tPage}ms`,
+      );
     }
   });
 }

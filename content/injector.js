@@ -2476,6 +2476,31 @@
         });
       }
 
+      /**
+       * Let a click through to an iframe's own picker.
+       *
+       * The blocker overlay covers the whole viewport so the page cannot fire
+       * its own hover styles under the crosshair (E-03) — and it covers any
+       * iframe on the page too. So a click aimed at something *inside* a frame
+       * hit this overlay first, the top document resolved the point to the
+       * `<iframe>` element, and the picker returned a selector for the frame
+       * rather than the thing in it. "It found the element, but not properly."
+       *
+       * The picker is armed in every frame at once, so the frame will answer
+       * for itself if the event is allowed to reach it. Blocking is relaxed
+       * only while the pointer is over a frame, which is exactly when this
+       * document is not the one that should be answering.
+       *
+       * Moving back out is still noticed: the listener is on `document` in the
+       * capture phase, so it fires for events dispatched on page elements
+       * whether or not the overlay is transparent.
+       */
+      function _setOverlayPassthrough(target) {
+        const isFrame =
+          target?.tagName === "IFRAME" || target?.tagName === "FRAME";
+        overlay.style.pointerEvents = isFrame ? "none" : "auto";
+      }
+
       function onMove(e) {
         _lastX = e.clientX;
         _lastY = e.clientY;
@@ -2485,6 +2510,7 @@
               _pickTargetFromEvent(e) || _pickRealTargetAtPoint(_lastX, _lastY);
             _blockTimer = null;
             if (!realTarget) return;
+            _setOverlayPassthrough(realTarget);
             currentTarget = realTarget;
             _updateHighlight();
           });

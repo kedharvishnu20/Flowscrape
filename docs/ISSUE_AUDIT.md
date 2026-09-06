@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 167 findings — 21 blocker · 45 high · 72 medium · 30 low. The
+**Totals:** 168 findings — 22 blocker · 45 high · 72 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 7        |
+| K · Capability review           | 8        |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 165 of 167 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 166 of 168 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -1827,6 +1827,51 @@ refusing does.
 Verified end to end through the panel's own path on a page with two late
 iframes: `content:ensure`, pick in each, run the step, and each returns **that
 frame's** rows.
+
+### K-08 · BLOCKER · The page's own overlay swallowed clicks meant for a frame
+
+_Reported as "after closing the extension or doing something it found the
+element, but still cannot find it properly" — the third report of the same
+symptom, and the one that finally named what was wrong: the pick returned
+something, and the something was wrong._
+
+The picker is armed in every frame at once, and the **top** frame's blocker
+overlay covers the whole viewport — including any iframe on the page. It exists
+so the page cannot fire its own hover styles under the crosshair (E-03), and it
+does that job on iframes too. So a real click aimed at something inside a frame
+hit that overlay first, the top document resolved the point to the `<iframe>`
+element, and the pick came back as a selector for the frame rather than for the
+thing in it:
+
+```
+picked with a real click inside the iframe:
+    { "selector": "#same", "frameUrl": "", "top": true }
+```
+
+Blocking is now relaxed while the pointer is over a frame, and only then — which
+is exactly when this document is not the one that should be answering. The frame
+answers for itself. Moving back out is still noticed, because the listener is on
+`document` in the capture phase and fires for events dispatched on page elements
+whether or not the overlay is transparent.
+
+**Why three attempts missed it.** Every earlier check dispatched synthetic
+`MouseEvent`s inside the frame's document. That bypasses hit-testing completely,
+so the overlay it had to get past was never in the way. The bug only appears
+with a real click, and the report's "after doing something it worked" was the
+overlay not being armed on that particular attempt.
+
+Isolating it also required arming one frame at a time on a freshly loaded page:
+with both armed, a leftover armed picker in a frame short-circuits the next
+request and returns null, which looks like a third failure and is not one.
+
+Verified in Chromium with `page.mouse.click`, twice in a row so it cannot be a
+timing accident:
+
+| pick                                           | result                                 |
+| ---------------------------------------------- | -------------------------------------- |
+| real click inside the iframe, all frames armed | `div.quote > span.text` in `.../inner` |
+| the same, second time                          | identical                              |
+| the page's own `<h1>`, with the frame present  | `h1:nth-of-type(1)`, top document      |
 
 ---
 

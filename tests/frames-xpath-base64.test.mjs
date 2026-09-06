@@ -290,3 +290,52 @@ test("one frame refusing does not fail the whole page", () => {
   assert.match(fn, /if \(missing\.includes\(0\)\)/);
   assert.match(fn, /frame-inject-partial/);
 });
+
+// ── K-08: the page's own overlay swallowed clicks meant for a frame ─────────
+//
+// The last reason picking in an iframe did not work, and the one that produced
+// "it found the element but not properly": the picker is armed in every frame,
+// and the *top* frame's blocker overlay covers the whole viewport — including
+// any iframe on the page. A real click aimed at something inside a frame hit
+// that overlay first, the top document resolved the point to the `<iframe>`
+// element, and the pick came back as a selector for the frame rather than the
+// thing in it.
+//
+// Every earlier check missed this because they dispatched synthetic events
+// inside the frame's document, which bypasses hit-testing entirely. With a real
+// mouse click the top frame answered `#same`.
+
+test("the overlay lets a click through to a frame's own picker", () => {
+  const fn = injector.slice(
+    injector.indexOf("function _setOverlayPassthrough"),
+    injector.indexOf("function onMove(e)"),
+  );
+  assert.ok(fn.length > 0, "no passthrough helper");
+  assert.match(fn, /tagName === "IFRAME"/);
+  assert.match(fn, /tagName === "FRAME"/, "old-style frames are frames too");
+  assert.match(
+    fn,
+    /overlay\.style\.pointerEvents = isFrame \? "none" : "auto"/,
+    "the overlay still blocks over a frame",
+  );
+});
+
+test("it is decided on every move, not once", () => {
+  // Blocking has to come back when the pointer leaves the frame, or the page
+  // fires its own hover styles under the crosshair again (E-03).
+  const fn = injector.slice(
+    injector.indexOf("function onMove(e)"),
+    injector.indexOf("function onMove(e)") + 700,
+  );
+  assert.match(fn, /_setOverlayPassthrough\(realTarget\)/);
+});
+
+test("blocking is still the default", () => {
+  // E-03: without it the page keeps firing hover styles under the crosshair and
+  // can shift the element being picked out from under the pointer.
+  const overlay = injector.slice(
+    injector.indexOf("const overlay = document.createElement"),
+    injector.indexOf("_shadow.appendChild(overlay)"),
+  );
+  assert.match(overlay, /pointer-events:auto/);
+});

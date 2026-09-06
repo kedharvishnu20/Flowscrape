@@ -84,16 +84,16 @@ own defects are still fixed as defects: B-33 (captcha poll recursion) and B-34
 **How F-01's nine modules were resolved, one at a time.** "Dead code" is not one
 decision:
 
-| Module                                                                  | Outcome                                                                                                             |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `data-sources/csv-parser.js`, `json-parser.js`                          | **Deleted.** No data-file input path exists; building one is new product scope, not a fix                           |
-| `utils/deduplicator.js`                                                 | **Deleted.** `_rowKey` in the worker supersedes it (D-07)                                                           |
-| `content/smart-sleep.js`                                                | **Deleted.** `injector.js` is a classic content script and cannot import a module, so it could never have used this |
-| `utils/strings.js`                                                      | **Deleted.** Its only importer never referenced anything on it, and the panel hardcodes its text (F-07)             |
-| `exporters/text-exporters.js`, `stream-writer.js`                       | **Wired up.** The panel's partial-run download uses them, for the save dialog a worker cannot show                  |
-| `utils/levenshtein.js`                                                  | **Wired up.** `field-auto-mapper.js` imported it instead of keeping its own copy                                    |
-| `background/rate-limiter.js`                                            | **Wired up.** The executor paces every page- and network-touching step (F-09)                                       |
-| `content/captcha-detector.js`, `field-auto-mapper.js`, `form-filler.js` | **Kept**, per the decision above                                                                                    |
+| Module                                            | Outcome                                                                                                             |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `data-sources/csv-parser.js`, `json-parser.js`    | **Deleted.** No data-file input path exists; building one is new product scope, not a fix                           |
+| `utils/deduplicator.js`                           | **Deleted.** `_rowKey` in the worker supersedes it (D-07)                                                           |
+| `content/smart-sleep.js`                          | **Deleted.** `injector.js` is a classic content script and cannot import a module, so it could never have used this |
+| `utils/strings.js`                                | **Deleted.** Its only importer never referenced anything on it, and the panel hardcodes its text (F-07)             |
+| `exporters/text-exporters.js`, `stream-writer.js` | **Wired up.** The panel's partial-run download uses them, for the save dialog a worker cannot show                  |
+| `utils/levenshtein.js`                            | **Wired up.** `field-auto-mapper.js` imported it instead of keeping its own copy                                    |
+| `background/rate-limiter.js`                      | **Wired up.** The executor paces every page- and network-touching step (F-09)                                       |
+| `field-auto-mapper.js`, `form-filler.js`          | **Kept**, per the decision above. (`captcha-detector.js` was kept here too, then deleted by K-02)                   |
 
 **Batch 5 — fixed:**
 

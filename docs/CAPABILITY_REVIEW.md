@@ -15,11 +15,11 @@ Five things matter more than everything else in this document.
 
 | #   | Finding                                                                                                        | Why it matters                                                                                                                     |
 | --- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **No shadow-DOM support.** `_queryScoped` uses plain `querySelectorAll`                                        | Every web-component site is invisible. Identical in kind to the iframe gap (J-14) the user hit — a boundary selectors do not cross |
+| 1   | ~~**No shadow-DOM support.**~~ **Closed by K-01**                                                              | `_queryScoped` now falls back to a shadow-walking resolver, and `>>>` pierces on demand. Kept here because it was the headline gap |
 | 2   | **Proxy rotation never runs during a scrape.** `selectProxy` is only reachable from the `proxy:select` message | The pool parses, tests, dedupes and rotates. No run consults it. The feature looks complete and does nothing                       |
 | 3   | **MCP cannot scrape.** 18 tools, none of which run a pipeline or read a page                                   | An AI agent can author a pipeline and never execute one. There is no bridge from the MCP process to the browser                    |
-| 4   | **Captcha detection is dead code.** `content/captcha-detector.js` is in no manifest entry and no import        | 342 lines, self-documented as unreachable (A-06). `solveCaptcha` exists and nothing sends `captcha:solve`                          |
-| 5   | **167 KB of JS into every frame, every injection**                                                             | `CONTENT_FILES` is five files totalling 170,799 bytes, injected with `allFrames: true`. A page with 20 iframes parses 3.4 MB       |
+| 4   | ~~**Captcha detection is dead code.**~~ **Detection closed by K-02**                                           | The dead detector is gone; `content/captcha-check.js` is injected on demand and pauses the run. Solving is still unwired (A-06)    |
+| 5   | **185 KB of JS into every frame, every injection**                                                             | `CONTENT_FILES` is five files totalling 189,462 bytes, injected with `allFrames: true`. A page with 20 iframes parses 3.8 MB       |
 
 ---
 
@@ -70,51 +70,56 @@ how much is missing.
 
 ---
 
-## 3. Cross-cutting: shadow DOM
+## 3. Cross-cutting: shadow DOM — closed (K-01)
 
-The one gap that silently breaks whole sites.
+**This section described the gap. The gap is now closed; what follows is what
+was built, so the recommendation is not read as outstanding work.**
 
 `_queryScoped` — the resolver behind CLICK, FILL, EXTRACT, HOVER, SELECT,
-IF_ELSE, PAGINATE, SCROLL and the picker — calls `root.querySelectorAll(sel)`.
-That does not cross a shadow root. Shadow-DOM piercing exists in exactly one
-place in the codebase, `_deepQueryAll` inside `_stepUploadActivity`, written to
-find file inputs.
+IF_ELSE, PAGINATE, SCROLL and the picker — used to call `root.querySelectorAll`,
+which does not cross a shadow root. On a site built from web components every
+selector matched nothing and the tool said "not found" for elements plainly on
+the screen: the same user experience as the iframe gap, and it needed the same
+shape of answer.
 
-So on a site built from web components, every selector matches nothing and the
-tool reports "not found" for elements plainly on the screen. That is the same
-user experience as the iframe gap, and it needs the same shape of answer: a
-resolver that walks open shadow roots, with the cost paid only when the plain
-query finds nothing.
+It now resolves through `_resolveIn`, which runs the plain query first and only
+walks open shadow roots (`_deepQueryAll`) when that finds nothing, so the cost
+is paid on a miss rather than on every lookup. A selector can also pierce
+explicitly with `>>>` (`_pierceQueryAll`), which is what the picker records and
+what `relSelector` in `structure-detector.js` emits when a path crosses a shadow
+boundary — CSS has no way to express one, so the notation is ours and our own
+resolver reads it. The script emitters translate `>>>` to Playwright's `>>`.
 
-**Recommendation:** promote `_deepQueryAll` to the shared resolver, tried as a
-second pass. Closed shadow roots stay unreachable and should say so.
+Closed shadow roots stay unreachable. Nothing can reach into one from outside,
+so the honest answer there is to say so rather than to appear to try.
 
 ---
 
-## 4. Captcha
+## 4. Captcha — detection closed (K-02), solving still open
 
-**State:** `content/captcha-detector.js` is 342 lines that detect reCAPTCHA
-v2/v3, hCaptcha, Turnstile and image captchas. It is in no `content_scripts`
-entry and nothing imports it. `solveCaptcha` lives in
+**State when this was written:** `content/captcha-detector.js` was 342 lines
+that detected reCAPTCHA v2/v3, hCaptcha, Turnstile and image captchas, in no
+`content_scripts` entry and imported by nothing (A-06).
+
+**Now:** that file is deleted and `content/captcha-check.js` replaces it —
+injected on demand by the worker and consulted when a captcha-suspect step
+fails _or comes back empty_, because EXTRACT deliberately does not fail on a
+miss (B-08), so a blocked page looks like empty rows rather than an error. It
+asks whether a captcha is **in the way**, not whether one is present: reCAPTCHA
+v3 runs invisibly on a large share of the web, so a rendered box of a usable
+size or a full-page interstitial is the bar. When one is in the way the run
+pauses and the panel says which kind and where, and the user resumes it.
+
+That was step 1 of the recommendation below, and it is most of the value: a
+scraper that stops and says why beats one that silently returns nothing.
+
+**Still open:** solving. `solveCaptcha` lives in
 `background/api-key-manager.js`, reachable through the `captcha:solve` message,
-which nothing sends. The panel has a 2Captcha key field that stores a key
-nothing spends.
-
-This is recorded as A-06 and was deliberately left. It is now worth deciding
-properly, because the parts are all present.
-
-**Recommendation — in this order:**
-
-1. **Detect and stop.** Load the detector; when a captcha appears mid-run,
-   pause and tell the user which kind and where. This alone turns "the run
-   produced 40 empty rows" into "the site asked for a captcha at row 41", and
-   needs no solver, no key and no ethical argument.
-2. **Then, optionally, solve.** Wire `captcha:solve` to a `SOLVE_CAPTCHA` step,
-   gated behind the existing `captchaAuthorized` flag the run payload already
-   carries.
-
-Step 1 is most of the value. A scraper that stops and says why is far more
-useful than one that silently returns nothing, and it is the honest default.
+which nothing sends; the panel has a 2Captcha key field that stores a key
+nothing spends. Wiring it means a `SOLVE_CAPTCHA` step gated behind the
+`captchaAuthorized` flag the run payload already carries. That is a decision
+about what this tool should be willing to do, not a defect, and it stays
+recorded as A-06.
 
 ---
 
@@ -190,14 +195,14 @@ agent discovers the vocabulary instead of guessing it.
 
 ## 7. System load
 
-| Cost                           | Measured / found                                                           | Fix                                                                                                                                                                                                                                                                                             |
-| ------------------------------ | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **167 KB injected per frame**  | `CONTENT_FILES` = 170,799 bytes across 5 files, injected `allFrames: true` | Only `injector.js` (98 KB) is needed for most steps. Load `smart-extractor` (31 KB), `structure-detector` (21 KB), `page-data` (13 KB) and `page-json` (8 KB) on demand — they are already only used by one step each. Saves ~42% of the payload on every injection, more on iframe-heavy pages |
-| **Injection into every frame** | `target: { tabId, allFrames: true }`                                       | Needed for the iframe fix (J-14), but only when a step asks for it. Steps carry `inFrame` already — inject `allFrames` only when it is set                                                                                                                                                      |
-| **Keepalive during runs**      | `setInterval` + a 1-minute alarm while any run is live (`_startHeartbeat`) | Correct for MV3, no change                                                                                                                                                                                                                                                                      |
-| **Rate limiting**              | `acquire(domain)` per step — works                                         | No change                                                                                                                                                                                                                                                                                       |
-| **Capture buffers**            | Bounded by count and bytes, drops are reported                             | No change                                                                                                                                                                                                                                                                                       |
-| **Dead import**                | `backoff` imported in `service-worker.js`, never called                    | Remove                                                                                                                                                                                                                                                                                          |
+| Cost                           | Measured / found                                                           | Fix                                                                                                                                                                                                                                                                                              |
+| ------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **185 KB injected per frame**  | `CONTENT_FILES` = 189,462 bytes across 5 files, injected `allFrames: true` | Only `injector.js` (106 KB) is needed for most steps. Load `smart-extractor` (30 KB), `structure-detector` (28 KB), `page-data` (13 KB) and `page-json` (8 KB) on demand — they are already only used by one step each. Saves ~43% of the payload on every injection, more on iframe-heavy pages |
+| **Injection into every frame** | `target: { tabId, allFrames: true }`                                       | Needed for the iframe fix (J-14), but only when a step asks for it. Steps carry `inFrame` already — inject `allFrames` only when it is set                                                                                                                                                       |
+| **Keepalive during runs**      | `setInterval` + a 1-minute alarm while any run is live (`_startHeartbeat`) | Correct for MV3, no change                                                                                                                                                                                                                                                                       |
+| **Rate limiting**              | `acquire(domain)` per step — works                                         | No change                                                                                                                                                                                                                                                                                        |
+| **Capture buffers**            | Bounded by count and bytes, drops are reported                             | No change                                                                                                                                                                                                                                                                                        |
+| **Dead import**                | `backoff` imported in `service-worker.js`, never called                    | Remove                                                                                                                                                                                                                                                                                           |
 
 The injection payload is the only load finding that matters. Everything else in
 the runtime is already bounded.

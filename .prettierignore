@@ -3,3 +3,4 @@ mcp/node_modules/
 sidepanel/fonts/
 package-lock.json
 mcp/package-lock.json
+.claude/

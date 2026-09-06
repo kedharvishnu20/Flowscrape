@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
-const SKIP = new Set(["node_modules", ".git", "bin", "fonts"]);
+// `.claude` holds the scratch worktrees the agent harness creates: whole
+// copies of this repo, which would be checked again under every one of them.
+const SKIP = new Set(["node_modules", ".git", ".claude", "bin", "fonts"]);
 
 async function walk(dir, out = []) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {

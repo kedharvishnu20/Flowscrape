@@ -4,3 +4,7 @@ sidepanel/fonts/
 package-lock.json
 mcp/package-lock.json
 .claude/
+# Real pages mirrored verbatim from tryscrapeme.com (see
+# scripts/mirror-challenges.mjs) — reformatting them would stop them being
+# what they claim to be.
+e2e/challenges/pages/

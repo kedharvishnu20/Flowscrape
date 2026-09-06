@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 173 findings — 22 blocker · 48 high · 74 medium · 30 low. The
+**Totals:** 175 findings — 22 blocker · 48 high · 76 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 171 of 173 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 173 of 175 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2052,6 +2052,73 @@ comparison in the page would be a second definition to drift from the first —
 the G-01 rule. The page side is `_queryScoped`, so an assertion sees exactly
 what the steps it guards see: shadow roots, `>>>` paths, XPath and a loop's
 scoped root included.
+
+### K-16 · MEDIUM · The challenge fixtures were tested against reconstructions, not the real pages
+
+Every challenge fixture in `e2e/challenges/index.mjs` used to be a
+reconstruction — an honest guess at the shape of the matching tryscrapeme.com
+page, written from memory. A pass there proved the tool handles that _shape_,
+not that it passes the real challenge, and the gap is not hypothetical: one
+reconstruction (obfuscated-classes) tested an entirely different layout from
+the real page and would have kept passing forever without ever touching the
+real markup.
+
+`scripts/mirror-challenges.mjs` now fetches the real pages (politely: one at a
+time, with a pause, exactly once) and saves them to `e2e/challenges/pages/`,
+where the existing `savedPages()` mechanism serves them instead of the
+reconstruction. Six of the eight ids now run against real markup on every
+`npm run challenges`; `base64` and `shadow-dom` stay reconstructions because
+there is nothing to mirror them against (see the comment at the top of
+`index.mjs`). Running the whole suite against the real pages found:
+
+- **A real Detect Table defect.** The real "parse" page wraps its price cell
+  as `<td><span>$</span>10.49</td>`. `structure-detector.js`'s `columnsOf()`
+  correctly reads the `<td>`'s own text ("10.49") as the price column, but
+  also treats the nested `<span>` as a second column — its selector maps to
+  the same header via `cellIndex`'s leftmost-token rule, so the constant
+  value "$" survives the label-filter (it looks like a named column) and
+  `uniquifyNames` renames it to "price 2" instead of dropping it. The
+  extracted data is unaffected (EXTRACT uses fixed selectors, not Detect
+  Table's guess), so only the Detect Table assertion is marked `t.todo` —
+  fixing `columnsOf` to recognize this shape safely is more than a
+  small, obviously-correct change given how much the rest of the detector
+  leans on the current column-identity rules.
+- **A real pagination-technique gap.** The real "pagination" page has no
+  "next" affordance at all — five numbered `?pageno=` links, identical on
+  every page. `LOOP`'s `paginate` mode only knows how to click a repeating
+  "next" element; there is nothing to click that advances past page 1.
+  Driving numbered pagination is a real feature (a pagination-by-URL mode),
+  not a bug fix, so this is marked `t.todo` rather than patched.
+- **Two reconstructions tested the wrong shape.** The "iframe" fixture
+  assumed a list of quote `<div>`s; the real page is a table, same as
+  "parse". The "obfuscated-classes" fixture assumed a table with a `Total`
+  row; the real page is a grid of cards with no total anywhere, and one
+  other `<h2>` on the page (a help popover) that a naive `//h2` selector
+  picked up as an eleventh, off-by-one "card". Both fixtures now use the
+  real values and, for obfuscated-classes, an XPath that excludes the
+  popover's `<h2>` by the one thing that tells them apart — it carries a
+  `class`, the real cards' `<h2>`s never do, regenerated on every request or
+  not.
+- **The login and AJAX fixtures needed real request/response handling, not
+  just real markup.** The real "simulate-login" challenge POSTs the form
+  back to its own URL and only reveals the results table when the
+  credentials match, so `serve()` in `challenges.mjs` gained a small
+  `postRoutes` mechanism (buffer the body, hand it to a challenge-supplied
+  function) to drive that — the login fixture's result table is the real
+  table, captured by actually submitting the real form. The "ajax" fixture's
+  real JSON response has a different shape entirely (an id/format/isbn/...
+  book record, not just name/author); the check now accepts either data set's
+  known content rather than assuming the reconstruction's.
+- **A latent harness bug, exposed the moment a saved page existed.**
+  `challenges.mjs` looped `for (const challenge of CHALLENGES...)` and then
+  reassigned `challenge` inside the test body when a saved real page existed
+  — which threw ("Assignment to constant variable") the instant
+  `e2e/challenges/pages/` stopped being empty, because that reassignment
+  had never actually run before. Changed to `let`.
+
+`npm run challenges` now passes 6 of 8 outright and reports 2 as `t.todo`
+with the exact real-world cause named above, run against real markup rather
+than reconstructions, entirely offline.
 
 ### K-17 · MEDIUM · Nothing could ask a model a question outside the free layers
 

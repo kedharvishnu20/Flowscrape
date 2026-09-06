@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 177 findings — 22 blocker · 50 high · 76 medium · 30 low. The
+**Totals:** 178 findings — 22 blocker · 51 high · 76 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 17       |
+| K · Capability review           | 18       |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 175 of 177 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 176 of 178 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2274,3 +2274,28 @@ every error path for it is worded to name only "Google Gemini", never the URL
 it built, so the key cannot end up in a log or in a message sent back to the
 panel; `tests/ai-gateway.test.mjs` asserts this directly for both a network
 failure and a rejected key, across all four providers.
+
+### K-18 · HIGH · The sniffer dropped captures depending on how fast the page answered
+
+Found by the ajax challenge failing about one run in three, which is the kind
+of number that teaches a team to press re-run instead of to look.
+
+The MAIN-world hook is registered at `document_start`, early enough to see
+everything. The isolated-world **relay** that listens for what the hook posts
+was registered at `document_end`. Between those two points — the whole of
+parsing — a capture was hooked, posted, and landed on nobody. No error, no
+warning: the request simply never appeared in the monitor.
+
+A page that fetches its data from an inline `<script>` sits exactly in that
+window, which is the ordinary shape of "load the table over fetch". Whether a
+capture survived came down to whether the response arrived before parsing
+finished. On a fast local server it usually did not.
+
+The relay is registered at `document_start` now, like the hook. `injector.js`
+touches nothing at load beyond `document.documentElement`, which exists by
+then, and already defers its own document report to `DOMContentLoaded`.
+
+|        | ajax challenge, five consecutive runs |
+| ------ | ------------------------------------- |
+| before | 2 of 3 passing, no pattern            |
+| after  | 5 of 5 passing                        |

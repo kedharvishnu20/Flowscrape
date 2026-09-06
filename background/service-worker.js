@@ -232,10 +232,21 @@ async function _enableSniffer(runId, tabId, targetOrigin) {
       {
         // The listener for what the hook above posts. Without it the captures
         // go nowhere; see SNIFFER_RELAY_ID.
+        //
+        // document_start, like the hook, and for the same reason. At
+        // document_end the listener did not exist yet while the page was
+        // parsing, so a request the page fires from an inline script — the
+        // ordinary shape of "load the table over fetch" — was hooked, posted,
+        // and landed on nobody. Whether it survived came down to whether the
+        // response arrived before parsing finished, which made the capture a
+        // coin flip: the ajax challenge failed about one run in three. The
+        // injector reads no DOM at load beyond `documentElement`, which exists
+        // by document_start, and defers its own document report to
+        // DOMContentLoaded, so it is safe this early.
         id: SNIFFER_RELAY_ID,
         js: [INJECTOR_FILE],
         matches: _snifferMatches(targetOrigin),
-        runAt: "document_end",
+        runAt: "document_start",
         world: "ISOLATED",
         allFrames: false,
         persistAcrossSessions: false,

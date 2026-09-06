@@ -427,3 +427,21 @@ test("the readout does not carry a previous run's count", async () => {
     /getElementById\("mon-apis-card"\)\?\.classList\.add\("hidden"\)/,
   );
 });
+
+test("the relay listens from document_start, not document_end", () => {
+  // The hook runs at document_start. With the relay at document_end there was
+  // a window — the whole of parsing — where a capture was posted to a listener
+  // that did not exist yet, and a page that fetches from an inline script sits
+  // squarely inside it. Nothing reported an error; the capture was simply
+  // gone, and the ajax challenge failed about one run in three.
+  const enable = worker.slice(
+    worker.indexOf("async function _enableSniffer"),
+    worker.indexOf("async function _disableSniffer"),
+  );
+  const relay = enable.slice(enable.indexOf("id: SNIFFER_RELAY_ID"));
+  assert.match(
+    relay.slice(0, 400),
+    /runAt: "document_start"/,
+    "the relay would miss anything the page fetches while it is still parsing",
+  );
+});

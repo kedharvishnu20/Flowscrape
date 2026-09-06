@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 168 findings — 22 blocker · 45 high · 72 medium · 30 low. The
+**Totals:** 169 findings — 22 blocker · 46 high · 72 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 8        |
+| K · Capability review           | 9        |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 166 of 168 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 167 of 169 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -1872,6 +1872,62 @@ timing accident:
 | real click inside the iframe, all frames armed | `div.quote > span.text` in `.../inner` |
 | the same, second time                          | identical                              |
 | the page's own `<h1>`, with the frame present  | `h1:nth-of-type(1)`, top document      |
+
+### K-09 · HIGH · Detect Table failed on the shapes real pages use
+
+_Reported as "auto detection in table is not working properly in all cases"._
+
+Measured against a battery of 37 page shapes rather than guessed at. Three were
+genuinely wrong, and each was wrong in a way that made the feature look broken
+rather than imperfect.
+
+**1. A wrapper chain swallowed the value.** Markup nests:
+`<td><div class="wrap"><div class="title">X</div></div></td>` is three elements
+holding one value. The guard against that redundancy looked _up_ — "my parent
+has one child and my text, so I am the artefact" — which is true of **every**
+element in such a chain, including the one that actually holds the text. Both
+were skipped, the cell yielded nothing, the record fell under the two-column
+minimum, and a table whose cells wrap their contents in divs came back as **"no
+tables found"**. Looking down instead names the redundant one exactly: an
+element whose single child carries all its text adds nothing the child does not
+already say. An `<a>` around an `<img>` is the same shape and keeps both
+columns, because it carries an href of its own.
+
+**2. The page's own furniture outranked the data.** A menu, a pager and a footer
+link list repeat perfectly regularly — that is what makes them menus — so they
+scored exactly as a product grid did. The score was rows x columns, and on a
+real page the nav is often the longer list: a twelve-item menu beat a
+four-product grid outright, and even when the grid won, half the offered
+candidates were menus the user had to know to ignore.
+
+Two changes. Records inside `nav`, `footer`, `[role=navigation]`,
+`[role=contentinfo]`, `.pagination` or a breadcrumb are not offered at all —
+those landmarks say what they are, so believe them. And an anchor's text and its
+href are two columns describing **one element**, which is what let a
+ten-link sidebar outrank a four-product grid; columns are counted per distinct
+element now, and a record with one piece of information is a list rather than a
+table.
+
+Before and after, on a page with a nav, a sidebar, a grid, a pager and a footer:
+
+|        | offered                                                                                 |
+| ------ | --------------------------------------------------------------------------------------- |
+| before | `.menu > li` (12), `.cats > li` (10), `.product` (4), `.pagination > li`, `.links > li` |
+| after  | `.product` (4) — title, title url, price, thumb image                                   |
+
+**3. An ARIA table's header row became row one.** A `<th>` differs in tag from a
+`<td>`, so a real table's header row falls out of the record set on shape alone.
+An ARIA table spells both with the same element and tells them apart by `role`,
+so the header row matched the data rows perfectly. Rows whose cells are all
+`th` or `role="columnheader"` are excluded, and those headers now name the
+columns — which needed the cell's position within its record, since a
+class-based selector carries no index to match a header against. `role="table"`
+markup went from five rows named `n, p` to four named `name, price`.
+
+The battery is kept as `tests/detect-table-shapes.test.mjs`, including the
+shapes that were already right — split values, uneven records, sparse columns,
+constant labels, layout tables, two-row lists — so the next change to the
+scoring has something to fail against.
 
 ---
 

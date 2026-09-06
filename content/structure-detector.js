@@ -196,6 +196,33 @@
   }
 
   /**
+   * A row of column headers, in either vocabulary.
+   *
+   * `<th>` cells differ in tag from `<td>` cells, so a real table's header row
+   * falls out of the record set on shape alone. An ARIA table spells both with
+   * the same element and distinguishes them by `role`, so the header row
+   * matched the data rows perfectly and became row one of the scrape.
+   */
+  function isHeaderRow(el) {
+    const kids = [...el.children].filter((c) => !NOISE.has(c.tagName));
+    if (kids.length === 0) return false;
+    return kids.every(
+      (c) => c.tagName === "TH" || c.getAttribute?.("role") === "columnheader",
+    );
+  }
+
+  /** Header text from an ARIA table, when the markup uses roles. */
+  function ariaHeaders(record) {
+    const table = record?.closest?.('[role="table"],[role="grid"]');
+    if (!table) return [];
+    const row = [...table.children].find(isHeaderRow);
+    if (!row) return [];
+    return [...row.children]
+      .filter((c) => !NOISE.has(c.tagName))
+      .map((c) => clean(c.textContent));
+  }
+
+  /**
    * The 1-based column index a `td:nth-of-type(N)` selector points at.
    * @returns {number} 0 when the selector is not a positional cell
    */
@@ -216,9 +243,14 @@
    * @param {string} kind - "text", "href" or "src"
    * @param {string[]} headers - the table's header row, if it has one
    */
-  function nameFrom(selector, kind, headers) {
+  function nameFrom(selector, kind, headers, childIndex = -1) {
     const index = cellIndex(selector);
-    const header = index > 0 ? headers[index - 1] : "";
+    const header =
+      index > 0
+        ? (headers[index - 1] ?? "")
+        : childIndex >= 0
+          ? (headers[childIndex] ?? "")
+          : "";
     if (!header) return nameFor(selector, kind);
     const base = header.toLowerCase();
     // The cell may yield more than one column — its text and a link's href —
@@ -293,6 +325,51 @@
     return out;
   }
 
+  /**
+   * Page furniture that repeats but is not data.
+   *
+   * A navigation menu, a pager and a footer link list are all perfectly regular
+   * repeating structures — that is what makes them menus — so the detector
+   * scored them exactly as it scored a product grid. On a real page the nav is
+   * often the *longer* list: a twelve-item menu beat a four-product grid,
+   * because the score was rows x columns and the menu had three times the rows.
+   *
+   * These landmarks say what they are, so believe them.
+   */
+  const CHROME_SELECTOR =
+    'nav,footer,[role="navigation"],[role="contentinfo"],.pagination,.breadcrumb,.breadcrumbs';
+
+  function isPageChrome(el) {
+    try {
+      return Boolean(el.closest(CHROME_SELECTOR));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * How much a candidate is worth being offered first.
+   *
+   * Not simply rows x columns. An anchor's text and its href are one piece of
+   * information counted twice, so a list of bare links scored double what it
+   * was worth — which is most of why menus outranked data. Columns are counted
+   * per distinct element instead, and a candidate whose every column comes from
+   * a single element is a link list rather than a table.
+   */
+  function distinctBases(columns) {
+    return new Set(
+      columns.map((c) =>
+        String(c.selector)
+          .replace(/\s*>\s*/g, " ")
+          .trim(),
+      ),
+    ).size;
+  }
+
+  function scoreOf(members, columns) {
+    return members.length * Math.max(1, distinctBases(columns));
+  }
+
   /** Group the page's elements into candidate record sets. */
   function findRecordSets() {
     const sets = [];
@@ -325,7 +402,11 @@
         const members = sameTag.filter(
           (_, i) => overlap(bags[i], reference) >= SHAPE_OVERLAP,
         );
-        if (members.length >= MIN_RECORDS) sets.push(members);
+        // A header row that matches the data rows on shape is still a header
+        // row. In an ARIA table both are spelled the same and only the role
+        // tells them apart, so it became row one of every scrape.
+        const rows = members.filter((m) => !isHeaderRow(m));
+        if (rows.length >= MIN_RECORDS) sets.push(rows);
       }
     }
     return sets;
@@ -434,21 +515,25 @@
         const href = el.getAttribute?.("href");
         const src = el.getAttribute?.("src");
 
-        // A sole child that carries all its parent's text is a wrapper
-        // artefact — unless it has an attribute of its own. A product image
-        // inside its link is exactly that shape, and dropping it loses the
-        // column people most often want after the title.
-        const parent = el.parentElement;
+        // Drop the wrapper, keep the thing it wraps.
+        //
+        // Markup nests: `<td><div class="wrap"><div class="title">X</div></div></td>`
+        // is three elements holding one value, and only the innermost has a
+        // selector worth writing. This used to look *up* — "my parent has one
+        // child and my text, so I am the artefact" — which is true of every
+        // element in such a chain, including the one that actually holds the
+        // text. Both got skipped, the cell yielded nothing, and a table whose
+        // cells wrap their contents in divs came back as "no tables found".
+        //
+        // Looking down instead names the redundant one exactly: an element
+        // whose single element child carries all of its text adds nothing the
+        // child does not already say.
+        const kids = [...el.children].filter((c) => !NOISE.has(c.tagName));
         if (
-          full && // `full` guards it: with no text at all this fired on every
-          // single-child wrapper, so a rating widget inside its own <td> was
-          // skipped before anything could look at it.
-          !href &&
-          !src &&
-          parent &&
-          parent !== record &&
-          parent.children.length === 1 &&
-          clean(parent.textContent) === full
+          !href && // unless it carries something of its own: an <a> around an
+          !src && //  <img> is this shape, and both columns are wanted
+          kids.length === 1 &&
+          clean(kids[0].textContent) === full
         ) {
           continue;
         }
@@ -493,6 +578,15 @@
               hits: 0,
               samples: [],
               depth: 0,
+              // Which cell of the record this is, when it is one. A <th> row
+              // names its columns by position, and only a positional selector
+              // (`td:nth-of-type(2)`) could be matched back to that name — so a
+              // table whose cells carry classes, or an ARIA table that spells
+              // its cells with roles, got selector-derived names while the page
+              // was holding up a sign saying "Price".
+              childIndex: [...record.children]
+                .filter((c) => !NOISE.has(c.tagName))
+                .indexOf(el),
             });
             let d = 0;
             for (let n = el; n && n !== record; n = n.parentElement) d++;
@@ -548,11 +642,12 @@
     });
 
     const headers = tableHeaders(members[0]);
+    const named0 = headers.length ? headers : ariaHeaders(members[0]);
     const named = columns
       .sort((a, b) => b.hits - a.hits || a.depth - b.depth)
       .slice(0, MAX_FIELDS)
       .map((c) => ({
-        name: nameFrom(c.selector, c.kind, headers),
+        name: nameFrom(c.selector, c.kind, named0, c.childIndex ?? -1),
         selector: c.selector,
         kind: c.kind,
         // A "attr" or "count" column is only readable with the attribute name
@@ -581,8 +676,17 @@
     const candidates = [];
 
     for (const members of findRecordSets()) {
+      // A menu, a pager and a footer link list repeat perfectly regularly —
+      // that is what makes them menus — so they were scored exactly like a
+      // product grid, and on a real page the nav is often the longer list.
+      if (members.every(isPageChrome)) continue;
+
       const columns = columnsOf(members);
-      if (columns.length < 2) continue;
+      // Two *columns* is not the test — an anchor's text and its href are two
+      // columns describing one element, which is what let a sidebar of ten
+      // category links outrank a four-product grid. A table needs two distinct
+      // things per record.
+      if (distinctBases(columns) < 2) continue;
 
       const selector = containerSelector(members[0]);
       // Only offer a container the page can actually find again.
@@ -607,7 +711,7 @@
             columns.map((c) => [c.name, c.samples[i] ?? c.samples[0] ?? ""]),
           ),
         ),
-        score: members.length * columns.length,
+        score: scoreOf(members, columns),
       });
     }
 

@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 169 findings — 22 blocker · 46 high · 72 medium · 30 low. The
+**Totals:** 170 findings — 22 blocker · 47 high · 72 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 9        |
+| K · Capability review           | 10       |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 167 of 169 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 168 of 170 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -1928,6 +1928,40 @@ The battery is kept as `tests/detect-table-shapes.test.mjs`, including the
 shapes that were already right — split values, uneven records, sparse columns,
 constant labels, layout tables, two-row lists — so the next change to the
 scoring has something to fail against.
+
+### K-10 · HIGH · A column the page names was dropped for not varying
+
+_Reported twice. First as "the star column is not identified", which I
+diagnosed as a rating drawn with icons and fixed for that shape (J-25) — the
+wrong diagnosis for this page. Then the user pasted the data, which showed what
+was actually happening._
+
+The table on `tryscrapeme.com/web-scraping-practice/beginner/parse` has four
+columns — name, author, stars, price — and **stars reads `4` for every one of
+the ten books**. "A column whose value never changes is the form's label, not
+the record's data" threw it away, so Detect Table offered three columns and the
+ratings column was simply absent.
+
+That rule earns its keep: on a country list, `<strong>Capital:</strong>`
+repeated 250 times produced three columns of pure label (J-13). But it was
+guessing where the page had already answered — a `<th>` row is the table saying,
+in the author's own words, that this is a column. A column the header names is
+kept now whatever its values, and the guess only applies where there is no
+header to consult. The label case is unaffected because a label is an element
+_inside_ a cell, not a cell: it has no header of its own.
+
+|        | columns offered            |
+| ------ | -------------------------- |
+| before | name, author, price        |
+| after  | name, author, stars, price |
+
+Both auto-transform to numbers, so the challenge's own question — the total of
+the price column — comes out of the export directly.
+
+The diagnosis is the lesson. "The star column is missing" had an obvious
+explanation, it was wrong, and it stayed wrong through a fix, a test suite and a
+verification pass because every one of those was built on it. The data the user
+pasted settled in one line what three rounds of reasoning had not.
 
 ---
 

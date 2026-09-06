@@ -256,3 +256,92 @@ test("a column that never varies is a label, not data", () => {
   );
   assert.ok(!names(t).includes("strong"), names(t).join(", "));
 });
+
+// ── K-10: a column the page names is a column, whatever its values ─────────
+//
+// Reported twice. The first time as "the star column is not identified", which
+// I diagnosed as a rating drawn with icons and fixed for that shape (J-25) —
+// the wrong diagnosis for this page. The second time the user pasted the data,
+// which showed what was really going on: the ratings column reads **4 for every
+// one of the ten books**, and "a column whose value never changes is a label,
+// not data" threw it away.
+//
+// That rule earns its keep: on a country list, `<strong>Capital:</strong>`
+// repeated 250 times is three columns of pure label. But a header row settles
+// the question outright — the page is holding up a sign saying "stars".
+
+const PARSE_PAGE = (() => {
+  const rows = [
+    ["Gut", "Giulia Enders", 4, "$10.49"],
+    ["The Brain That Changes Itself", "Norman Doidge", 4, "$11.03"],
+    ["Medical Medium Liver Rescue", "Anthony William", 4, "$23.76"],
+    ["Wreck This Journal", "Keri Smith", 4, "$9.59"],
+    ["12 Rules for Life", "Jordan B. Peterson", 4, "$20.99"],
+    ["12 Rules for Life", "Jordan B. Peterson", 4, "$10.26"],
+    ["Gut and Psychology Syndrome", "Dr Natasha Campbell-McBride", 4, "$19.48"],
+    ["Medical Medium Thyroid Healing", "Anthony William", 4, "$17.26"],
+    ["Steal Like an Artist", "Austin Kleon", 4, "$8.81"],
+    ["Sitting Still Like A Frog", "Eline Snel", 4, "$10.4"],
+  ];
+  return (
+    `<table class="table"><thead><tr><th>name</th><th>author</th><th>stars</th><th>price</th></tr></thead><tbody>` +
+    rows
+      .map(
+        ([n, a, st, p]) =>
+          `<tr><td>${n}</td><td>${a}</td><td>${st}</td><td>${p}</td></tr>`,
+      )
+      .join("") +
+    `</tbody></table>` +
+    `<footer>© TryScrapeMe <a href="/about">About</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></footer>`
+  );
+})();
+
+test("a constant column the header names is kept", () => {
+  const t = top(PARSE_PAGE);
+  assert.ok(t, "no table found");
+  assert.equal(t.count, 10);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(names(t))),
+    ["name", "author", "stars", "price"],
+    "the ratings column reads 4 in every row and was dropped as a label",
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(t.sampleRows[0])), {
+    name: "Gut",
+    author: "Giulia Enders",
+    stars: "4",
+    price: "$10.49",
+  });
+});
+
+test("an unnamed constant column is still a label", () => {
+  // The rule this exempts from has to keep working: an inline label repeated in
+  // every record, with no header row to vouch for it.
+  const t = top(
+    `<div>${["France", "Spain", "Italy", "Japan", "Peru", "Chad"]
+      .map(
+        (c, i) =>
+          `<div class="country"><h3 class="name">${c}</h3>` +
+          `<div><strong>Capital:</strong> <span class="cap">City${i}</span></div></div>`,
+      )
+      .join("")}</div>`,
+  );
+  assert.ok(t, "no records found");
+  assert.ok(
+    !t.sampleRows[0] || !Object.values(t.sampleRows[0]).includes("Capital:"),
+    `a pure label survived: ${JSON.stringify(t.sampleRows[0])}`,
+  );
+});
+
+test("a label inside a named cell does not become its own column", () => {
+  const t = top(
+    `<table><thead><tr><th>Country</th><th>Detail</th></tr></thead><tbody>` +
+      ["France", "Spain", "Italy", "Japan"]
+        .map(
+          (c, i) =>
+            `<tr><td>${c}</td><td><strong>Capital:</strong> <span class="cap">City${i}</span></td></tr>`,
+        )
+        .join("") +
+      `</tbody></table>`,
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(names(t))), ["country", "detail"]);
+});

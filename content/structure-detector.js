@@ -607,6 +607,21 @@
       (c) => c.hits >= members.length * MIN_COVERAGE,
     );
 
+    // The names the page gives its own columns, needed here as well as for
+    // naming: a column the page names in a header row is a column, whatever
+    // its values happen to be.
+    const headerNames = tableHeaders(members[0]);
+    const columnNames = headerNames.length
+      ? headerNames
+      : ariaHeaders(members[0]);
+
+    /** Does the page's header row name this column? */
+    const isNamedColumn = (c) => {
+      const idx = cellIndex(c.selector);
+      if (idx > 0) return Boolean(columnNames[idx - 1]);
+      return c.childIndex >= 0 && Boolean(columnNames[c.childIndex]);
+    };
+
     // A column whose value never changes is the form's label, not the record's
     // data. Real markup labels its fields inline — `<strong>Capital:</strong>`
     // beside the value — and those <strong>s have the same shape in every
@@ -615,10 +630,17 @@
     // "Population:" and "Area (km2):" repeated 250 times, plus a fourth holding
     // the "2" from km<sup>2</sup>.
     //
+    // Unless the page names it. A rating column that reads 4 for every book on
+    // the page is constant and is still the ratings column — dropping it lost a
+    // column the table's own header row was announcing, which is the one piece
+    // of evidence that settles "label or data" outright. The label case has no
+    // header: it is an element *inside* a cell, not a cell.
+    //
     // Only applied where there is enough to judge by: with two records, two
     // matching values is a coincidence as often as a rule.
     if (members.length >= MIN_RECORDS) {
       columns = columns.filter((c) => {
+        if (isNamedColumn(c)) return true;
         if (c.samples.length < Math.min(members.length, MIN_RECORDS))
           return true;
         const distinct = new Set(c.samples.map((v) => clean(v)));
@@ -641,8 +663,7 @@
       );
     });
 
-    const headers = tableHeaders(members[0]);
-    const named0 = headers.length ? headers : ariaHeaders(members[0]);
+    const named0 = columnNames;
     const named = columns
       .sort((a, b) => b.hits - a.hits || a.depth - b.depth)
       .slice(0, MAX_FIELDS)

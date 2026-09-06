@@ -1583,6 +1583,87 @@
   // ── FILL (was TYPE): single or multi-field input ─────────────────────────────
 
   /**
+   * Names that exist only to catch something that fills every field it finds.
+   *
+   * Deliberately short. `url`, `website` and `nickname` are all used as bait,
+   * and are also real fields on real comment forms, so a name alone is only
+   * taken as proof when the name has no other purpose.
+   */
+  const _HONEYPOT_NAMES =
+    /honey ?pot|hp_?(?:field|input)?$|bot[-_]?(?:field|check|trap)|_?gotcha|no[-_]?bot|spam[-_]?trap|leave[-_ ]?(?:this[-_ ])?blank|(?:do[-_]?not|dont)[-_]?fill/i;
+
+  /**
+   * Is this field a trap rather than a field?
+   *
+   * A honeypot is an input a person can never see and never types into, so
+   * anything in it was put there by a script. Filling one does not fail
+   * loudly — the form is accepted, the submission is binned, and the account
+   * is quietly marked. That silence is why this is on by default and has no
+   * toggle: an option to fill traps has no use anybody would want.
+   *
+   * Every ancestor is walked, because `display:none` on a wrapper is how most
+   * of them are hidden and the input's own computed style says nothing about
+   * it. The offscreen distances are generous: a field parked at -9999px is
+   * unambiguous, whereas a sticky bar sitting a little above the fold is not.
+   *
+   * @param {Element} el
+   * @returns {string|null} why it is a trap, or null when it is an ordinary field
+   */
+  function _honeypotReason(el) {
+    if (!el) return null;
+    if (el.tagName === "INPUT") {
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      if (type === "hidden") return "it is an <input type=hidden>";
+    }
+
+    const view = el.ownerDocument?.defaultView;
+    for (
+      let node = el;
+      node && node.nodeType === 1;
+      node = node.parentElement
+    ) {
+      if (node.hasAttribute("hidden")) {
+        return `${node === el ? "it" : `its <${node.tagName.toLowerCase()}> wrapper`} carries the hidden attribute`;
+      }
+      if (node.getAttribute("aria-hidden") === "true") {
+        return `${node === el ? "it" : `its <${node.tagName.toLowerCase()}> wrapper`} is aria-hidden`;
+      }
+      const style = view?.getComputedStyle?.(node);
+      if (!style) continue;
+      if (style.display === "none") return "it is display:none";
+      if (style.visibility === "hidden" || style.visibility === "collapse") {
+        return "it is visibility:hidden";
+      }
+      if (style.opacity !== "" && Number(style.opacity) === 0) {
+        return "it is fully transparent";
+      }
+      if (parseInt(style.textIndent, 10) <= -1000) {
+        return "its text is indented off the page";
+      }
+      if (
+        parseInt(style.left, 10) <= -1000 ||
+        parseInt(style.top, 10) <= -1000
+      ) {
+        return "it is positioned off the page";
+      }
+    }
+
+    const rect = el.getBoundingClientRect?.();
+    if (rect) {
+      if (rect.width < 2 || rect.height < 2) return "it has no size on screen";
+      if (rect.right < -1000 || rect.bottom < -1000) {
+        return "it sits off the page";
+      }
+    }
+
+    const label = `${el.getAttribute("name") || ""} ${el.id || ""} ${el.className || ""}`;
+    if (_HONEYPOT_NAMES.test(label)) {
+      return "its name is one only a bot trap uses";
+    }
+    return null;
+  }
+
+  /**
    * Write a value the way a real keystroke would.
    *
    * `el.value = x` assigns to the property, and React (and Vue's v-model, and
@@ -1749,12 +1830,21 @@
     if (mode === "multi" && fields.length > 0) {
       const results = [];
       const missing = [];
+      const skipped = [];
       for (const f of fields) {
         const el = _queryScoped(f.selector, context, false)[0];
         if (!el) {
           // Skipping silently meant a half-filled form was reported as a full
           // success, and the submit click went through anyway.
           missing.push(f.selector);
+          continue;
+        }
+        // A trap is not a missing field: the form is still complete without
+        // it, and it is the one field where doing nothing is the correct
+        // answer. Recorded rather than dropped, so the log can say so.
+        const trap = _honeypotReason(el);
+        if (trap) {
+          skipped.push({ selector: f.selector, reason: trap });
           continue;
         }
         results.push(
@@ -1772,7 +1862,7 @@
         await _sleep(200);
         btn.click();
       }
-      return { filled: results.length, fields: results };
+      return { filled: results.length, fields: results, skipped };
     }
 
     // single mode. The old code fell back to the scope root when the selector

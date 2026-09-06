@@ -13,13 +13,13 @@ things that are not broken, because they were never built.
 
 Five things matter more than everything else in this document.
 
-| #   | Finding                                                                                                        | Why it matters                                                                                                                     |
-| --- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | ~~**No shadow-DOM support.**~~ **Closed by K-01**                                                              | `_queryScoped` now falls back to a shadow-walking resolver, and `>>>` pierces on demand. Kept here because it was the headline gap |
-| 2   | **Proxy rotation never runs during a scrape.** `selectProxy` is only reachable from the `proxy:select` message | The pool parses, tests, dedupes and rotates. No run consults it. The feature looks complete and does nothing                       |
-| 3   | **MCP cannot scrape.** 18 tools, none of which run a pipeline or read a page                                   | An AI agent can author a pipeline and never execute one. There is no bridge from the MCP process to the browser                    |
-| 4   | ~~**Captcha detection is dead code.**~~ **Detection closed by K-02**                                           | The dead detector is gone; `content/captcha-check.js` is injected on demand and pauses the run. Solving is still unwired (A-06)    |
-| 5   | **185 KB of JS into every frame, every injection**                                                             | `CONTENT_FILES` is five files totalling 189,462 bytes, injected with `allFrames: true`. A page with 20 iframes parses 3.8 MB       |
+| #   | Finding                                                                                                        | Why it matters                                                                                                                                            |
+| --- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | ~~**No shadow-DOM support.**~~ **Closed by K-01**                                                              | `_queryScoped` now falls back to a shadow-walking resolver, and `>>>` pierces on demand. Kept here because it was the headline gap                        |
+| 2   | **Proxy rotation never runs during a scrape.** `selectProxy` is only reachable from the `proxy:select` message | The pool parses, tests, dedupes and rotates. No run consults it. The feature looks complete and does nothing                                              |
+| 3   | **MCP cannot scrape.** 18 tools, none of which run a pipeline or read a page                                   | An AI agent can author a pipeline and never execute one. There is no bridge from the MCP process to the browser                                           |
+| 4   | ~~**Captcha detection is dead code.**~~ **Closed by K-02, then K-14 and K-15**                                 | The dead detector is gone; `captcha-check.js` pauses the run and now tiers what it finds. Free solving is wired; the paid tier is still the A-06 decision |
+| 5   | **185 KB of JS into every frame, every injection**                                                             | `CONTENT_FILES` is five files totalling 189,462 bytes, injected with `allFrames: true`. A page with 20 iframes parses 3.8 MB                              |
 
 ---
 
@@ -27,6 +27,11 @@ Five things matter more than everything else in this document.
 
 25 user-facing step types (`utils/step-types.js`), plus 6 internal. Grouped by
 how much is missing.
+
+`FILL` gained one thing since this was written that belongs in the "solid"
+column rather than a table row: it will not fill a bot trap. A field that is
+hidden, offscreen, zero-sized, `aria-hidden` or named as bait is skipped and
+named in the log, with no toggle (K-14).
 
 ### Solid — no change needed
 
@@ -63,7 +68,7 @@ how much is missing.
 | `DOWNLOAD_FILE`                | Images, PDFs and CSVs from a scrape. The single most common thing a scraper does that this cannot do at all                        |
 | `COOKIES` / `SESSION`          | Save the logged-in state after a manual login and reuse it. Today every run re-logs-in, which is slow and gets accounts flagged    |
 | `SET_HEADERS`                  | User-agent and `Accept-Language` per run. Fixed values are a fingerprint                                                           |
-| `SOLVE_CAPTCHA`                | See §4                                                                                                                             |
+| ~~`SOLVE_CAPTCHA`~~            | **Closed by K-15,** for what can be answered without paying. See §4                                                                |
 | ~~`RETRY` / step-level retry~~ | **Closed by K-12.** Any step takes `retries` and `retryDelayMs`; a retry queues behind the rate limiter like a first attempt       |
 | `DEDUPE`                       | "Scrape only what is new since last run". Needs a key column and a persisted seen-set                                              |
 | ~~`ASSERT`~~                   | **Closed by K-13.** Exists, does not exist, a count comparison, or text equals/contains — and `optional` still lets a run past one |
@@ -95,7 +100,7 @@ so the honest answer there is to say so rather than to appear to try.
 
 ---
 
-## 4. Captcha — detection closed (K-02), solving still open
+## 4. Captcha — detection closed (K-02), free solving closed (K-14, K-15)
 
 **State when this was written:** `content/captcha-detector.js` was 342 lines
 that detected reCAPTCHA v2/v3, hCaptcha, Turnstile and image captchas, in no
@@ -113,13 +118,31 @@ pauses and the panel says which kind and where, and the user resumes it.
 That was step 1 of the recommendation below, and it is most of the value: a
 scraper that stops and says why beats one that silently returns nothing.
 
-**Still open:** solving. `solveCaptcha` lives in
-`background/api-key-manager.js`, reachable through the `captcha:solve` message,
-which nothing sends; the panel has a 2Captcha key field that stores a key
-nothing spends. Wiring it means a `SOLVE_CAPTCHA` step gated behind the
-`captchaAuthorized` flag the run payload already carries. That is a decision
-about what this tool should be willing to do, not a defect, and it stays
-recorded as A-06.
+**Now, part two (K-14, K-15):** everything that can be done for nothing is
+done, and it is not much, which is the honest shape of the problem.
+
+The checker reports a `tier` alongside the type — `solvable-locally`,
+`needs-a-service`, `not-solvable` — so nobody has to guess what a challenge is
+worth attempting. Cloudflare and Akamai interstitials are `not-solvable` and say
+why: they are bot management, and a wall that lifts on a browser fingerprint has
+no answer for any solver to sell.
+
+`utils/captcha-solvers.js` answers the written challenges a small site writes
+for itself — arithmetic, letter counts, "the third word of this sentence" — in
+the worker, and refuses the moment it is not certain, because a guess is a
+failed attempt the site records and a refusal is a pause the user was going to
+see anyway. `SOLVE_CAPTCHA` is the step that uses it, and it will not act
+without both the run's `captchaAuthorized` flag and a per-domain attestation
+given once on the step's own card. Without either it refuses and says which is
+missing; on a `not-solvable` type it refuses rather than trying; where no local
+solver applies it pauses exactly as K-02 left it.
+
+**Still open:** the paid tier. `solveCaptcha` still lives in
+`background/api-key-manager.js` behind the `captcha:solve` message, which
+nothing sends, and the panel still stores a 2Captcha key nothing spends. That is
+deliberately untouched here — whether the tool should buy its way past a widget
+captcha is the decision A-06 records, and it is a different decision from
+answering arithmetic on a site you own.
 
 ---
 

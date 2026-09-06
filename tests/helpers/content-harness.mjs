@@ -20,6 +20,7 @@ const EXPOSED = [
   "_queryScoped",
   "_activateSelectorPicker",
   "_stepFill",
+  "_honeypotReason",
   "_stepSelect",
   "_stepKeyboard",
   "_stepScroll",

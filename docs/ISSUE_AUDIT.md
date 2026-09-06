@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 175 findings — 22 blocker · 48 high · 76 medium · 30 low. The
+**Totals:** 177 findings — 22 blocker · 50 high · 76 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 10       |
+| K · Capability review           | 17       |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 173 of 175 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 175 of 177 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2052,6 +2052,114 @@ comparison in the page would be a second definition to drift from the first —
 the G-01 rule. The page side is `_queryScoped`, so an assertion sees exactly
 what the steps it guards see: shadow roots, `>>>` paths, XPath and a loop's
 scoped root included.
+
+### K-14 · HIGH · A form filler filled the fields nobody can see, and a run stopped at arithmetic
+
+Two halves of the same finding: the things that need no money and were not
+being done.
+
+**Honeypots.** `_stepFill`'s multi-field mode filled every selector it was
+given. A honeypot is an input a human never reaches — `display:none`, offscreen
+at `left:-9999px`, zero-sized, `aria-hidden`, or named so that only something
+reading the markup would want it — and anything in it was put there by a
+script. The failure is silent by design: the form is accepted, the submission is
+binned, and the account is quietly marked, so a scrape looks like it worked for
+as long as it takes anyone to check. `_honeypotReason` walks the element and
+every ancestor, because `display:none` on a wrapper is how most of them are
+hidden and the input's own computed style says nothing about it. A trap is
+skipped rather than filled, is not counted as a missing field — the form is
+complete without it — and the run log names the field and the reason, because a
+form that quietly does less than it was told to is the same class of surprise
+this closes. There is no toggle: an option to fill bot traps has no use anybody
+would want.
+
+A name alone is only proof when the name has no honest use. `url`, `website`
+and `nickname` are all used as bait and are all real fields on real comment
+forms, so only the unambiguous ones (`honeypot`, `bot-field`, `leave_this_blank`
+and their kin) are refused on the name.
+
+**Written challenges.** "What is 3 + 4?", "How many letters are in CAT?", "Type
+the third word of this sentence" — the captchas a small site writes for itself,
+still common on forum software and on club, school and council sites. They need
+no service and no key, and the run used to stop dead at them.
+`utils/captcha-solvers.js` answers them in the worker, on the same split as
+ASSERT (K-13): the page reports the text, the worker reads it. Every parser
+refuses the moment it is not certain — a sum that is only part of a sentence, an
+inexact division, a negative result, two sums in one question, a sentence
+shorter than the position it names — because **a wrong answer is worse than no
+answer**: a guess is a failed attempt the site records, and there are usually
+three of those before a lockout, whereas a refusal costs a pause the user was
+going to see anyway.
+
+`content/captcha-check.js` now also reports a `tier`: `solvable-locally`,
+`needs-a-service` or `not-solvable`. Cloudflare and Akamai full-page
+interstitials are the entries worth being explicit about — they are bot
+management, not captchas. There is no puzzle to answer; the wall lifts on what
+the browser looks like or it does not lift, so no solver free or paid has an
+answer to sell, and saying so is what stops the time and the money being spent
+on one later. A written question is checked for before the widget list, because
+`input[name*="captcha"]` sits in there as an image-captcha tell and would
+otherwise claim the answer box of every arithmetic question on the web.
+
+_Evidence:_ `tests/honeypot-fields.test.mjs` (16) and the first 26 of
+`tests/captcha-local.test.mjs` — all verified failing against the pre-fix tree.
+Nine trap shapes are refused and a real `url` field is still filled; a
+multi-field FILL fills two of three and names the third in the log; the solver
+answers eleven real challenge wordings and refuses seven near-misses; and the
+tier is asserted for a written question, all four widget families and both
+interstitials.
+
+### K-15 · HIGH · There was no way to say "answer this one, on this site, because it is mine"
+
+A-06 recorded 459 lines of paid-provider integration reachable through a message
+nothing sent, and K-02 closed the half of it worth closing — detect and stop.
+What stayed open was not a wiring problem. Answering a challenge is a statement
+about a relationship with a site, and no amount of plumbing decides that.
+
+`SOLVE_CAPTCHA` is that statement, made explicit and gated three ways.
+
+**It only ever runs because somebody added it.** Nothing auto-solves; the
+existing empty-result check still pauses and asks, exactly as before.
+
+**The run has to carry `captchaAuthorized`.** The flag the payload has always
+declared is finally sent — by a toggle in Settings, and only when the pipeline
+actually contains such a step, so a toggle left on cannot authorise a run that
+was never going to answer anything. `payload.captchaAuthorized === true`, so an
+absent field can never read as permission.
+
+**The domain has to carry an attestation.** A per-run flag says only "today I
+meant it", and a run payload is rebuilt every time Run is pressed. The
+attestation — you own the site, you have permission, or the account is your own
+— is given once per domain on the step's own card and stored the way every other
+durable per-domain setting in this codebase is, in `chrome.storage.local` under
+`fs_captcha_attest_v1`. It covers that domain and no other. The panel's copy is
+a mirror for rendering; the worker's is the one the step consults, so a stale
+mirror can only ever draw the wrong checkbox, never let a step run.
+
+Missing either, the step refuses through `ExplainedRefusal` and says which one
+is missing and how to give it — the pattern the run-only steps already use, so
+a designed refusal reaches the user as a message rather than the console as a
+red `handler-error`. On a type classified `not-solvable` it refuses too, and
+says that a bot-management wall has no answer to type rather than appearing to
+try. The panel's check walks loop children and both branches, because a gate
+that only walked the top level is exactly the hole B-03 found in the domain
+lock.
+
+The step's only solver is the local one. When no local solver applies — a widget
+captcha, or a written question the parser will not guess at — it pauses exactly
+where the tool paused before it existed, and the person in front of the tab
+solves it and presses Resume. It is `exportable: false`, and not by accident:
+the gates are the step, and a generated script carries neither the run's
+authorisation nor the domain attestation, so an emitted equivalent would be the
+same act with the consent taken out of it.
+
+_Evidence:_ the last nine tests of `tests/captcha-local.test.mjs`, all verified
+failing against the pre-fix tree: the step refuses with no run authorisation,
+refuses with no attestation for `shop.test`, answers `3 + 4` with `7` when it
+has both, presses a submit button only when the step names one, refuses a
+Cloudflare wall rather than trying, pauses on a question it cannot read without
+typing a guess, pauses on an hCaptcha, and does not let one domain's attestation
+cover another.
 
 ### K-16 · MEDIUM · The challenge fixtures were tested against reconstructions, not the real pages
 

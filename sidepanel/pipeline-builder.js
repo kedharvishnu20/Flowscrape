@@ -38,6 +38,15 @@ SK.UPLOAD_ACTIVITIES = "fs_upload_activities_v1";
 
 let _tabId = null;
 
+/**
+ * The attestation for the domain in the active tab, as the worker holds it.
+ *
+ * Mirrored here because the config panel renders synchronously; the worker's
+ * copy in chrome.storage.local is the one SOLVE_CAPTCHA actually consults, so
+ * a stale mirror can only ever show the wrong checkbox, never let a step run.
+ */
+let _captchaAttest = { host: "", attested: false };
+
 // ── Step Registry ─────────────────────────────────────────────────────────────
 // The vocabulary lives in utils/step-types.js so the panel, the script emitters
 // and the MCP server cannot drift apart again. Only user-selectable steps
@@ -98,11 +107,16 @@ async function init() {
     const saved = (await chrome.storage.local.get(SK.PIPELINE))[SK.PIPELINE];
     _pipeline = saved?.steps ? saved : { steps: [] };
     _expandedNodeId = null;
+    // A different tab is very likely a different domain, and the attestation
+    // belongs to the domain rather than to the panel.
+    await _refreshCaptchaAttestation();
     renderPipeline();
     // The storage library and the upload activity list are not tab-scoped —
     // only SK.PIPELINE is — so there is nothing there to re-render. The audit
     // (E-13) said otherwise; entry corrected.
   });
+
+  await _refreshCaptchaAttestation();
 
   bindNavTabs();
   bindGlobalControls();
@@ -671,12 +685,32 @@ function bindGlobalControls() {
     document.getElementById("mon-progress-fill").style.width = "0%";
     document.getElementById("mon-progress-text").textContent = "0%";
 
+    // The run half of what SOLVE_CAPTCHA needs. Sent only when the pipeline
+    // has such a step, so a stale toggle cannot authorise a run that was never
+    // going to answer anything.
+    const solvesCaptcha = _flattenSteps(_pipeline.steps).some(
+      (s) => s.type === "SOLVE_CAPTCHA",
+    );
+    const captchaAuthorized =
+      solvesCaptcha &&
+      (document.getElementById("authorize-captcha")?.checked || false);
+    if (solvesCaptcha && !captchaAuthorized) {
+      logToMonitor(
+        "warn-log",
+        "This pipeline has a Solve Captcha step, but the run is not authorised " +
+          "to answer challenges — the step will refuse. Turn on 'Authorise " +
+          "captcha answering for this run' in Settings.",
+      );
+    }
+
     const runPayload = {
       pipeline: _pipeline,
       tabId: targetTabId,
       targetOrigin: urlObj ? urlObj.origin : null,
       targetPath: urlObj ? urlObj.pathname : "/",
       bypassRobots,
+      captchaEnabled: solvesCaptcha,
+      captchaAuthorized,
     };
 
     // Pre-flight: run the ethics gates and show the user what they found before
@@ -1087,6 +1121,26 @@ function populatePalette() {
 }
 
 // ── Deep step helpers ─────────────────────────────────────────────────────────
+/**
+ * Every step in the board, loop children and both branches included.
+ *
+ * A gate that only walked the top level is exactly the hole B-03 found in the
+ * domain lock: moving the step inside a LOOP got past it.
+ *
+ * @param {object[]} steps
+ * @param {object[]} [out]
+ * @returns {object[]}
+ */
+function _flattenSteps(steps, out = []) {
+  for (const s of Array.isArray(steps) ? steps : []) {
+    out.push(s);
+    _flattenSteps(s.children, out);
+    _flattenSteps(s.ifBranch, out);
+    _flattenSteps(s.elseBranch, out);
+  }
+  return out;
+}
+
 function _findStepDeep(steps, id) {
   for (const s of steps) {
     if (s.id === id) return s;
@@ -1364,6 +1418,10 @@ function getStepSubtitle(step) {
       return `${c.condition}: ${c.selector || "?"}`;
     case "ASSERT":
       return `${c.assertion || "exists"}: ${c.selector || "?"}`;
+    case "SOLVE_CAPTCHA":
+      return _captchaAttest.attested
+        ? `attested for ${_captchaAttest.host}`
+        : "not attested — will refuse";
     case "UPLOAD_ACTIVITY": {
       const validIds = new Set(_storageFiles.map((f) => f.id));
       const selected = (c.fileIds || []).filter((id) => validIds.has(id));
@@ -1697,6 +1755,38 @@ function _configFields(step) {
       <option value="skip" ${(c.onFail || "skip") === "skip" ? "selected" : ""}>Skip and continue</option>
       <option value="stop" ${c.onFail === "stop" ? "selected" : ""}>Stop loop, keep data</option>
     </select>`;
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
+  // ── SOLVE_CAPTCHA ──
+  if (step.type === "SOLVE_CAPTCHA") {
+    const host = _captchaAttest.host || "this domain";
+    html += hint(
+      "Answers the written challenges a small site writes itself — " +
+        '"what is 3 + 4", "how many letters in CAT" — on this machine, with ' +
+        "no service and no key. Everything else pauses the run and asks you, " +
+        "exactly as it does without this step.",
+    );
+    html += `<div class="toggle-wrap">
+      <input type="checkbox" class="captcha-attest" data-id="${step.id}" ${_captchaAttest.attested ? "checked" : ""}>
+      <div class="toggle-switch"></div>
+      <span>I own ${esc(host)}, have permission to automate it, or the account is my own</span>
+    </div>`;
+    html += hint(
+      _captchaAttest.attested
+        ? `Recorded for ${host}. It stays until you switch it off here, and it covers no other domain.`
+        : `Without this the step refuses and says so. It is asked once per domain, and it is about ${host}, not about this pipeline.`,
+    );
+    html += selectorRow(step, "submitSelector", "Submit button (optional)");
+    html += hint(
+      "Left empty, the answer is typed and nothing is pressed — the next step " +
+        "in the pipeline submits the form.",
+    );
     html += toggle(
       step,
       "optional",
@@ -3105,6 +3195,17 @@ function bindDelegatedEvents() {
   document.body.addEventListener("change", (e) => {
     const target = e.target;
 
+    // The attestation is not step config — it belongs to the domain and
+    // outlives the pipeline — so it goes to the worker rather than into the
+    // step the checkbox is drawn on.
+    if (target.classList?.contains("captcha-attest")) {
+      _setCaptchaAttestation(
+        target.checked,
+        _findStepDeep(_pipeline.steps, target.dataset.id),
+      );
+      return;
+    }
+
     // Extract field type. This was previously handled by the click listener,
     // which fires before the user has picked an option, so the select never
     // actually changed the stored type.
@@ -3407,6 +3508,49 @@ function _confirmDestructive({ title, body, confirmLabel }) {
  * @param {Array<{code:string,message:string}>} warnings
  * @returns {Promise<boolean>} true to run anyway
  */
+/** Read the worker's attestation for whatever domain the tab is on. */
+async function _refreshCaptchaAttestation() {
+  _captchaAttest = { host: "", attested: false };
+  if (!_tabId) return;
+  try {
+    const tab = await chrome.tabs.get(_tabId);
+    const res = await chrome.runtime.sendMessage({
+      type: "captcha:attest-get",
+      payload: { origin: tab?.url },
+    });
+    if (res?.ok) _captchaAttest = res.result;
+  } catch {
+    // No tab, or a page the panel cannot read. The checkbox shows unattested,
+    // which is the answer that refuses.
+  }
+}
+
+/**
+ * Record — or withdraw — the user's statement about a domain.
+ *
+ * @param {boolean} attested
+ * @param {object} step - re-rendered so the card shows what was stored
+ */
+async function _setCaptchaAttestation(attested, step) {
+  try {
+    const tab = await chrome.tabs.get(_tabId);
+    const res = await chrome.runtime.sendMessage({
+      type: "captcha:attest",
+      payload: { origin: tab?.url, attested },
+    });
+    if (res?.ok) _captchaAttest = res.result;
+    notify(
+      attested ? "info-log" : "warn-log",
+      attested
+        ? `Attested for ${_captchaAttest.host}: you own it, have permission, or the account is yours.`
+        : `Attestation withdrawn for ${_captchaAttest.host}.`,
+    );
+  } catch {
+    notify("error-log", "Could not record the attestation for this domain.");
+  }
+  if (step) _rerenderCardConfig(step);
+}
+
 function _confirmEthicsWarnings(warnings) {
   return new Promise((resolve) => {
     const modal = document.createElement("div");

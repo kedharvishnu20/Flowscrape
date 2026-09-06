@@ -69,6 +69,24 @@ running the tool against real pages, and it found things 700 tests had not.
   compared against a number, or text that equals or contains. The page reports
   what it saw and the worker decides what that means, the same split `IF_ELSE`
   uses.
+- **FILL will not fill a bot trap** (K-14). A field that is hidden, offscreen,
+  zero-sized, `aria-hidden` or named as bait is skipped, and the log says which
+  and why. There is no toggle: filling a honeypot fails silently — the form is
+  accepted and the submission is binned — which is exactly the surprise this
+  tool exists to prevent.
+- **The written captchas a small site writes itself are answered locally**
+  (K-14). Arithmetic, letter counts and "the third word of this sentence", read
+  in the worker with no service, no key and no money. Every parser refuses the
+  moment it is not certain, because a guess is a failed attempt the site
+  records and a refusal is a pause the user was going to see anyway. The
+  checker now also reports a tier — `solvable-locally`, `needs-a-service`,
+  `not-solvable` — and Cloudflare and Akamai interstitials are `not-solvable`
+  and say why: they are bot management, and no solver has an answer to sell.
+- **`SOLVE_CAPTCHA`** (K-15), which runs only because somebody added it, and
+  only with both the run's authorisation and an attestation for the domain —
+  you own it, you have permission, or the account is your own — given once and
+  stored per domain. Missing either, it refuses and says which. On a challenge
+  nothing free can answer it refuses or pauses rather than pretending.
 
 ### Added — what the steps can now do
 

@@ -122,6 +122,9 @@
         /* ASSERT guards a run the way a branch steers one, so it borrows the
            branch's violet rather than adding a hue to the three families. */
         --step-ASSERT: var(--step-IF_ELSE);
+        /* SOLVE_CAPTCHA is the one step that asks something of the user before
+           it will act, so it is the one that does not blend into its family. */
+        --step-SOLVE_CAPTCHA: #6b5fbd;
 
         --step-EXTRACT: #5fe3c0;
         --step-PAGE_DATA: #52cfb2;
@@ -2313,6 +2316,14 @@
                 <input type="checkbox" id="bypass-robots" />
                 <div class="toggle-switch"></div>
                 <span>Bypass Robots.txt</span>
+              </div>
+              <!-- Half of what a SOLVE_CAPTCHA step needs; the other half is
+                   the per-domain attestation on the step itself. Off on every
+                   fresh panel, and read only when such a step exists. -->
+              <div class="toggle-wrap">
+                <input type="checkbox" id="authorize-captcha" />
+                <div class="toggle-switch"></div>
+                <span>Authorise captcha answering for this run</span>
               </div>
             </div>
           </div>

@@ -40,6 +40,7 @@ import {
 import { applyTransforms } from "../utils/value-transforms.js";
 import { evaluateCondition } from "../utils/conditions.js";
 import { evaluateAssertion } from "../utils/assertions.js";
+import { solveLocalChallenge } from "../utils/captcha-solvers.js";
 import { matchesSnifferFilter } from "../utils/sniffer-filter.js";
 import { initSessionKey } from "./api-key-manager.js";
 import { setApiKey } from "./api-key-manager.js";
@@ -979,6 +980,9 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
     enableSniffer,
     snifferFilter,
     targetOrigin: payload.targetOrigin ?? null,
+    // Half of what SOLVE_CAPTCHA needs. Strict equality, because an absent
+    // field must never read as permission.
+    captchaAuthorized: payload.captchaAuthorized === true,
     allowedOrigins: collectDeclaredOrigins(
       pipeline.steps ?? [],
       payload.targetOrigin,
@@ -2723,6 +2727,10 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       return;
     }
 
+    case "SOLVE_CAPTCHA":
+      await _executeSolveCaptcha(step, tabId, runId);
+      return;
+
     case "PAGINATE": {
       const paged = await _executePaginate(tabId, step.config);
       if (paged.exhausted) {
@@ -2759,6 +2767,18 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       }
 
       if (!resp?.ok) throw new Error(resp?.error || "Step failed");
+
+      // A skipped honeypot has to be said out loud. The field was listed and
+      // was not filled, and a form that quietly does less than it was told to
+      // is exactly the class of surprise this tool exists to avoid.
+      for (const trap of resp.result?.skipped ?? []) {
+        _broadcastLog(
+          "warn-log",
+          `${step.type} skipped ${trap.selector}: ${trap.reason}. ` +
+            "A field nobody can see is a bot trap — filling it is what flags the submission.",
+          runId,
+        );
+      }
 
       if (step.type === "EXTRACT" && Array.isArray(resp.result)) {
         const rows = await _transformRows(resp.result, step.config, tabId);
@@ -2882,12 +2902,16 @@ async function _checkCaptcha(tabId) {
  * the user start again for a thirty-second obstacle.
  *
  * Returns true when the run was paused, so the caller can retry the step.
+ *
+ * `known` is the check a caller has already paid for — SOLVE_CAPTCHA has just
+ * classified the page and would otherwise inject the checker a second time to
+ * be told the same thing.
  */
-async function _pauseForCaptcha(runId, tabId, stepType) {
+async function _pauseForCaptcha(runId, tabId, stepType, known = null) {
   const runState = _runStates.get(runId);
   if (!runState?.active || runState.paused) return false;
 
-  const found = await _checkCaptcha(tabId);
+  const found = known ?? (await _checkCaptcha(tabId));
   if (!found?.blocking) return false;
 
   runState.paused = true;
@@ -2923,6 +2947,177 @@ async function _pauseForCaptcha(runId, tabId, stepType) {
     })
     .catch(() => {});
   return true;
+}
+
+// ── Solving, and the two things it needs before it will ──────────────────────
+
+/**
+ * Domains the user has personally attested to.
+ *
+ * Answering a challenge is the one thing in this tool that is a statement about
+ * a relationship with a site rather than a technique, so it is not something a
+ * checkbox on a run can carry: a run payload is rebuilt every time Run is
+ * pressed, and a flag there says only "today I meant it". The attestation says
+ * "this domain is mine, or I have permission on it, or the account is my own",
+ * it is given once per domain, and it survives the run — the same shape as the
+ * pipeline library and the storage file library, in chrome.storage.local under
+ * an `fs_*_v1` key.
+ *
+ * It is deliberately separate from `captchaAuthorized`: the flag is per run and
+ * the attestation is per domain, and neither alone is a decision to solve
+ * anything.
+ */
+const CAPTCHA_ATTEST_KEY = "fs_captcha_attest_v1";
+
+/** @param {string} url @returns {string} the domain, or "" if there is none */
+function _hostOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+/** @returns {Promise<Record<string, {at: number}>>} */
+async function _captchaAttestations() {
+  const stored = await chrome.storage.local.get(CAPTCHA_ATTEST_KEY);
+  const map = stored?.[CAPTCHA_ATTEST_KEY];
+  return map && typeof map === "object" ? map : {};
+}
+
+/** @param {string} host @returns {Promise<boolean>} */
+async function _captchaAttested(host) {
+  if (!host) return false;
+  return Boolean((await _captchaAttestations())[host]);
+}
+
+_registerHandler("captcha:attest", async (payload) => {
+  const host = _hostOf(payload?.origin) || String(payload?.host ?? "");
+  if (!host) throw new Error("No domain to attest for.");
+  const map = await _captchaAttestations();
+  if (payload?.attested) map[host] = { at: Date.now() };
+  else delete map[host];
+  await chrome.storage.local.set({ [CAPTCHA_ATTEST_KEY]: map });
+  logger.info(MODULE, "captcha-attest", {
+    host,
+    attested: !!payload?.attested,
+  });
+  return { host, attested: Boolean(payload?.attested) };
+});
+
+_registerHandler("captcha:attest-get", async (payload) => {
+  const host = _hostOf(payload?.origin) || String(payload?.host ?? "");
+  return { host, attested: await _captchaAttested(host) };
+});
+
+/**
+ * SOLVE_CAPTCHA — answer a challenge the user asked to have answered.
+ *
+ * Every gate here is a refusal to act rather than a check that can be satisfied
+ * by trying harder, so they are all up front and they all explain themselves.
+ * In order: the step exists only because somebody added it; the run has to
+ * carry the authorisation flag; the domain has to carry the attestation; and
+ * the challenge has to be one nothing is spent on. What remains is the local
+ * solver, and when that has no confident answer this ends exactly where the
+ * tool ended before the step existed — paused, with the challenge named, and
+ * the person in front of the tab.
+ */
+async function _executeSolveCaptcha(step, tabId, runId) {
+  const runState = _runStates.get(runId);
+
+  if (!runState?.captchaAuthorized) {
+    throw new ExplainedRefusal(
+      "SOLVE_CAPTCHA did not run: this run is not authorised to answer challenges. " +
+        "Press Run and confirm the captcha prompt, which is what sets that for the run.",
+    );
+  }
+
+  let host = "";
+  try {
+    host = _hostOf((await chrome.tabs.get(tabId))?.url);
+  } catch {
+    host = _hostOf(runState.targetOrigin);
+  }
+  if (!(await _captchaAttested(host))) {
+    throw new ExplainedRefusal(
+      `SOLVE_CAPTCHA did not run: you have not attested for ${host || "this domain"}. ` +
+        "Open the step and confirm that you own the site, have permission to " +
+        "automate it, or are signing in to your own account there. " +
+        "That is given once per domain and is not something the tool can decide for you.",
+    );
+  }
+
+  const found = await _checkCaptcha(tabId);
+  if (!found?.present) {
+    _broadcastLog(
+      "info-log",
+      "SOLVE_CAPTCHA: no challenge on this page, so there was nothing to do.",
+      runId,
+    );
+    return { solved: false, reason: "no captcha present" };
+  }
+
+  if (found.tier === "not-solvable") {
+    throw new ExplainedRefusal(
+      `SOLVE_CAPTCHA cannot answer a ${found.type} interstitial (${found.where}): ${found.reason}. ` +
+        "It lifts on what the browser looks like, not on anything typed into it, " +
+        "so no solver — free or paid — has an answer to give. " +
+        "Open the page yourself and resume the run once it lets you through.",
+    );
+  }
+
+  const answer =
+    found.tier === "solvable-locally"
+      ? solveLocalChallenge(found.question)
+      : null;
+
+  if (!answer) {
+    // Either a widget, which needs a service this build deliberately has none
+    // of, or a written question the solver would only be guessing at. Both end
+    // the same way, and it is the way the tool already behaved (K-02).
+    _broadcastLog(
+      "warn-log",
+      found.tier === "solvable-locally"
+        ? `SOLVE_CAPTCHA read the question but is not certain of the answer, and a wrong answer is worse than a pause: "${found.question}".`
+        : `SOLVE_CAPTCHA has no free way to answer a ${found.type} challenge (${found.tier}).`,
+      runId,
+    );
+    if (await _pauseForCaptcha(runId, tabId, "SOLVE_CAPTCHA", found)) {
+      await _awaitResume(runId);
+    }
+    return { solved: false, reason: "no local solver applies" };
+  }
+
+  const fill = await _sendToPage(tabId, {
+    type: "FILL",
+    config: {
+      mode: "single",
+      selector: found.answerSelector,
+      text: answer.answer,
+      delayMs: 60,
+    },
+  });
+  if (!fill?.ok) {
+    throw new Error(
+      fill?.error || "SOLVE_CAPTCHA could not type into the answer field",
+    );
+  }
+  _broadcastLog(
+    "info-log",
+    `SOLVE_CAPTCHA answered "${found.question}" with "${answer.answer}" (${answer.how}), solved on this machine.`,
+    runId,
+  );
+
+  if (step.config?.submitSelector) {
+    const submit = await _sendToPage(tabId, {
+      type: "CLICK",
+      config: { selector: step.config.submitSelector },
+    });
+    if (!submit?.ok) {
+      throw new Error(submit?.error || "SOLVE_CAPTCHA could not submit");
+    }
+  }
+  return { solved: true, answer: answer.answer, how: answer.how };
 }
 
 /** Hold until the user resumes, or the run ends. */
@@ -3217,6 +3412,8 @@ const RUN_ONLY_STEPS = {
     "An export needs the rows a run collected. Press Run; the file is written when the run reaches this step.",
   API_SNIFFER:
     "The sniffer records network traffic for the whole run rather than doing anything at this point in it. Press Run, then look at the monitor.",
+  SOLVE_CAPTCHA:
+    "Answering a challenge is gated on the authorisation a run carries and on your attestation for the domain, and a single-step test carries neither. Press Run.",
 };
 
 _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
@@ -3617,6 +3814,7 @@ export const __testing = {
   _resolveStr,
   _resolveConfig,
   _runStates,
+  _captchaAttested,
 };
 
 // === END service-worker.js ===

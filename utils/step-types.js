@@ -175,6 +175,20 @@ export const STEP_TYPES = Object.freeze({
     runsIn: "page",
     def: { selector: "", settleMs: 1500, requireChange: false, inFrame: false },
   },
+  SOLVE_CAPTCHA: {
+    icon: "🧮",
+    cat: "Flow",
+    desc: "Answer a written challenge (owned sites only)",
+    // The gates live in the worker: the run's captchaAuthorized flag and a
+    // per-domain attestation, both of which the page has no business seeing.
+    runsIn: "background",
+    def: { submitSelector: "" },
+    // Not expressible in an exported script, and not by accident: the gates
+    // are the step. A generated script carries no attestation and no run
+    // authorisation, so an emitted equivalent would be the same act with the
+    // consent stripped out of it.
+    exportable: false,
+  },
   ASSERT: {
     icon: "✅",
     cat: "Flow",

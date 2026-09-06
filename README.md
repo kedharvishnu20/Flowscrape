@@ -160,7 +160,7 @@ Twenty-five, defined in [`utils/step-types.js`](utils/step-types.js).
 | Category | Steps                                                                                                       |
 | -------- | ----------------------------------------------------------------------------------------------------------- |
 | Action   | `WEBSITE` `NAVIGATE` `CLICK` `FILL` `HOVER` `SELECT` `SCROLL` `KEYBOARD` `DRAG_DROP` `UPLOAD_ACTIVITY`      |
-| Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE` `ASSERT` `ASSERT`                                                        |
+| Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE` `ASSERT` `SOLVE_CAPTCHA`                                                 |
 | Data     | `EXTRACT` `PAGE_DATA` `PAGE_JSON` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT` |
 
 `PDF_EXTRACTION` reads the PDF in the service worker, with no dependencies —
@@ -349,15 +349,17 @@ pages.
 
 A pipeline can be emitted as a runnable Python or Node script (Playwright).
 
-The emitters cover **17 of the 21 step types**. The other four need the
-extension itself and cannot be expressed standalone:
+The emitters cover **19 of the 25 step types**. The other six cannot be
+expressed standalone:
 
-| Step              | Why                                                       |
-| ----------------- | --------------------------------------------------------- |
-| `UPLOAD_ACTIVITY` | Needs file bytes from the storage library                 |
-| `API_SNIFFER`     | Needs the in-page fetch/XHR hook                          |
-| `PDF_EXTRACTION`  | Playwright drives a browser; it has no PDF text extractor |
-| `AUTO_EXTRACT`    | Needs the three-layer extractor and a Gemini key          |
+| Step              | Why                                                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `UPLOAD_ACTIVITY` | Needs file bytes from the storage library                                                                             |
+| `API_SNIFFER`     | Needs the in-page fetch/XHR hook                                                                                      |
+| `PDF_EXTRACTION`  | Playwright drives a browser; it has no PDF text extractor                                                             |
+| `AUTO_EXTRACT`    | Needs the three-layer extractor and a Gemini key                                                                      |
+| `PAGE_JSON`       | A second copy of the DOM walker would drift from the first                                                            |
+| `SOLVE_CAPTCHA`   | A script carries neither the run authorisation nor the domain attestation, so it would be the act without the consent |
 
 Those emit an explicit `raise NotImplementedError` / `throw`, and are listed in
 the run log before the download. They used to become a `# TODO` comment, so the

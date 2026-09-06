@@ -26,6 +26,7 @@ export function reset() {
   for (const key of Object.keys(calls)) calls[key].length = 0;
   _tabStatuses = ["complete"];
   _onInject = () => {};
+  _scriptResults = null;
 }
 
 /**
@@ -41,6 +42,22 @@ let _onInject = () => {};
 /** @param {() => void} fn */
 export function onInject(fn) {
   _onInject = fn;
+}
+
+/**
+ * What chrome.scripting.executeScript hands back.
+ *
+ * The default is `[]`, which is what an injection of files returns and what
+ * every test before the captcha work needed. A test that exercises a `func:`
+ * injection — the captcha checker is one — replaces this to say what the page
+ * answered.
+ * @type {null | ((details: object) => any[])}
+ */
+let _scriptResults = null;
+
+/** @param {null | ((details: object) => any[])} fn */
+export function onExecuteScript(fn) {
+  _scriptResults = fn;
 }
 
 /** @param {string[]} statuses */
@@ -126,13 +143,13 @@ globalThis.chrome = {
     async getRegisteredContentScripts() {
       return [];
     },
-    async executeScript() {
+    async executeScript(details) {
       calls.injections.push(Date.now());
       // Injecting really does put the content script back, so a test that
       // simulates a navigation can distinguish "the worker re-injected" from
       // "the worker gave up".
       _onInject();
-      return [];
+      return _scriptResults?.(details) ?? [];
     },
   },
   proxy: {

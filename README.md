@@ -155,12 +155,12 @@ as dead has since been deleted or wired up — see the F-01 table there.
 
 ## Step types
 
-Twenty-four, defined in [`utils/step-types.js`](utils/step-types.js).
+Twenty-five, defined in [`utils/step-types.js`](utils/step-types.js).
 
 | Category | Steps                                                                                                       |
 | -------- | ----------------------------------------------------------------------------------------------------------- |
 | Action   | `WEBSITE` `NAVIGATE` `CLICK` `FILL` `HOVER` `SELECT` `SCROLL` `KEYBOARD` `DRAG_DROP` `UPLOAD_ACTIVITY`      |
-| Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE`                                                                          |
+| Flow     | `WAIT` `IF_ELSE` `LOOP` `PAGINATE` `ASSERT`                                                                 |
 | Data     | `EXTRACT` `PAGE_DATA` `PAGE_JSON` `SCREENSHOT` `EXPORT` `API` `API_SNIFFER` `PDF_EXTRACTION` `AUTO_EXTRACT` |
 
 `PDF_EXTRACTION` reads the PDF in the service worker, with no dependencies —

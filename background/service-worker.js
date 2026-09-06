@@ -31,9 +31,15 @@
 
 import { logger } from "../utils/logger.js";
 import { extractPdfText } from "../utils/pdf-text.js";
-import { ALL_STEP_TYPES, STEP_TYPES } from "../utils/step-types.js";
+import {
+  ALL_STEP_TYPES,
+  STEP_TYPES,
+  retryCount,
+  retryDelayMs,
+} from "../utils/step-types.js";
 import { applyTransforms } from "../utils/value-transforms.js";
 import { evaluateCondition } from "../utils/conditions.js";
+import { evaluateAssertion } from "../utils/assertions.js";
 import { matchesSnifferFilter } from "../utils/sniffer-filter.js";
 import { initSessionKey } from "./api-key-manager.js";
 import { setApiKey } from "./api-key-manager.js";
@@ -2690,6 +2696,28 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       return;
     }
 
+    case "ASSERT": {
+      const resp = await _sendToPage(tabId, step);
+      if (!resp?.ok) {
+        throw new Error(resp?.error || "ASSERT could not read the page");
+      }
+      const assertion = step.config.assertion || "exists";
+      const failure = evaluateAssertion(assertion, resp.result, step.config);
+      if (failure) {
+        // Thrown, so the run stops here with the reason in the log. That is the
+        // whole point of the step: a page whose shape has changed produces
+        // empty columns rather than an error, and the export looks like a
+        // successful run of nothing.
+        throw new Error(`ASSERT (${assertion}) failed: ${failure}.`);
+      }
+      _broadcastLog(
+        "info-log",
+        `ASSERT (${assertion}) held: ${resp.result.count} match${resp.result.count === 1 ? "" : "es"} for "${step.config.selector}".`,
+        runId,
+      );
+      return;
+    }
+
     case "PAGINATE": {
       const paged = await _executePaginate(tabId, step.config);
       if (paged.exhausted) {
@@ -2899,6 +2927,54 @@ async function _awaitResume(runId) {
   return Boolean(rs?.active);
 }
 
+/**
+ * Run one step, trying again when it fails and the step asked for retries.
+ *
+ * A retry is a fresh attempt at the same step, so it queues behind the rate
+ * limiter exactly as the first attempt did — "try five times" must not be five
+ * requests the pacing never saw. The wait and the attempt both stop the moment
+ * the run is stopped, and a pause holds the next attempt rather than skipping
+ * it.
+ *
+ * @returns {Promise<?Error>} the last failure, or null when an attempt worked
+ */
+async function _dispatchWithRetries(step, tabId, runId, ctx) {
+  const runState = _runStates.get(runId);
+  const tries = retryCount(step.config);
+  const delayMs = retryDelayMs(step.config);
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= tries; attempt++) {
+    if (attempt > 0) {
+      _broadcastLog(
+        "warn-log",
+        `[${step.type}] ${lastError.message} — retry ${attempt} of ${tries} in ${delayMs}ms.`,
+        runId,
+      );
+      // Slept in slices rather than in one go, so Stop is answered inside a
+      // long delay instead of after it.
+      const until = Date.now() + delayMs;
+      while (runState?.active && Date.now() < until) {
+        await _sleep(Math.min(200, until - Date.now()));
+      }
+      while (runState?.paused && runState?.active) await _sleep(500);
+      if (!runState?.active) break;
+      if (RATE_LIMITED_STEPS.has(step.type)) {
+        await acquire(_runDomain(runState));
+      }
+    }
+
+    try {
+      await _dispatchStep(step, tabId, runId, ctx);
+      return null;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  return lastError;
+}
+
 async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
   const runState = _runStates.get(runId);
 
@@ -2944,9 +3020,8 @@ async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
       })
       .catch(() => {});
 
-    try {
-      await _dispatchStep(resolvedStep, tabId, runId, ctx);
-    } catch (err) {
+    const err = await _dispatchWithRetries(resolvedStep, tabId, runId, ctx);
+    if (err) {
       // "Not found" on a page step is what being blocked looks like from here.
       // Ask once, and if a captcha is in the way pause and retry the step
       // rather than reporting a selector problem that is not one.

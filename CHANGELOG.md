@@ -15,7 +15,7 @@ it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-787**, plus **69 end-to-end checks** that load the extension into a real
+818**, plus **69 end-to-end checks** that load the extension into a real
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
@@ -60,6 +60,15 @@ running the tool against real pages, and it found things 700 tests had not.
   the ratings column on a book table where every book had four stars.
 - **The regex transform can reach any capture group** (K-11), with a group
   number and flags, instead of only ever returning the first group.
+- **Any step can retry** (K-12). `optional` could only say "give up quietly",
+  so a step that was flaky rather than wrong cost the row. A retry queues
+  behind the rate limiter exactly as the first attempt did, and the wait is
+  slept in slices so Stop is answered inside a long delay rather than after it.
+- **`ASSERT`** (K-13), the step that stops a run whose page has changed shape
+  instead of exporting five hundred empty rows. Exists, does not exist, a count
+  compared against a number, or text that equals or contains. The page reports
+  what it saw and the worker decides what that means, the same split `IF_ELSE`
+  uses.
 
 ### Added — what the steps can now do
 

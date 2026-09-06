@@ -4,8 +4,10 @@
 import {
   STEP_TYPES,
   USER_STEP_TYPES,
+  RETRY_LIMITS,
   defaultConfig,
   isKnownStepType,
+  retryCount,
 } from "../utils/step-types.js";
 import {
   TRANSFORMS,
@@ -15,6 +17,7 @@ import {
   normalizeRegexGroup,
 } from "../utils/value-transforms.js";
 import { CONDITIONS } from "../utils/conditions.js";
+import { ASSERTIONS } from "../utils/assertions.js";
 import { snifferFilterError } from "../utils/sniffer-filter.js";
 import {
   formatRows,
@@ -1352,6 +1355,8 @@ function getStepSubtitle(step) {
         : `${c.type} mode · max ${c.max}`;
     case "IF_ELSE":
       return `${c.condition}: ${c.selector || "?"}`;
+    case "ASSERT":
+      return `${c.assertion || "exists"}: ${c.selector || "?"}`;
     case "UPLOAD_ACTIVITY": {
       const validIds = new Set(_storageFiles.map((f) => f.id));
       const selected = (c.fileIds || []).filter((id) => validIds.has(id));
@@ -1385,6 +1390,42 @@ function generateConfigHtml(step) {
         "frame, and uses the first one where the selector matches.",
     );
   }
+  html += _retryFields(step);
+  return html;
+}
+
+/**
+ * Try again before giving up — offered on every step, like "optional".
+ *
+ * The two answer different questions and are often set together: retries are
+ * for a step that works on the second attempt, "optional" for one whose failure
+ * the run can live with. Appended here for the same reason the iframe toggle is
+ * — twenty copies of a control is twenty places to forget one.
+ */
+function _retryFields(step) {
+  const c = step.config;
+  let html = field(
+    step,
+    "retries",
+    `Retry on failure (0–${RETRY_LIMITS.maxRetries} times)`,
+    "number",
+    c.retries ?? 0,
+  );
+  html += field(
+    step,
+    "retryDelayMs",
+    "Wait between attempts (ms)",
+    "number",
+    c.retryDelayMs ?? RETRY_LIMITS.defaultDelayMs,
+  );
+  html += hint(
+    retryCount(c) > 0
+      ? "A retry is a fresh attempt at the same step, paced like any other " +
+          "request. A paused or stopped run does not retry."
+      : "For a selector that is flaky rather than wrong — an image that " +
+          "loads late, a panel that animates in. Leave at 0 to fail on the " +
+          "first attempt.",
+  );
   return html;
 }
 
@@ -1649,6 +1690,47 @@ function _configFields(step) {
       <option value="skip" ${(c.onFail || "skip") === "skip" ? "selected" : ""}>Skip and continue</option>
       <option value="stop" ${c.onFail === "stop" ? "selected" : ""}>Stop loop, keep data</option>
     </select>`;
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
+  // ── ASSERT ──
+  if (step.type === "ASSERT") {
+    const kind = c.assertion || "exists";
+    const meta = ASSERTIONS[kind] ?? ASSERTIONS.exists;
+    html += `<label>Check</label>
+    <select id="cfg-${step.id}-assertion" data-id="${step.id}" data-key="assertion" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      ${Object.entries(ASSERTIONS)
+        .map(
+          ([name, m]) =>
+            `<option value="${name}" ${kind === name ? "selected" : ""}>${esc(m.label)}</option>`,
+        )
+        .join("")}
+    </select>`;
+    html += selectorRow(step, "selector");
+
+    if (meta.needs === "count") {
+      html += field(step, "count", "How many", "number", c.count ?? 1);
+      if (!Number.isFinite(Number(String(c.count ?? "").trim()))) {
+        html += `<p style="font-size:11px;color:var(--red);margin:-4px 0 8px 0;">Not a number — the step would fail on any page.</p>`;
+      }
+    }
+    if (meta.needs === "value") {
+      html += field(step, "value", "Expected text", "text", c.value || "");
+      html += hint(
+        "Compared against the first match, with runs of whitespace treated " +
+          "as one space.",
+      );
+    }
+    html += hint(
+      "A failed check stops the run and says why, instead of letting it " +
+        "export rows the page never had. Mark it optional to log the failure " +
+        "and carry on.",
+    );
     html += toggle(
       step,
       "optional",

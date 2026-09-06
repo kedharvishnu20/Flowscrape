@@ -19,6 +19,7 @@ import {
   normalizeRegexFlags,
   normalizeRegexGroup,
 } from "../utils/value-transforms.js";
+import { retryCount, retryDelayMs } from "../utils/step-types.js";
 
 const MODULE = "python-emitter";
 
@@ -245,7 +246,68 @@ function _conditionPy(condition, config) {
   }
 }
 
+/**
+ * One step, wrapped in the retry the step asked for.
+ *
+ * A generated script that gave up where the run would have tried again is a
+ * script that does something else, which is the objection to any silent
+ * difference between the two.
+ */
 function _emitStep(step) {
+  const body = _emitStepBody(step);
+  const tries = retryCount(step.config);
+  if (tries === 0) return body;
+
+  const delay = retryDelayMs(step.config) / 1000;
+  return [
+    `# Retry: up to ${tries} further attempt(s), ${delay}s apart.`,
+    `for _attempt in range(${tries + 1}):`,
+    `    try:`,
+    ...body.map((l) => (l ? "        " + l : l)),
+    `        break`,
+    `    except Exception as _err:`,
+    `        if _attempt == ${tries}:`,
+    `            raise`,
+    `        print(f"Retry {_attempt + 1} of ${tries} after: {_err}")`,
+    `        await asyncio.sleep(${delay})`,
+    "",
+  ];
+}
+
+/**
+ * One ASSERT as a Python expression over `_count` and `_text`.
+ *
+ * Mirrors utils/assertions.js, and is held to it by a test that emits every
+ * assertion in the registry and fails on any that comes back stubbed.
+ *
+ * @returns {string|null} null when the assertion cannot be expressed
+ */
+function _assertionPy(assertion, config) {
+  const value = _escStr(String(config.value ?? ""));
+  const n = Number(String(config.count ?? "").trim());
+  const counted = (op) => (Number.isFinite(n) ? `_count ${op} ${n}` : null);
+
+  switch (assertion) {
+    case "exists":
+      return `_count > 0`;
+    case "not-exists":
+      return `_count == 0`;
+    case "count-equals":
+      return counted("==");
+    case "count-at-least":
+      return counted(">=");
+    case "count-at-most":
+      return counted("<=");
+    case "text-contains":
+      return `_text is not None and fs_trim("${value}") in _text`;
+    case "text-equals":
+      return `_text is not None and _text == fs_trim("${value}")`;
+    default:
+      return null;
+  }
+}
+
+function _emitStepBody(step) {
   const { type, config = {} } = step;
   switch (type) {
     case "WEBSITE":
@@ -331,6 +393,32 @@ function _emitStep(step) {
       return [
         `await page.evaluate("window.scrollBy(0, ${amount})")`,
         `await asyncio.sleep(0.5)`,
+        "",
+      ];
+    }
+    case "ASSERT": {
+      const assertion = config.assertion || "exists";
+      const sel = _escStr(_sel(config.selector ?? ""));
+      const test = _assertionPy(assertion, config);
+      if (test === null) {
+        // A number box left empty, or an assertion this emitter does not know.
+        // Refused rather than emitted as `if False:`, which would export a
+        // guard that never fires — worse than no guard at all.
+        return [
+          `# UNSUPPORTED: assertion "${assertion}" cannot be expressed here.`,
+          `raise ValueError("FlowScrape: ASSERT '${assertion}' is not exportable")`,
+          "",
+        ];
+      }
+      return [
+        `# ASSERT: ${assertion} - ${sel}`,
+        `_loc = page.locator("${sel}")`,
+        `_count = await _loc.count()`,
+        `_text = await fs_text(_loc)`,
+        `if not (${test}):`,
+        config.optional === true
+          ? `    print("ASSERT (${assertion}) failed on ${sel} - optional, continuing")`
+          : `    raise AssertionError("FlowScrape ASSERT (${assertion}) failed on ${sel}: {} match(es)".format(_count))`,
         "",
       ];
     }

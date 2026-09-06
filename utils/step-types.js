@@ -175,6 +175,19 @@ export const STEP_TYPES = Object.freeze({
     runsIn: "page",
     def: { selector: "", settleMs: 1500, requireChange: false, inFrame: false },
   },
+  ASSERT: {
+    icon: "✅",
+    cat: "Flow",
+    desc: "Check the page still looks right",
+    runsIn: "page",
+    def: {
+      assertion: "exists",
+      selector: "",
+      value: "",
+      count: 1,
+      inFrame: false,
+    },
+  },
 
   // ── Data ──────────────────────────────────────────────────────────────────
   EXTRACT: {
@@ -380,6 +393,44 @@ export function isExportableStepType(type) {
  */
 export function isKnownStepType(type) {
   return Object.prototype.hasOwnProperty.call(STEP_TYPES, String(type ?? ""));
+}
+
+/**
+ * The bounds on a step's own retry, in one place.
+ *
+ * `optional` could only say "give up quietly", so a selector that is flaky
+ * rather than wrong — a lazily loaded image, a panel that animates in — lost
+ * the row instead of the attempt. Four places read these numbers: the
+ * executor, the panel and both emitters. A hand-edited pipeline asking for
+ * fifty retries with no delay would otherwise be a way to outrun the rate
+ * limiter, so the clamp lives with the vocabulary rather than at each reader.
+ */
+export const RETRY_LIMITS = Object.freeze({
+  maxRetries: 5,
+  maxDelayMs: 30000,
+  defaultDelayMs: 500,
+});
+
+/**
+ * How many extra attempts a step asks for, 0 to RETRY_LIMITS.maxRetries.
+ * @param {object} [config]
+ * @returns {number}
+ */
+export function retryCount(config) {
+  const n = Math.floor(Number(config?.retries));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, RETRY_LIMITS.maxRetries);
+}
+
+/**
+ * How long to wait before the next attempt.
+ * @param {object} [config]
+ * @returns {number}
+ */
+export function retryDelayMs(config) {
+  const n = Number(config?.retryDelayMs);
+  if (!Number.isFinite(n) || n < 0) return RETRY_LIMITS.defaultDelayMs;
+  return Math.min(n, RETRY_LIMITS.maxDelayMs);
 }
 
 /**

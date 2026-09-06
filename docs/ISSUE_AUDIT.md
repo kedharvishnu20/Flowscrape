@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 171 findings — 22 blocker · 47 high · 73 medium · 30 low. The
+**Totals:** 173 findings — 22 blocker · 48 high · 74 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 169 of 171 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 171 of 173 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2007,3 +2007,48 @@ can actually fix it. And the pattern is refused up front if it is longer than
 the input is plausibly worth or shaped like `(a+)+`, the nested-quantifier form
 behind nearly every catastrophic-backtracking report; that check is a heuristic
 and the code says so, since it only looks one paren level deep.
+
+### K-12 · MEDIUM · A flaky step could only be skipped, never retried
+
+The step registry had `optional`, which means "keep going when this fails". It
+had nothing that means "try again". So a selector that was flaky rather than
+wrong — an image that loads lazily, a panel that animates in, a click that
+arrives a beat before the handler is bound — cost the row, and the only way to
+paper over it was a WAIT with a guessed number in it.
+
+Any step now takes `retries` (0–5) and `retryDelayMs`. Two things about the
+loop matter more than the loop itself:
+
+- **A retry queues behind the rate limiter exactly as a first attempt does.**
+  Otherwise "try five times" is five requests the pacing never saw, aimed at a
+  site that is already not answering — which is how a retry feature turns into
+  something worth being blocked for.
+- **The wait is slept in slices, not in one go**, so Stop is answered inside a
+  thirty-second delay rather than after it, and Pause holds the next attempt
+  instead of skipping it.
+
+The bounds live with the vocabulary in `utils/step-types.js`, because four
+places read them — the executor, the panel and both emitters — and a
+hand-edited pipeline asking for fifty retries at zero delay is a way around
+the rate limiter if any one of them forgets to clamp.
+
+### K-13 · HIGH · Nothing could say "stop if this is not the page I was written against"
+
+A scrape fails silently far more often than it crashes. The site renames a
+class, every selector misses, EXTRACT reports a miss as `null` because that is
+the honest thing for it to do (B-08), and the run exports five hundred empty
+rows and calls itself a success. The failure surfaces days later, in a
+spreadsheet.
+
+`ASSERT` is the step that says otherwise: the selector exists, or does not
+exist, or matches a count compared against a number, or its text equals or
+contains something. When the claim is false the run stops with the reason in
+the log, and `optional` still lets a run past one where that is what you want.
+
+It is split the way `IF_ELSE` is, and for the same reason: **the page reports
+what it saw, and the worker decides what that means** (`utils/assertions.js`).
+A classic content script cannot import a module, so a second copy of the
+comparison in the page would be a second definition to drift from the first —
+the G-01 rule. The page side is `_queryScoped`, so an assertion sees exactly
+what the steps it guards see: shadow roots, `>>>` paths, XPath and a loop's
+scoped root included.

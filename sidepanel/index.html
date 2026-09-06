@@ -119,6 +119,9 @@
         --step-IF_ELSE: #a78bd9;
         --step-LOOP: #8f7fd1;
         --step-PAGINATE: #7d6fc4;
+        /* ASSERT guards a run the way a branch steers one, so it borrows the
+           branch's violet rather than adding a hue to the three families. */
+        --step-ASSERT: var(--step-IF_ELSE);
 
         --step-EXTRACT: #5fe3c0;
         --step-PAGE_DATA: #52cfb2;

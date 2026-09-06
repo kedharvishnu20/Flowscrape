@@ -130,6 +130,7 @@ for (const challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
       t.diagnostic("serving the saved page");
     }
 
+    const t0 = Date.now();
     trace(challenge.id, "serving");
     const site = await serve(challenge);
     trace(challenge.id, "opening a page");
@@ -219,6 +220,19 @@ for (const challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
       );
     } finally {
       trace(challenge.id, "closing");
+      // What grows between challenges, measured rather than guessed at. Each
+      // challenge takes longer than the one before it, and the browser is the
+      // only thing they share.
+      if (TRACE) {
+        const grown = await env.panel.evaluate(async () => ({
+          nodes: document.getElementsByTagName("*").length,
+          tabs: (await chrome.tabs.query({})).length,
+        }));
+        trace(
+          challenge.id,
+          `panel ${grown.nodes} nodes, ${grown.tabs} tabs, ${Date.now() - t0}ms`,
+        );
+      }
       await page.close().catch(() => {});
       await site.close();
     }

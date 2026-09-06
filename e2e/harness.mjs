@@ -44,7 +44,19 @@ export async function startSite(routes) {
   return {
     origin: `http://127.0.0.1:${port}`,
     url: (p) => `http://127.0.0.1:${port}${p}`,
-    close: () => new Promise((r) => server.close(r)),
+    /**
+     * `server.close()` alone stops accepting and then waits for every open
+     * connection to end. Chrome holds its keep-alive sockets open long after
+     * the page using them is gone, so the wait was the test: the work in a
+     * challenge took under a second and the test took seventy, all of it here,
+     * and it grew with every challenge that had left sockets behind. The
+     * sockets are dropped first, then the server closes immediately.
+     */
+    close: () =>
+      new Promise((r) => {
+        server.closeAllConnections?.();
+        server.close(r);
+      }),
   };
 }
 

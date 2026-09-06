@@ -568,6 +568,8 @@
         return _stepUploadActivity(config, context);
       case "IF_ELSE":
         return _stepIfElse(config, context);
+      case "ASSERT":
+        return _stepAssert(config, context);
       case "EXPORT":
         return { exportTriggered: true };
       case "API":
@@ -2119,6 +2121,27 @@
       // what counts as whitespace (B-25).
       text: el ? el.textContent : "",
       attrValue: el && attr ? el.getAttribute(attr) : null,
+    };
+  }
+
+  /**
+   * Report what an ASSERT's selector matches, and nothing more.
+   *
+   * The comparison happens in the worker against utils/assertions.js, the same
+   * split IF_ELSE uses: a second copy of "does this text match" here would be a
+   * second definition to drift from the first (G-01). This is `_queryScoped`,
+   * so an assertion sees exactly what the steps it is guarding see — shadow
+   * roots, `>>>` paths, XPath and the loop's scoped root included.
+   *
+   * @returns {{count: number, text: string}}
+   */
+  async function _stepAssert({ selector = "" }, context = {}) {
+    const els = _queryScoped(selector, context, true);
+    return {
+      count: els.length,
+      // Unnormalised, like IF_ELSE's: the worker normalises, so the two cannot
+      // disagree about what counts as whitespace (B-25).
+      text: els.length ? els[0].textContent : "",
     };
   }
 

@@ -66,7 +66,7 @@ how much is missing.
 | `SOLVE_CAPTCHA`            | See §4                                                                                                                               |
 | `RETRY` / step-level retry | The registry has `optional` (keep going on failure) but no "try three times". A flaky selector fails the row rather than the attempt |
 | `DEDUPE`                   | "Scrape only what is new since last run". Needs a key column and a persisted seen-set                                                |
-| `ASSERT`                   | Fail the run loudly when the page shape changes, instead of exporting 500 empty rows                                                 |
+| ~~`ASSERT`~~               | **Closed by K-13.** Exists, does not exist, a count comparison, or text equals/contains — and `optional` still lets a run past one   |
 
 ---
 
@@ -235,7 +235,8 @@ Ordered by (pain removed ÷ work).
 ## 9. Suggested order
 
 **First — correctness gaps that silently return nothing:**
-~~shadow DOM~~ (K-01); ~~captcha detect-and-stop~~ (K-02); per-step retry; ASSERT.
+~~shadow DOM~~ (K-01); ~~captcha detect-and-stop~~ (K-02); ~~per-step retry~~
+(K-12); ~~ASSERT~~ (K-13).
 
 **Second — the features that look present and are not:**
 proxy application during a run; MCP `run_pipeline`.

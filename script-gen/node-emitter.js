@@ -11,6 +11,7 @@ import {
   normalizeRegexFlags,
   normalizeRegexGroup,
 } from "../utils/value-transforms.js";
+import { retryCount, retryDelayMs } from "../utils/step-types.js";
 const MODULE = "node-emitter";
 
 export function emitNode(pipeline) {
@@ -158,7 +159,71 @@ function _conditionNode(condition, config, esc) {
   }
 }
 
+/**
+ * One step, wrapped in the retry the step asked for.
+ *
+ * A generated script that gave up where the run would have tried again is a
+ * script that does something else, which is the objection to any silent
+ * difference between the two.
+ */
 function _emitNodeStep(step) {
+  const body = _emitNodeStepBody(step);
+  const tries = retryCount(step.config);
+  if (tries === 0) return body;
+
+  const delay = retryDelayMs(step.config);
+  return [
+    `// Retry: up to ${tries} further attempt(s), ${delay}ms apart.`,
+    `for (let _attempt = 0; ; _attempt++) {`,
+    `  try {`,
+    ...body.map((l) => (l ? "    " + l : l)),
+    `    break;`,
+    `  } catch (_err) {`,
+    `    if (_attempt >= ${tries}) throw _err;`,
+    "    console.warn(`Retry ${_attempt + 1} of " +
+      tries +
+      ": ${_err.message}`);",
+    `    await sleep(${delay});`,
+    `  }`,
+    `}`,
+    "",
+  ];
+}
+
+/**
+ * One ASSERT as a JavaScript expression over `_count` and `_text`.
+ *
+ * Mirrors utils/assertions.js, and is held to it by a test that emits every
+ * assertion in the registry and fails on any that comes back stubbed.
+ *
+ * @returns {string|null} null when the assertion cannot be expressed
+ */
+function _assertionNode(assertion, config, esc) {
+  const value = esc(String(config.value ?? ""));
+  const n = Number(String(config.count ?? "").trim());
+  const counted = (op) => (Number.isFinite(n) ? `_count ${op} ${n}` : null);
+
+  switch (assertion) {
+    case "exists":
+      return `_count > 0`;
+    case "not-exists":
+      return `_count === 0`;
+    case "count-equals":
+      return counted("===");
+    case "count-at-least":
+      return counted(">=");
+    case "count-at-most":
+      return counted("<=");
+    case "text-contains":
+      return `_text !== null && _text.includes(fsTrim('${value}'))`;
+    case "text-equals":
+      return `_text !== null && _text === fsTrim('${value}')`;
+    default:
+      return null;
+  }
+}
+
+function _emitNodeStepBody(step) {
   const { type, config = {} } = step;
   const esc = (s) => String(s ?? "").replace(/'/g, "\\'");
   switch (type) {
@@ -243,6 +308,39 @@ function _emitNodeStep(step) {
       return [
         `await page.evaluate(() => window.scrollBy(0, ${amount}));`,
         `await sleep(500);`,
+        "",
+      ];
+    }
+    case "ASSERT": {
+      const assertion = config.assertion || "exists";
+      const sel = esc(_sel(config.selector ?? ""));
+      const test = _assertionNode(assertion, config, esc);
+      if (test === null) {
+        // A number box left empty, or an assertion this emitter does not know.
+        // Refused rather than emitted as `if (false)`, which would export a
+        // guard that never fires — worse than no guard at all.
+        return [
+          `// UNSUPPORTED: assertion '${assertion}' cannot be expressed here.`,
+          `throw new Error("FlowScrape: ASSERT '${assertion}' is not exportable");`,
+          "",
+        ];
+      }
+      return [
+        `// ASSERT: ${assertion} - ${sel}`,
+        `{`,
+        `  const _loc = page.locator('${sel}');`,
+        `  const _count = await _loc.count();`,
+        `  const _text = await fsText(_loc);`,
+        `  if (!(${test})) {`,
+        config.optional === true
+          ? `    console.warn('ASSERT (${assertion}) failed on ${sel} - optional, continuing');`
+          : "    throw new Error(`FlowScrape ASSERT (" +
+            assertion +
+            ") failed on " +
+            sel +
+            ": ${_count} match(es)`);",
+        `  }`,
+        `}`,
         "",
       ];
     }

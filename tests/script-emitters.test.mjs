@@ -69,6 +69,12 @@ test("HOVER, SELECT, KEYBOARD, PAGINATE, DRAG_DROP and SCREENSHOT all emit", () 
     step("SELECT", { selector: "#size", value: "L" }),
     step("KEYBOARD", { key: "Enter" }),
     step("PAGINATE", { selector: ".next" }),
+    step("ASSERT", {
+      assertion: "count-at-least",
+      selector: ".card",
+      count: 3,
+    }),
+    step("CLICK", { selector: ".flaky", retries: 2, retryDelayMs: 250 }),
     step("DRAG_DROP", { source: ".a", target: ".b" }),
     step("SCREENSHOT", {}),
   ]);
@@ -693,4 +699,81 @@ test("a regex field with neither group nor flags emits the plain two-argument ca
 
   assert.match(js, /fsRegex\(await page\.innerText\('\.s'\), '\(\\\\d\+\)'\)/);
   assert.match(py, /fs_regex\(await page\.inner_text\("\.s"\), r"\(\\d\+\)"\)/);
+});
+
+// ── ASSERT and per-step retry in an exported script (K-12, K-13) ────────────
+
+test("every ASSERT is emitted, not stubbed", async () => {
+  const { ASSERTION_NAMES } = await import("../utils/assertions.js");
+  const stubbed = [];
+  for (const assertion of ASSERTION_NAMES) {
+    const { py, js } = emit([
+      step("ASSERT", {
+        assertion,
+        selector: ".card",
+        count: 3,
+        value: "In stock",
+      }),
+    ]);
+    if (/UNSUPPORTED|TODO/.test(js + py)) stubbed.push(assertion);
+  }
+  assert.deepEqual(stubbed, [], "these assertions are not exportable");
+});
+
+test("a failed ASSERT stops the exported script", () => {
+  const { py, js } = emit([
+    step("ASSERT", {
+      assertion: "count-at-least",
+      selector: ".card",
+      count: 3,
+    }),
+  ]);
+  assert.match(js, /_count >= 3/);
+  assert.match(js, /throw new Error\(`FlowScrape ASSERT/);
+  assert.match(py, /_count >= 3/);
+  assert.match(py, /raise AssertionError/);
+});
+
+test("an optional ASSERT warns instead of stopping the script", () => {
+  // Same rule the run follows: `optional` means the failure is logged and the
+  // pipeline carries on. A script that threw here would do less than the run.
+  const { py, js } = emit([
+    step("ASSERT", { assertion: "exists", selector: ".card", optional: true }),
+  ]);
+  assert.ok(
+    !/throw new Error\(`FlowScrape ASSERT/.test(js),
+    "Node still threw",
+  );
+  assert.match(js, /console\.warn\('ASSERT/);
+  assert.ok(!/raise AssertionError/.test(py), "Python still raised");
+  assert.match(py, /print\("ASSERT/);
+});
+
+test("a step that asks for retries is retried in the exported script", () => {
+  const { py, js } = emit([
+    step("CLICK", { selector: ".flaky", retries: 3, retryDelayMs: 400 }),
+  ]);
+  assert.match(js, /for \(let _attempt = 0; ; _attempt\+\+\) \{/);
+  assert.match(js, /if \(_attempt >= 3\) throw _err;/);
+  assert.match(js, /await sleep\(400\);/);
+  assert.match(py, /for _attempt in range\(4\):/);
+  assert.match(py, /await asyncio\.sleep\(0\.4\)/);
+  assert.match(py, /raise/);
+});
+
+test("a step with no retries is emitted with no wrapper", () => {
+  const { py, js } = emit([step("CLICK", { selector: ".buy" })]);
+  assert.ok(!/_attempt/.test(js + py), "an unretried step grew a retry loop");
+});
+
+test("the emitted retry count is clamped the way the run clamps it", () => {
+  // The bound lives in utils/step-types.js so the executor and both emitters
+  // cannot disagree about what "retries: 99" means.
+  const { py, js } = emit([
+    step("CLICK", { selector: ".flaky", retries: 99, retryDelayMs: 10 ** 9 }),
+  ]);
+  assert.match(js, /if \(_attempt >= 5\) throw _err;/);
+  assert.match(js, /await sleep\(30000\);/);
+  assert.match(py, /for _attempt in range\(6\):/);
+  assert.match(py, /await asyncio\.sleep\(30\)/);
 });

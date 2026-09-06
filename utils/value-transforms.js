@@ -155,6 +155,35 @@ export const TRANSFORMS = Object.freeze({
     fn: (v, o) => byRegex(v, o),
     opts: ["pattern"],
   },
+  /**
+   * Decode base64 that a page is hiding real content behind.
+   *
+   * A deliberate obfuscation on some sites and an ordinary encoding on others
+   * (data: URLs, embedded payloads). Returns null rather than a mangled string
+   * when the input is not valid base64 — a plausible wrong answer is worse
+   * than an empty cell, and "VGhpcw" and "Total: 42" are both just strings
+   * until one of them fails to decode.
+   */
+  base64: {
+    label: "Decode base64",
+    help: 'Turns base64 like "SGVsbG8gd29ybGQ=" back into the text it hides. Anything that is not valid base64 becomes empty rather than a mangled string.',
+    fn: (v) => {
+      const raw = String(v ?? "").trim();
+      if (!raw) return null;
+      // Tolerate URL-safe alphabets and missing padding, both common in the
+      // wild; reject anything that is not base64 at all.
+      const norm = raw.replace(/-/g, "+").replace(/_/g, "/");
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(norm) || norm.length < 4) return null;
+      const padded = norm + "=".repeat((4 - (norm.length % 4)) % 4);
+      try {
+        const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+        return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        return null;
+      }
+    },
+  },
+
   lower: {
     label: "lowercase",
     help: "Useful for values you will match or group on later.",

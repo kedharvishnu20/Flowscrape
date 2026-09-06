@@ -45,16 +45,21 @@ test("clicking an element returns a selector for it", async () => {
   const h = await loadInjector(PAGE);
   const target = h.document.getElementById("second");
 
-  const selector = await pickWith(h, () => {
+  const picked = await pickWith(h, () => {
     hover(h, target);
     target.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));
   });
 
-  assert.equal(typeof selector, "string");
-  assert.ok(selector.length > 0);
+  // A pick carries the document it came from: a selector picked inside an
+  // iframe is relative to that frame and means nothing in the parent (K-03).
+  assert.equal(typeof picked, "object");
+  assert.equal(typeof picked.selector, "string");
+  assert.ok(picked.selector.length > 0);
+  assert.equal(picked.top, true, "the harness page is the top document");
+  assert.equal(picked.frameUrl, "", "a top-level pick names no frame");
   assert.ok(
-    h.document.querySelector(selector),
-    `the selector should match something: ${selector}`,
+    h.document.querySelector(picked.selector),
+    `the selector should match something: ${picked.selector}`,
   );
   h.close();
 });
@@ -108,7 +113,7 @@ test("a cancelled picker can be used again", async () => {
   });
 
   assert.equal(
-    typeof second,
+    typeof second?.selector,
     "string",
     "the picker still works after a cancel",
   );

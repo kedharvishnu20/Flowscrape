@@ -55,6 +55,10 @@
   const CE = Object.freeze({
     STEP_EXEC: "FS_STEP_EXEC",
     PICK_SELECTOR: "FS_PICK_SELECTOR",
+    // The picker is armed in every frame at once, so the frames that were not
+    // clicked in stay armed — a crosshair the user cannot get rid of, and a
+    // stale picker that eats the next click. Whoever wins tells the rest.
+    PICK_CANCEL: "FS_PICK_CANCEL",
     FORM_FILL_ROW: "FS_FORM_FILL_ROW",
   });
 
@@ -237,7 +241,55 @@
    * @param {string} selector
    * @param {boolean} all
    */
+  /**
+   * An XPath, rather than a CSS selector.
+   *
+   * `xpath=` is Playwright's own prefix, so a selector written for one works in
+   * the other; a bare leading `//` or `(//` is how everyone else writes them.
+   */
+  function _isXPath(selector) {
+    return /^\s*(xpath=|\/\/|\(\/\/|\.\/\/)/.test(selector);
+  }
+
+  /**
+   * Resolve an XPath against a document or element.
+   *
+   * Worth having for the case CSS genuinely cannot express: selecting by the
+   * text a node contains. On a site that regenerates its class names on every
+   * request — a real anti-scraping technique — every CSS selector the picker
+   * can write is dead on arrival, and `//td[contains(., "Total")]` is not.
+   */
+  function _xpathAll(root, selector, all) {
+    const expr = selector.replace(/^\s*xpath=/, "").trim();
+    const doc = root.ownerDocument ?? root;
+    if (typeof doc.evaluate !== "function") return [];
+    try {
+      const it = doc.evaluate(
+        expr,
+        root,
+        null,
+        // ORDERED_NODE_SNAPSHOT_TYPE: a snapshot, so the list survives the
+        // caller mutating the DOM — a click during a walk would otherwise
+        // invalidate a live iterator mid-loop.
+        7,
+        null,
+      );
+      const out = [];
+      for (let i = 0; i < it.snapshotLength; i++) {
+        const node = it.snapshotItem(i);
+        if (node?.nodeType === 1) {
+          out.push(node);
+          if (!all) break;
+        }
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
   function _resolveIn(root, selector, all) {
+    if (_isXPath(selector)) return _xpathAll(root, selector, all);
     if (selector.includes(PIERCE)) {
       return _pierceQueryAll(root, selector, all);
     }
@@ -417,6 +469,7 @@
     CE.STEP_EXEC,
     CE.FORM_FILL_ROW,
     CE.PICK_SELECTOR,
+    CE.PICK_CANCEL,
     "step:execute",
     // Answered so the worker can tell an already-injected tab from a fresh one.
     // The script is no longer declared for <all_urls> — it is injected on demand
@@ -451,6 +504,10 @@
 
       case CE.PICK_SELECTOR:
         return _activateSelectorPicker(payload);
+
+      case CE.PICK_CANCEL:
+        _cancelPicker();
+        return { cancelled: true };
 
       case "step:execute":
         return _executeStep(payload);
@@ -2256,6 +2313,12 @@
   // ── Selector picker overlay ────────────────────────────────────────────────────
   let _pickerActive = false;
   let _pickerResolve = null;
+  /** Set by the active picker so another frame's win can tear this one down. */
+  let _pickerCancel = null;
+
+  function _cancelPicker() {
+    _pickerCancel?.();
+  }
 
   /**
    * Let the user click an element and return a selector for it.
@@ -2341,6 +2404,10 @@
       }
 
       _shadow.appendChild(highlight);
+
+      // So a win in another frame can disarm this one: the picker is armed in
+      // every frame at once and only the clicked frame settles on its own.
+      _pickerCancel = () => finish(null);
 
       document.addEventListener("mousemove", onMove, true); // Capture phase!
       document.addEventListener("click", onClick, true);
@@ -2432,6 +2499,7 @@
       function finish(selector) {
         if (!_pickerActive) return; // already settled
         _pickerActive = false;
+        _pickerCancel = null;
 
         document.removeEventListener("mousemove", onMove, true);
         document.removeEventListener("click", onClick, true);
@@ -2447,6 +2515,25 @@
         const settle = _pickerResolve;
         _pickerResolve = null;
         settle?.(selector);
+      }
+
+      /**
+       * A picked selector, plus the document it belongs to.
+       *
+       * The picker is armed in every frame at once, so the frame the user
+       * actually clicked in is the one that answers. Its selector is relative
+       * to its own document and means nothing in the parent — which is why
+       * picking inside an iframe appeared to work and then matched nothing at
+       * run time. The frame's URL travels with it so the run can be aimed at
+       * the same document the user was looking at.
+       */
+      function _result(selector) {
+        if (selector === null) return null;
+        return {
+          selector,
+          frameUrl: window.top === window ? "" : location.href,
+          top: window.top === window,
+        };
       }
 
       function onClick(e) {
@@ -2470,9 +2557,9 @@
             );
             return;
           }
-          return finish(rel);
+          return finish(_result(rel));
         }
-        finish(_buildSelector(currentTarget, isBulk));
+        finish(_result(_buildSelector(currentTarget, isBulk)));
       }
 
       function onKey(e) {

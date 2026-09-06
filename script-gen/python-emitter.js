@@ -42,7 +42,7 @@ export function emitPython(pipeline) {
     `# Pipeline: ${_escStr(pipeline.name ?? "Untitled")}`,
     `# Generated: ${new Date().toISOString()}`,
     "",
-    "import asyncio, os, re, json, csv, time, random",
+    "import asyncio, os, re, json, csv, time, random, base64",
     "from playwright.async_api import async_playwright",
     "import requests",
     "",
@@ -102,6 +102,20 @@ export function emitPython(pipeline) {
     "",
     "def fs_trim(v):",
     '    return re.sub(r"\\s+", " ", str(v or "")).strip()',
+    "",
+    "",
+    "# Mirrors the in-page transform: tolerant of the URL-safe alphabet and of",
+    "# missing padding, and None rather than a mangled string when the input was",
+    "# never base64 — a plausible wrong answer is worse than an empty cell.",
+    "def fs_b64(v):",
+    '    raw = str(v or "").strip().replace("-", "+").replace("_", "/")',
+    '    if len(raw) < 4 or not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", raw):',
+    "        return None",
+    '    raw += "=" * ((4 - len(raw) % 4) % 4)',
+    "    try:",
+    '        return base64.b64decode(raw).decode("utf-8")',
+    "    except Exception:",
+    "        return None",
     "",
     "",
     '# What an IF_ELSE branch reads before it decides. None means "no such',
@@ -573,6 +587,9 @@ function _transformPy(expr, field) {
     else if (name === "url") out = `fs_url(${out}, page.url)`;
     else if (name === "lower") out = `str(${out} or "").lower()`;
     else if (name === "upper") out = `str(${out} or "").upper()`;
+    // Same contract as the in-page transform: not-base64 becomes None rather
+    // than a mangled string, so a script and a run agree on what failed.
+    else if (name === "base64") out = `fs_b64(${out})`;
     else if (name === "regex") {
       const raw = String(field.regexPattern ?? "");
       // A raw literal cannot end in a backslash, and a lone trailing backslash

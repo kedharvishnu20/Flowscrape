@@ -59,6 +59,14 @@ export function emitNode(pipeline) {
     `const fsUrl = (v, base) => { try { return new URL(String(v ?? '').trim(), base).href; } catch { return v; } };`,
     `const fsRegex = (v, p) => { const m = String(v ?? '').match(new RegExp(p)); return m ? (m[1] ?? m[0]) : null; };`,
     `const fsTrim = v => String(v ?? '').replace(/\\s+/g, ' ').trim();`,
+    `// Mirrors the in-page transform: tolerant of the URL-safe alphabet and of`,
+    `// missing padding, null rather than a mangled string when it was never`,
+    `// base64 — a plausible wrong answer is worse than an empty cell.`,
+    `const fsB64 = v => {`,
+    `  const raw = String(v ?? '').trim().replace(/-/g, '+').replace(/_/g, '/');`,
+    `  if (raw.length < 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) return null;`,
+    `  try { return Buffer.from(raw, 'base64').toString('utf8'); } catch { return null; }`,
+    `};`,
     "",
     `// What an IF_ELSE branch reads before it decides. null means "no such`,
     `// element", which every condition treats as not-matching rather than as`,
@@ -480,6 +488,9 @@ function _transformNode(expr, field) {
     else if (name === "url") out = `fsUrl(${out}, page.url())`;
     else if (name === "lower") out = `String(${out} ?? '').toLowerCase()`;
     else if (name === "upper") out = `String(${out} ?? '').toUpperCase()`;
+    // Same contract as the in-page transform: not-base64 becomes null rather
+    // than a mangled string, so a script and a run agree on what failed.
+    else if (name === "base64") out = `fsB64(${out})`;
     else if (name === "regex") {
       const raw = String(field.regexPattern ?? "");
       if (!isValidRegex(raw)) return null; // the caller emits a refusal

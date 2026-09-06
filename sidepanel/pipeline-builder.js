@@ -3290,6 +3290,52 @@ async function _ensureContentReady(tabId) {
   return false;
 }
 
+/**
+ * Unwrap what the picker returned, and remember which document it came from.
+ *
+ * A selector picked inside an iframe is relative to that frame's document and
+ * means nothing in the parent — which is why picking inside one appeared to
+ * work and then matched nothing at run time. The frame's URL is stored on the
+ * step so the run can be aimed at the same document the user was looking at,
+ * instead of the user having to know to flip a toggle called "inFrame".
+ *
+ * Older picks came back as a bare string; still accepted.
+ *
+ * @returns {?{selector: string, frameUrl: string}}
+ */
+function _unwrapPick(result) {
+  if (!result) return null;
+  if (typeof result === "string") return { selector: result, frameUrl: "" };
+  if (!result.selector) return null;
+  return {
+    selector: result.selector,
+    frameUrl: result.top ? "" : (result.frameUrl ?? ""),
+  };
+}
+
+/** Point a step at the frame a selector was picked in, or clear it. */
+function _applyPickedFrame(step, frameUrl) {
+  if (!step?.config) return "";
+  if (frameUrl) {
+    step.config.frameUrl = frameUrl;
+    step.config.inFrame = true;
+    try {
+      return ` — inside the frame at ${new URL(frameUrl).pathname || frameUrl}`;
+    } catch {
+      return " — inside an embedded frame";
+    }
+  }
+  delete step.config.frameUrl;
+  return "";
+}
+
+/** Disarm the pickers in every frame that was not the one clicked in. */
+function _cancelPickersElsewhere(tabId) {
+  chrome.tabs
+    .sendMessage(tabId, { type: "FS_PICK_CANCEL", payload: {} })
+    .catch(() => {});
+}
+
 async function _pickSelector(stepId, key) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return notify("error-log", "No active tab available.");
@@ -3315,10 +3361,17 @@ async function _pickSelector(stepId, key) {
       type: "FS_PICK_SELECTOR",
       payload: { bulk: mode },
     });
-    if (resp?.ok && resp.result) {
+    _cancelPickersElsewhere(tab.id);
+    const picked = _unwrapPick(resp?.ok ? resp.result : null);
+    if (picked) {
+      const note = _applyPickedFrame(step, picked.frameUrl);
+      if (note) {
+        saveState();
+        notify("info-log", `Picked${note}. The step will run there.`);
+      }
       const input = document.getElementById(`cfg-${stepId}-${key}`);
       if (input) {
-        input.value = resp.result;
+        input.value = picked.selector;
         const badge = input.parentElement?.querySelector(
           ".selector-mode-badge",
         );
@@ -3844,20 +3897,25 @@ async function _addExtractField(stepId) {
       type: "FS_PICK_SELECTOR",
       payload: { bulk, scopeSelector },
     });
-    if (!resp?.ok || !resp.result) return;
+    _cancelPickersElsewhere(tab.id);
+    const picked = _unwrapPick(resp?.ok ? resp.result : null);
+    if (!picked) return;
 
     const step = _findStepDeep(_pipeline.steps, stepId);
     if (!step) return;
-    const name = nameInput?.value.trim() || _fieldNameFromSelector(resp.result);
-    step.config.fields.push({ name, selector: resp.result, type: "text" });
+    const frameNote = _applyPickedFrame(step, picked.frameUrl);
+    const name =
+      nameInput?.value.trim() || _fieldNameFromSelector(picked.selector);
+    step.config.fields.push({ name, selector: picked.selector, type: "text" });
     if (nameInput) nameInput.value = "";
     saveState();
     renderPipeline();
     notify(
       "info-log",
-      scopeSelector
+      (scopeSelector
         ? `Added field "${name}" — read from each ${scopeSelector} the loop visits.`
-        : `Added field "${name}" — ${bulk ? "all matches" : "this element"}.`,
+        : `Added field "${name}" — ${bulk ? "all matches" : "this element"}.`) +
+        frameNote,
     );
   } catch {
     notify("error-log", "Refresh the target webpage to connect the picker.");
@@ -3884,11 +3942,14 @@ async function _addFillField(stepId) {
       type: "FS_PICK_SELECTOR",
       payload: { bulk: false },
     });
-    if (resp?.ok && resp.result) {
+    _cancelPickersElsewhere(tab.id);
+    const picked = _unwrapPick(resp?.ok ? resp.result : null);
+    if (picked) {
       const step = _findStepDeep(_pipeline.steps, stepId);
       if (step) {
+        _applyPickedFrame(step, picked.frameUrl);
         if (!Array.isArray(step.config.fields)) step.config.fields = [];
-        step.config.fields.push({ selector: resp.result, value });
+        step.config.fields.push({ selector: picked.selector, value });
         saveState();
         renderPipeline();
       }

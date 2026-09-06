@@ -719,7 +719,74 @@ const _GONE =
  * @param {object} payload - a resolved step, `{type, config}`
  * @returns {Promise<{ok: boolean, result?: any, error?: string}>}
  */
+/**
+ * The frame whose document is at `frameUrl`.
+ *
+ * Recorded by the picker, so a step runs against the document the user was
+ * actually looking at rather than whichever frame answers first. Matched on
+ * the URL because frame ids are not stable across a reload — the same iframe
+ * gets a new one every navigation, so storing an id would break on the second
+ * run.
+ *
+ * @returns {Promise<?number>} the frame id, or null when that frame is gone
+ */
+async function _frameIdForUrl(tabId, frameUrl) {
+  if (!frameUrl) return null;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => location.href,
+    });
+    const exact = results.find((r) => r.result === frameUrl);
+    if (exact) return exact.frameId;
+    // A frame that carries a session id or a cache-buster in its query string
+    // is the same frame on the next run; compare without the query.
+    const bare = (u) => {
+      try {
+        const p = new URL(u);
+        return p.origin + p.pathname;
+      } catch {
+        return u;
+      }
+    };
+    const target = bare(frameUrl);
+    return (
+      results.find((r) => bare(r.result ?? "") === target)?.frameId ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
 async function _sendToPage(tabId, payload) {
+  // A step whose selector was picked inside an iframe knows which one, so aim
+  // there rather than broadcasting and taking the first answer. With two
+  // frames holding similar data the broadcast returned whichever replied
+  // first, which is not a choice the user made.
+  const frameUrl = payload?.config?.frameUrl;
+  if (frameUrl) {
+    const frameId = await _frameIdForUrl(tabId, frameUrl);
+    if (frameId !== null) {
+      try {
+        return await chrome.tabs.sendMessage(
+          tabId,
+          { type: "step:execute", payload },
+          { frameId },
+        );
+      } catch (err) {
+        if (!_GONE.test(err.message)) throw err;
+        await _ensureInjected(tabId);
+        return chrome.tabs.sendMessage(
+          tabId,
+          { type: "step:execute", payload },
+          { frameId },
+        );
+      }
+    }
+    // The frame is not on the page any more. Fall through to the frame walk
+    // rather than failing outright: the site may have moved the content.
+  }
+
   // "Look inside frames too" — off by default, so a page without iframes
   // behaves exactly as it always did.
   if (payload?.config?.inFrame) return _sendToFrames(tabId, payload);
@@ -3135,6 +3202,15 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
 
   if (!resp || !resp.ok) {
     throw new Error(resp?.error || "Test failed inside content environment");
+  }
+
+  // A run cleans EXTRACT's values on the way out (_dispatchStep) and Test did
+  // not, so a field with a transform showed its raw value here and its cleaned
+  // value in the run. Configure "Decode base64", press Test, see the base64 —
+  // and conclude the transform is broken. Same helper, so the two cannot
+  // disagree again.
+  if (type === "EXTRACT" && Array.isArray(resp.result)) {
+    return _transformRows(resp.result, resolvedStep.config, targetTabId);
   }
   return resp.result;
 });

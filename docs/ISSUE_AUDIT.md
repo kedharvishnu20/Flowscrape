@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 162 findings — 19 blocker · 42 high · 71 medium · 30 low. The
+**Totals:** 166 findings — 20 blocker · 45 high · 72 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 2        |
+| K · Capability review           | 6        |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 160 of 162 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 164 of 166 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -1708,6 +1708,86 @@ Verified in Chromium across the four cases that matter:
 The old ES-module detector is deleted rather than left beside this one: two
 detectors are two definitions of the same thing (G-01), and that one could never
 run.
+
+### K-03 · BLOCKER · Data inside an iframe could not be selected
+
+_Reported as "the data inside an iframe still cannot be accessed and I cannot
+select them"._
+
+J-14 gave a step an `inFrame` toggle so it could _search_ iframes. Picking was
+the missing half, and without it the toggle was unusable: the picker is armed in
+every frame at once, the frame the user clicks in answers, and its selector is
+relative to **its own document**. It came back as a bare string with no record
+of where it came from, so a selector picked inside an iframe meant nothing in
+the parent — it appeared to work, and then matched nothing at run time.
+
+Three faults, one cause.
+
+**A pick did not know its own document.** It now returns the frame's URL
+alongside the selector, the panel stores it on the step, and the run is aimed at
+that document. Nobody has to find a toggle called "inFrame" and guess that it
+applies to them.
+
+**The frame walk was arbitrary.** `inFrame` broadcasts to every frame and takes
+the first non-empty answer. On a page with two iframes holding similar data —
+exactly the practice-site shape — it returned whichever replied first, which is
+not a choice the user made. Verified: the same page returned the cross-origin
+frame's quotes on one run and the same-origin frame's on the next. A recorded
+frame is now addressed directly, and the walk stays only as the fallback.
+
+**The other frames stayed armed.** Only the clicked frame settles; the rest were
+left showing a crosshair that ate the next click. The winner disarms them.
+
+Frames are matched by URL rather than id: a frame id is not stable across a
+reload — the same iframe gets a new one on every navigation — so a stored id
+would work once and break on the second run. The comparison ignores the query
+string, so a frame carrying a session id or a cache-buster still matches. A
+frame that has genuinely gone falls through to the walk rather than failing.
+
+Verified in Chromium against a page holding one same-origin and one
+cross-origin iframe: picking in each returns that frame's URL, and the step then
+returns **that frame's** rows both times.
+
+### K-04 · HIGH · No XPath, so a page that renames its classes was unscrapeable
+
+CSS cannot express "the element containing this text". That is a gap on any
+page, and a wall on one that regenerates its class names on every request — a
+real anti-scraping technique, and one of the practice challenges — because every
+CSS selector the picker can write is dead on arrival.
+
+Selectors beginning `//`, `(//`, `.//` or Playwright's `xpath=` prefix are now
+evaluated as XPath, in the same resolver, so they work everywhere a selector
+does. A snapshot rather than a live iterator, so the list survives the caller
+mutating the DOM mid-walk; a malformed expression returns nothing rather than
+throwing.
+
+Verified against a table whose classes are randomised per request:
+`//tr[td[contains(., "Total")]]/td[2]` returns `35.50`.
+
+### K-05 · MEDIUM · No way to decode base64 content
+
+Another named challenge, and an ordinary encoding besides. Added as a transform
+rather than a step, so it composes with the rest.
+
+Tolerant of the URL-safe alphabet and of missing padding, both common in the
+wild. Not-base64 becomes null rather than a mangled string: "Total: 42" and
+"VGhpcw" are both just text until one of them fails to decode, and a plausible
+wrong answer is worse than an empty cell. Carried by both emitters, with the
+same contract on both sides.
+
+### K-06 · HIGH · Test and Run disagreed about transforms
+
+_Found while verifying K-05 in a browser: the decoded field came back still
+encoded._
+
+A run cleans EXTRACT's values on the way out; the Test button returned them raw.
+So configuring "Decode base64", pressing Test and seeing base64 come back is the
+obvious way to conclude the transform is broken — when it was the test path that
+was wrong. Every value transform was affected, not just the new one.
+
+The same family as B-27, A-13 and the "Unknown step type" errors: one job, two
+paths, and only one of them maintained. Both call the one transformer now, and a
+test asserts there is exactly one definition and two call sites.
 
 ---
 

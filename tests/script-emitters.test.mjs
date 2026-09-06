@@ -643,3 +643,54 @@ test("the emitted branches still parse with every condition in them", (t) => {
   writeFileSync(pyFile, py);
   execFileSync(python, ["-m", "py_compile", pyFile]);
 });
+
+test("a capture group and flags reach both scripts, and only the shared flags do", () => {
+  // The pipeline, the Node script and the Python script have to agree on which
+  // group is the answer. They did not: group and flags lived in the pipeline
+  // and neither emitter carried them, so a field set to group 2 exported as
+  // group 1 and nobody was told.
+  //
+  // `g` is dropped rather than passed on. It means something in JavaScript that
+  // it does not mean in Python, and it changes nothing for a transform that
+  // reads one value — carrying it would only make the two scripts differ.
+  const { py, js } = emit([
+    step("EXTRACT", {
+      fields: [
+        {
+          name: "id",
+          selector: ".s",
+          transform: ["regex"],
+          regexPattern: "(\\w+)-(\\d+)",
+          regexGroup: 2,
+          regexFlags: "gi",
+        },
+      ],
+    }),
+  ]);
+
+  assert.match(js, /fsRegex\(await page\.innerText\('\.s'\), '.*', 'i', 2\)/);
+  assert.match(
+    py,
+    /fs_regex\(await page\.inner_text\("\.s"\), r".*", "i", 2\)/,
+  );
+});
+
+test("a regex field with neither group nor flags emits the plain two-argument call", () => {
+  // The defaults are what almost every field uses. Emitting `, '', 1` on all of
+  // them would be noise in a script a person is expected to read.
+  const { py, js } = emit([
+    step("EXTRACT", {
+      fields: [
+        {
+          name: "id",
+          selector: ".s",
+          transform: ["regex"],
+          regexPattern: "(\\d+)",
+        },
+      ],
+    }),
+  ]);
+
+  assert.match(js, /fsRegex\(await page\.innerText\('\.s'\), '\(\\\\d\+\)'\)/);
+  assert.match(py, /fs_regex\(await page\.inner_text\("\.s"\), r"\(\\d\+\)"\)/);
+});

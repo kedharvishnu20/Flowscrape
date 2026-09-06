@@ -14,7 +14,11 @@
  */
 
 import { logger } from "../utils/logger.js";
-import { isValidRegex } from "../utils/value-transforms.js";
+import {
+  isValidRegex,
+  normalizeRegexFlags,
+  normalizeRegexGroup,
+} from "../utils/value-transforms.js";
 
 const MODULE = "python-emitter";
 
@@ -93,11 +97,23 @@ export function emitPython(pipeline) {
     '    return urljoin(base, str(v or "").strip()) if v else v',
     "",
     "",
-    "def fs_regex(v, p):",
-    '    m = re.search(p, str(v or ""))',
+    "# Group and flags mean here exactly what they mean in the panel: 0 is the",
+    "# whole match, an absent group is None rather than a quiet fall back to",
+    "# another one, and only i/m/s are offered because JavaScript has to agree.",
+    'def fs_regex(v, p, flags="", group=None):',
+    "    f = 0",
+    '    for ch, bit in (("i", re.I), ("m", re.M), ("s", re.S)):',
+    "        if ch in flags:",
+    "            f |= bit",
+    '    m = re.search(p, str(v or ""), f)',
     "    if not m:",
     "        return None",
-    "    return m.group(1) if m.groups() else m.group(0)",
+    "    if group == 0:",
+    "        return m.group(0)",
+    "    idx = group if isinstance(group, int) and group > 0 else 1",
+    "    if idx <= len(m.groups()):",
+    "        return m.group(idx)",
+    "    return m.group(0) if idx == 1 and not m.groups() else None",
     "",
     "",
     "def fs_trim(v):",
@@ -592,14 +608,22 @@ function _transformPy(expr, field) {
     else if (name === "base64") out = `fs_b64(${out})`;
     else if (name === "regex") {
       const raw = String(field.regexPattern ?? "");
+      const flags = normalizeRegexFlags(field.regexFlags);
       // A raw literal cannot end in a backslash, and a lone trailing backslash
       // is not a valid pattern anyway — so refuse rather than trim it, which
       // would give a script that extracts something else without saying so.
-      if (!isValidRegex(raw) || /\\$/.test(raw)) return null;
+      if (!isValidRegex(raw, flags) || /\\$/.test(raw)) return null;
       // r"" means a backslash stands for itself, so _escStr's doubling would
       // turn `\S` into a literal backslash followed by S. Only the quote
       // needs handling.
-      out = `fs_regex(${out}, r"${raw.replace(/"/g, '\\"')}")`;
+      const group = normalizeRegexGroup(field.regexGroup);
+      const extra =
+        group === null
+          ? flags
+            ? `, "${flags}"`
+            : ""
+          : `, "${flags}", ${group}`;
+      out = `fs_regex(${out}, r"${raw.replace(/"/g, '\\"')}"${extra})`;
     }
   }
   return out;

@@ -7,7 +7,13 @@ import {
   defaultConfig,
   isKnownStepType,
 } from "../utils/step-types.js";
-import { TRANSFORMS, isValidRegex } from "../utils/value-transforms.js";
+import {
+  TRANSFORMS,
+  isValidRegex,
+  REGEX_FLAGS,
+  normalizeRegexFlags,
+  normalizeRegexGroup,
+} from "../utils/value-transforms.js";
 import { CONDITIONS } from "../utils/conditions.js";
 import { snifferFilterError } from "../utils/sniffer-filter.js";
 import {
@@ -1885,6 +1891,16 @@ function _configFields(step) {
           <input type="text" class="extract-regex-input" data-id="${step.id}" data-index="${fi}"
             value="${esc(f.regexPattern || "")}" placeholder="SKU: (\\S+)"
             style="flex:2.8;font-size:11px;${bad ? "border-color:var(--red);" : ""}">
+        </div>
+        <div class="flex gap-2" style="margin:-6px 0 6px 0;align-items:center;">
+          <span style="flex:1;font-size:10px;color:var(--text-dim);text-align:right;">group</span>
+          <input type="number" min="0" max="20" class="extract-regex-group" data-id="${step.id}" data-index="${fi}"
+            value="${esc(f.regexGroup ?? "")}" placeholder="1"
+            style="flex:1;font-size:11px;">
+          <span style="flex:0.6;font-size:10px;color:var(--text-dim);text-align:right;">flags</span>
+          <input type="text" class="extract-regex-flags" data-id="${step.id}" data-index="${fi}"
+            value="${esc(f.regexFlags || "")}" placeholder="${REGEX_FLAGS}" maxlength="3"
+            style="flex:1;font-size:11px;">
         </div>`;
         if (bad) {
           html += `<p style="font-size:11px;color:var(--red);margin:-4px 0 8px 0;">Not a valid pattern — this field would come back empty.</p>`;
@@ -2962,7 +2978,11 @@ function bindDelegatedEvents() {
       // now; a stored list means offering a second later changes no data shape.
       if (target.value) field.transform = [target.value];
       else delete field.transform;
-      if (target.value !== "regex") delete field.regexPattern;
+      if (target.value !== "regex") {
+        delete field.regexPattern;
+        delete field.regexGroup;
+        delete field.regexFlags;
+      }
       saveState();
       _rerenderCardConfig(step); // show the help, and the pattern box
       return;
@@ -3009,6 +3029,30 @@ function bindDelegatedEvents() {
       // take the caret with it, which is what E-10 was about.
       const isBad = target.value && !isValidRegex(target.value);
       if (Boolean(wasBad) !== Boolean(isBad)) _rerenderCardConfig(step);
+      return;
+    }
+
+    // Neither of these can make a pattern invalid, so unlike the pattern box
+    // they never re-render — the caret stays where the user put it.
+    if (target.classList.contains("extract-regex-group")) {
+      const step = _findStepDeep(_pipeline.steps, target.dataset.id);
+      const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
+      if (!field) return;
+      const g = normalizeRegexGroup(target.value);
+      if (g === null) delete field.regexGroup;
+      else field.regexGroup = g;
+      saveState();
+      return;
+    }
+
+    if (target.classList.contains("extract-regex-flags")) {
+      const step = _findStepDeep(_pipeline.steps, target.dataset.id);
+      const field = step?.config?.fields?.[parseInt(target.dataset.index, 10)];
+      if (!field) return;
+      const flags = normalizeRegexFlags(target.value);
+      if (flags) field.regexFlags = flags;
+      else delete field.regexFlags;
+      saveState();
       return;
     }
 

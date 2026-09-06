@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 170 findings — 22 blocker · 47 high · 72 medium · 30 low. The
+**Totals:** 171 findings — 22 blocker · 47 high · 73 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 168 of 170 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 169 of 171 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -1981,3 +1981,29 @@ F-01's nine modules and A-05/A-06/A-07's three subsystems are ~2,700 lines. Eith
 
 **5 — Then quality:**
 G-01 (single shared step registry consumed by the UI, the emitters and MCP), B-13 (emitter coverage), I-01 (unit tests for the pure modules), I-02 (lint), B-27 (deduplicate the two step-dispatch chains).
+
+### K-11 · MEDIUM · The regex transform could only ever return one group
+
+The `regex` transform took a pattern and gave back the first capture group, or
+the whole match when the pattern had none. A pattern with two groups —
+`/product/(\d+)-(.+)` against a URL, which is the ordinary shape — could reach
+only the first, so the second half needed a second field with a rewritten
+pattern. There was no way to ask for the whole match either once a group
+existed.
+
+It now takes a group number (0 being the whole match) and flags. Asking for a
+group the pattern does not have gives `null` rather than quietly falling back to
+another one, because that is a mistake worth seeing. Flags are limited to
+`i`, `m` and `s`: the pipeline and the two scripts it generates have to extract
+the same values, and those three are the ones JavaScript and Python spell the
+same way. `g` is dropped — it changes where the _next_ match would start, which
+means nothing to a transform that reads one value, and it would have made the
+two emitted scripts disagree.
+
+Two smaller things went with it. An unrunnable pattern now returns `null`
+instead of throwing, so one wrong field no longer fails a whole multi-page run
+— the panel already flags a bad pattern as it is typed, which is where the user
+can actually fix it. And the pattern is refused up front if it is longer than
+the input is plausibly worth or shaped like `(a+)+`, the nested-quantifier form
+behind nearly every catastrophic-backtracking report; that check is a heuristic
+and the code says so, since it only looks one paren level deep.

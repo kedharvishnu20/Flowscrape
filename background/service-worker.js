@@ -2387,6 +2387,8 @@ async function _transformRows(rows, config = {}, tabId) {
         out[name] = applyTransforms(out[name], field.transform, {
           base,
           pattern: field.regexPattern,
+          flags: field.regexFlags,
+          group: field.regexGroup,
         });
       } catch (err) {
         throw new Error(`EXTRACT field "${name}": ${err.message}`);

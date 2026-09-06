@@ -96,10 +96,62 @@ test("a regex that matches nothing yields null, not the original", () => {
   assert.equal(at("no code here", "regex", { pattern: "SKU: (\\S+)" }), null);
 });
 
-test("an invalid regex is reported, not swallowed", () => {
-  assert.throws(
-    () => at("x", "regex", { pattern: "([unclosed" }),
-    /regex|pattern/i,
+test("an invalid pattern comes back empty, the same as no match", () => {
+  // Every other transform in this file degrades to null on bad input rather
+  // than throwing — "Out of stock" as a number, a string that is not base64.
+  // A typo'd pattern is the same kind of bad input, and failing the whole
+  // EXTRACT step over it would take a multi-field, multi-page run down for
+  // one field. The panel already tells the user this in the moment.
+  assert.equal(at("x", "regex", { pattern: "([unclosed" }), null);
+  assert.equal(at("x", "regex", {}), null); // no pattern configured yet
+});
+
+test("a chosen group index is read, not just the first", () => {
+  const url = "/product/1234-blue-widget";
+  assert.equal(
+    at(url, "regex", { pattern: "/product/(\\d+)-([a-z]+)-", group: 2 }),
+    "blue",
+  );
+});
+
+test("group 0 always means the whole match, even when the pattern has groups", () => {
+  assert.equal(
+    at("SKU: ABC-123", "regex", { pattern: "SKU: (\\S+)", group: 0 }),
+    "SKU: ABC-123",
+  );
+});
+
+test("an explicit group the pattern does not have is null, not a guess", () => {
+  // Group 1 alone falls back to the whole match (see the test above this
+  // section) because that is the common, no-groups-at-all case. Asking for
+  // group 2 on a pattern with only one group is a real mistake, and guessing
+  // group 1 or the whole match instead would hide it.
+  assert.equal(
+    at("SKU: ABC-123", "regex", { pattern: "SKU: (\\S+)", group: 2 }),
+    null,
+  );
+});
+
+test("flags reach the pattern the same way the browser's regex would use them", () => {
+  assert.equal(
+    at("Product SKU", "regex", { pattern: "sku", flags: "i" }),
+    "SKU",
+  );
+  assert.equal(at("Product SKU", "regex", { pattern: "sku" }), null);
+});
+
+test("a pattern shaped for catastrophic backtracking is refused, not run", () => {
+  // (\S+)+ against a string with no trailing match forces the engine through
+  // an exponential number of ways to partition the run before it can give up
+  // — the classic ReDoS shape. Forty-odd characters is already enough to hang
+  // a naive backtracking engine for a very long time; this must return
+  // instead of ever trying.
+  const evil = "a".repeat(40) + "!";
+  const started = Date.now();
+  assert.equal(at(evil, "regex", { pattern: "(a+)+$" }), null);
+  assert.ok(
+    Date.now() - started < 1000,
+    "a catastrophic pattern must be refused up front, not executed",
   );
 });
 
@@ -216,8 +268,11 @@ test("a field with no transform is left exactly as the page had it", async () =>
 });
 
 test("a transform that cannot run fails the step by name", async () => {
-  // Not silently: a column of nulls with no explanation is the thing this
-  // whole module exists to avoid.
+  // A misspelled transform name is a different mistake than a bad regex
+  // pattern (see "an invalid pattern comes back empty" above): there is no
+  // sensible "empty" to fall back to for a transform that does not exist at
+  // all, so this must still fail loudly rather than pass the value through
+  // untouched and pretend the transform ran.
   reset();
   const { runId } = startRun();
   onContentMessage(() => ({ ok: true, result: [{ sku: "x" }] }));
@@ -230,8 +285,7 @@ test("a transform that cannot run fails the step by name", async () => {
             {
               name: "sku",
               selector: ".s",
-              transform: ["regex"],
-              regexPattern: "([bad",
+              transform: ["bogus-transform"],
             },
           ],
         }),

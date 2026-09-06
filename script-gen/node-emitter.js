@@ -6,7 +6,11 @@
  */
 
 import { logger } from "../utils/logger.js";
-import { isValidRegex } from "../utils/value-transforms.js";
+import {
+  isValidRegex,
+  normalizeRegexFlags,
+  normalizeRegexGroup,
+} from "../utils/value-transforms.js";
 const MODULE = "node-emitter";
 
 export function emitNode(pipeline) {
@@ -57,7 +61,17 @@ export function emitNode(pipeline) {
     `  return Number.isFinite(n) ? n : null;`,
     `};`,
     `const fsUrl = (v, base) => { try { return new URL(String(v ?? '').trim(), base).href; } catch { return v; } };`,
-    `const fsRegex = (v, p) => { const m = String(v ?? '').match(new RegExp(p)); return m ? (m[1] ?? m[0]) : null; };`,
+    `// Group and flags mean here exactly what they mean in the panel: 0 is the`,
+    `// whole match, an absent group is null rather than a quiet fall back to`,
+    `// another one, and only i/m/s are offered because Python has to agree.`,
+    `const fsRegex = (v, p, f = '', g) => {`,
+    `  const m = String(v ?? '').match(new RegExp(p, f));`,
+    `  if (!m) return null;`,
+    `  if (g === 0) return m[0];`,
+    `  const i = Number.isInteger(g) && g > 0 ? g : 1;`,
+    `  if (m[i] !== undefined) return m[i];`,
+    `  return i === 1 && m.length === 1 ? m[0] : null;`,
+    `};`,
     `const fsTrim = v => String(v ?? '').replace(/\\s+/g, ' ').trim();`,
     `// Mirrors the in-page transform: tolerant of the URL-safe alphabet and of`,
     `// missing padding, null rather than a mangled string when it was never`,
@@ -493,12 +507,20 @@ function _transformNode(expr, field) {
     else if (name === "base64") out = `fsB64(${out})`;
     else if (name === "regex") {
       const raw = String(field.regexPattern ?? "");
-      if (!isValidRegex(raw)) return null; // the caller emits a refusal
+      const flags = normalizeRegexFlags(field.regexFlags);
+      if (!isValidRegex(raw, flags)) return null; // the caller emits a refusal
       // A regex is full of backslashes, and the quote-escaper alone turned
       // `\\S` into a bare `S` inside the emitted literal, so the pattern
       // silently matched nothing. Backslashes first, then quotes.
       const pattern = raw.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-      out = `fsRegex(${out}, '${pattern}')`;
+      const group = normalizeRegexGroup(field.regexGroup);
+      const extra =
+        group === null
+          ? flags
+            ? `, '${flags}'`
+            : ""
+          : `, '${flags}', ${group}`;
+      out = `fsRegex(${out}, '${pattern}'${extra})`;
     }
   }
   return out;

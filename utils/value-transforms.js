@@ -99,23 +99,74 @@ function toAbsoluteUrl(value, { base } = {}) {
 }
 
 /**
+ * How much text a pattern is allowed to search before this transform simply
+ * declines. Real fields — an ID at the end of a URL, a SKU in a caption — are
+ * short; this exists for the field that is not, an "HTML" or "Text" reader
+ * pointed at a whole page. It is a length cap, not a time limit: a short
+ * string can still sit a genuinely pathological pattern in the regex engine
+ * for a long time, which is what isCatastrophicPattern below is for. The two
+ * together are the "as far as is reasonable" version of this guard — see the
+ * module docs for what neither one catches.
+ */
+const MAX_REGEX_INPUT_LENGTH = 20000;
+
+/**
+ * A cheap, deliberately conservative check for the pattern shape behind
+ * almost every real catastrophic-backtracking report: a group that can
+ * already match empty or repeat internally, repeated again from outside it —
+ * `(a+)+`, `(\d*)+`, `([^\s]+)*`. On the right input that shape makes the
+ * engine try an exponential number of ways to split the string before it can
+ * report failure, which is a hang, not a slow answer.
+ *
+ * This is a heuristic, not a proof of safety. It only looks one paren level
+ * deep, so `((a+)b)+` slips past it, and it knows nothing about alternation
+ * overlap (`(a|a)+`) or backreferences. What it does catch is the shape
+ * nearly every real-world ReDoS report turns out to be, for the cost of one
+ * more regex test.
+ *
+ * @param {string} pattern
+ * @returns {boolean}
+ */
+function isCatastrophicPattern(pattern) {
+  return /\([^()]*[+*][^()]*\)[+*]/.test(pattern);
+}
+
+/**
  * Pull a substring out with a pattern.
  *
- * The first capture group if there is one, otherwise the whole match. No match
- * is `null` rather than the original string: returning the input unchanged
- * would make a pattern that never matched look like one that worked.
+ * `group` picks which capture group: 0 is always the whole match, and any
+ * other number is that group or `null` if the pattern does not have it —
+ * asking for group 2 on a pattern with one group is a real mistake, and
+ * silently handing back group 1 (or the whole match) instead would hide it.
+ * Left unset, it defaults to group 1, falling back to the whole match only
+ * when the pattern has no groups at all, so a plain pattern with no
+ * parentheses "just works" the way the field's placeholder text implies.
+ *
+ * No match, no pattern, a pattern `RegExp` will not accept, or one shaped for
+ * catastrophic backtracking: all of these come back `null`, the same as
+ * every other transform in this file on input it cannot use. A bad pattern
+ * is a common mistake — the panel already flags one as the user types it —
+ * and failing the whole EXTRACT step over it would take a multi-field,
+ * multi-page run down for one wrong field.
  */
-function byRegex(value, { pattern, flags = "" } = {}) {
-  if (!pattern) throw new Error("Transform 'regex' needs a pattern.");
-  let re;
-  try {
-    re = new RegExp(pattern, flags);
-  } catch (err) {
-    throw new Error(`Transform 'regex' has an invalid pattern: ${err.message}`);
-  }
-  const m = String(value ?? "").match(re);
+function byRegex(value, { pattern, flags = "", group } = {}) {
+  const raw = String(pattern ?? "");
+  // Normalized rather than passed through, so a run and the scripts generated
+  // from it read the same pattern the same way.
+  const f = normalizeRegexFlags(flags);
+  if (!raw || !isValidRegex(raw, f)) return null;
+
+  const text = String(value ?? "");
+  if (text.length > MAX_REGEX_INPUT_LENGTH) return null;
+
+  const m = text.match(new RegExp(raw, f));
   if (!m) return null;
-  return m[1] ?? m[0];
+
+  const g = normalizeRegexGroup(group);
+  if (g === 0) return m[0];
+  const idx = g > 0 ? g : 1;
+  if (m[idx] !== undefined) return m[idx];
+  return idx === 1 && m.length === 1 ? m[0] : null;
 }
 
 /** Collapse the whitespace real markup leaves inside a rendered string. */
@@ -151,9 +202,9 @@ export const TRANSFORMS = Object.freeze({
   },
   regex: {
     label: "Pattern",
-    help: "Keeps the part matching your pattern — the first (bracketed group) if you use one. No match becomes empty.",
+    help: "Keeps the part matching your pattern — the first (bracketed group) if you use one, or pick a later group and use 0 for the whole match. No match, or a pattern that will not run, becomes empty.",
     fn: (v, o) => byRegex(v, o),
-    opts: ["pattern"],
+    opts: ["pattern", "group", "flags"],
   },
   /**
    * Decode base64 that a page is hiding real content behind.
@@ -197,19 +248,54 @@ export const TRANSFORMS = Object.freeze({
 });
 
 /**
- * Is this something RegExp will accept?
+ * Is this something RegExp will accept, and not a shape known to hang the
+ * engine on the right input?
  *
- * Used by the panel to reject a pattern as it is typed, and by both script
- * emitters to refuse a field rather than repair it — a repaired pattern gives
- * a script that runs and extracts something other than what the pipeline
- * extracts, which is worse than one that stops and says why.
+ * Used by the panel to reject a pattern as it is typed, by the `regex`
+ * transform itself before it ever runs one, and by both script emitters to
+ * refuse a field rather than repair it — a repaired pattern gives a script
+ * that runs and extracts something other than what the pipeline extracts,
+ * which is worse than one that stops and says why.
  *
  * @param {string} pattern
+ * @param {string} [flags]
  * @returns {boolean}
  */
-export function isValidRegex(pattern) {
+/**
+ * The flags this tool is willing to run.
+ *
+ * A pipeline and the two scripts it generates must extract the same values, so
+ * the set is the intersection of what JavaScript and Python both spell the same
+ * way: case-insensitive, multiline, and dot-matches-newline. `g` is excluded on
+ * purpose — a transform reads one value, and a global regex would only change
+ * where the next call starts.
+ */
+export const REGEX_FLAGS = "ims";
+
+/**
+ * @param {unknown} flags
+ * @returns {string} the given flags, in a fixed order, with anything unsupported dropped
+ */
+export function normalizeRegexFlags(flags) {
+  const given = String(flags ?? "").toLowerCase();
+  return [...REGEX_FLAGS].filter((f) => given.includes(f)).join("");
+}
+
+/**
+ * @param {unknown} group
+ * @returns {number|null} the capture group asked for, or null for "unset"
+ */
+export function normalizeRegexGroup(group) {
+  if (group === "" || group === null || group === undefined) return null;
+  const n = Number(group);
+  return Number.isInteger(n) && n >= 0 && n <= 20 ? n : null;
+}
+
+export function isValidRegex(pattern, flags = "") {
+  const str = String(pattern ?? "");
+  if (isCatastrophicPattern(str)) return false;
   try {
-    new RegExp(String(pattern ?? ""));
+    new RegExp(str, String(flags ?? ""));
     return true;
   } catch {
     return false;

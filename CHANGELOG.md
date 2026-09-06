@@ -10,14 +10,56 @@ if any copy of it drifts.
 ## [Unreleased]
 
 Everything below was found by a full-repository audit
-([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 152 findings) and fixed against
+([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 171 findings) and fixed against
 it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-660**, plus **69 end-to-end checks** that load the extension into a real
+787**, plus **69 end-to-end checks** that load the extension into a real
 Chromium and drive it — which is what caught four of them, including the two
 worst.
+
+### Section K — what using it on real sites found
+
+The audit's A–J sections came from reading the code. Section K came from
+running the tool against real pages, and it found things 700 tests had not.
+
+- **Selectors can see inside web components** (K-01). CSS cannot cross a shadow
+  boundary, so on a site built from web components every selector matched
+  nothing and the tool said "not found" for elements plainly on screen. The
+  resolver now walks open shadow roots when a plain query comes back empty, and
+  a selector can pierce explicitly with `>>>` — a notation that has to be ours,
+  because CSS has none. The exported scripts translate it to Playwright's `>>`.
+  Closed shadow roots stay unreachable, and say so.
+- **A captcha stops the run and names itself** (K-02). It used to produce empty
+  rows and no error: EXTRACT does not fail on a miss, so being blocked looked
+  exactly like a page with nothing on it. The check asks whether a captcha is
+  _in the way_ rather than whether one is present — reCAPTCHA v3 runs invisibly
+  on a large share of the web — and pauses the run so it can be resumed.
+- **Data inside an iframe can be picked and read** (K-03, K-07, K-08). Three
+  separate bugs stacked here, which is why it kept looking fixed: a picked
+  selector lost the frame it came from, frames that loaded after the first
+  injection never got the content script, and the picker's own full-viewport
+  overlay in the top frame swallowed every click meant for a frame beneath it.
+  Frames are matched by URL rather than by id, because ids do not survive a
+  reload.
+- **XPath selectors** (K-04), for pages that rename their classes on every
+  request. A selector starting `//` or `.//` is evaluated as XPath, so an
+  element can be found by its text or its position rather than by a class name
+  that will be different next time.
+- **A `base64` transform** (K-05), for pages that hide their content behind it.
+  Input that was never base64 becomes null rather than a mangled string.
+- **Test and Run agree about transforms** (K-06). The Test button showed raw
+  values while a run cleaned them, so a field looked wrong in the panel and
+  right in the export, or the reverse.
+- **Detect Table works on the shapes real pages use** (K-09, K-10). It was
+  measured against a battery of 37 table and list shapes rather than guessed at:
+  navigation and footer landmarks are no longer offered as data, a wrapper
+  element no longer hides the rows inside it, and a column the page names in a
+  `<th>` is kept even when every row holds the same value — which is what lost
+  the ratings column on a book table where every book had four stars.
+- **The regex transform can reach any capture group** (K-11), with a group
+  number and flags, instead of only ever returning the first group.
 
 ### Added — what the steps can now do
 

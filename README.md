@@ -170,6 +170,24 @@ CMaps. Encrypted PDFs, scanned pages and CID fonts with no `/ToUnicode` map are
 reported rather than guessed at. The MCP server's `pdf_extract_text` uses pdfjs
 and handles more; the two are independent.
 
+### Selectors: CSS, XPath, shadow roots and frames
+
+A selector is CSS by default. Three things extend that, because three real
+boundaries do not move for CSS:
+
+- **XPath.** A selector starting `//` or `.//` is evaluated as XPath, for pages
+  whose class names are different on every request — find the cell by its text
+  or its position instead.
+- **Shadow roots.** CSS cannot cross into a web component. Writing
+  `app-root >>> .price` searches inside open shadow roots; a plain selector that
+  finds nothing also falls back to searching them. `>>>` is FlowScrape's own
+  notation, resolved by its own code, and the exported scripts translate it to
+  Playwright's `>>`. Closed shadow roots are unreachable to anything outside
+  them, and the tool says so rather than pretending.
+- **Iframes.** A selector picked inside a frame remembers which frame it came
+  from, and is addressed to that frame at run time. Frames are matched by URL,
+  because frame ids do not survive a reload.
+
 ### Detect Table
 
 Building a scrape usually means knowing CSS selectors before you start: name a
@@ -226,6 +244,14 @@ real one.
 Detect Table picks the obvious ones for you: link columns become absolute URLs,
 and a column that is mostly currency is read as a number. Conservative on
 purpose, and visible in the field row so you can change it.
+
+Two transforms parse rather than clean. `base64` decodes content a page is
+hiding behind it, and gives back nothing rather than a mangled string when the
+input was never base64. `regex` pulls a substring out with a pattern and a
+capture group — 0 for the whole match — which is how an id comes out of
+`/product/1234-name`. Its flags are limited to `i`, `m` and `s`: those are the
+ones JavaScript and Python spell the same way, and a pipeline has to agree with
+the scripts it generates.
 
 The transforms live in [`utils/value-transforms.js`](utils/value-transforms.js)
 and both script emitters apply the same ones, so an exported script produces the

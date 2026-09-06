@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 166 findings — 20 blocker · 45 high · 72 medium · 30 low. The
+**Totals:** 167 findings — 21 blocker · 45 high · 72 medium · 30 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 6        |
+| K · Capability review           | 7        |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 164 of 166 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 165 of 167 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -1788,6 +1788,45 @@ was wrong. Every value transform was affected, not just the new one.
 The same family as B-27, A-13 and the "Unknown step type" errors: one job, two
 paths, and only one of them maintained. Both call the one transformer now, and a
 test asserts there is exactly one definition and two call sites.
+
+### K-07 · BLOCKER · Frames that arrived late never got the script
+
+_Reported as "not working iframe", after K-03 shipped._
+
+K-03 was necessary and not sufficient. `_ensureInjected` pinged frame 0 and
+returned the moment the top document answered, so a frame that appeared **after**
+that first injection never got the script at all: a lazy iframe, one that
+arrives with a tab, one that navigates on interaction.
+
+Almost anything the user does injects the top document first — opening the
+panel, testing a step, an earlier run. So by the time they reached for the
+picker, the top frame answered "already there", the iframes had nothing in them,
+the picker armed only in the page, and clicking inside a frame reached nobody at
+all. Both halves failed together: nothing could be picked in a frame, and no
+step could run in one.
+
+The earlier verification missed it because the test injected `allFrames: true`
+by hand before picking, and because a page whose iframes are in its initial HTML
+happens to work — the first injection catches them. Reproduced by adding the
+iframes 1.2 seconds after load, which is what a real site does:
+
+|                     | before                          | after                                 |
+| ------------------- | ------------------------------- | ------------------------------------- |
+| frame 0             | injected                        | injected                              |
+| same-origin iframe  | **not injected**                | injected                              |
+| cross-origin iframe | **not injected**                | injected                              |
+| pick inside a frame | **timed out, nothing answered** | returns that frame's selector and URL |
+
+Every frame is asked now, rather than the top document standing in for all of
+them, and only the frames that lack the script are injected — it survives a
+second evaluation since K-01, but it is 167 KB and there is no reason to send it
+somewhere it already is. A single frame refusing (a sandboxed ad, an
+`about:blank` placeholder) no longer fails the page; only the top document
+refusing does.
+
+Verified end to end through the panel's own path on a page with two late
+iframes: `content:ensure`, pick in each, run the step, and each returns **that
+frame's** rows.
 
 ---
 

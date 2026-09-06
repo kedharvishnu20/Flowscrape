@@ -237,3 +237,56 @@ test("both paths call one transformer, not two copies", () => {
     "expected one definition and two call sites (run + test)",
   );
 });
+
+// ── K-07: frames that arrive late never got the script ──────────────────────
+//
+// The reason K-03's fix still did not work in practice. _ensureInjected pinged
+// frame 0 and returned the moment it answered, so a frame that appeared *after*
+// that first injection never got the script — a lazy iframe, one that arrives
+// with a tab, one that navigates on interaction. Almost anything the user does
+// injects the top document first, so by the time they reached for the picker
+// the top frame said "already there" and the iframes had nothing in them: the
+// picker armed only in the page, and clicking inside a frame reached nobody.
+//
+// Reproduced in Chromium with an iframe added 1.2s after load: both frames came
+// back injected=false and the pick timed out with no answer at all.
+
+test("every frame is checked, not just the top document", () => {
+  const fn = worker.slice(
+    worker.indexOf("async function _ensureInjected"),
+    worker.indexOf("async function _frameIds"),
+  );
+  assert.ok(fn.length > 0, "the _ensureInjected slice is wrong");
+  assert.match(
+    fn,
+    /target: \{ tabId, allFrames: true \},\s*\n\s*func: \(\) => Boolean\(globalThis\.__fsInjected\)/,
+    "it does not probe the frames",
+  );
+  assert.ok(
+    !/sendMessage\(\s*\n?\s*tabId,\s*\n?\s*\{ type: "fs:ping" \}/.test(fn),
+    "it still short-circuits on a ping to frame 0",
+  );
+});
+
+test("only the frames that need it are injected", () => {
+  // injector.js survives a second evaluation (K-01), but it is 167 KB and
+  // there is no reason to send it to a frame that already has it.
+  const fn = worker.slice(
+    worker.indexOf("async function _ensureInjected"),
+    worker.indexOf("async function _frameIds"),
+  );
+  assert.match(fn, /const missing = probe/);
+  assert.match(fn, /if \(missing\.length === 0\) return;/);
+  assert.match(fn, /target: \{ tabId, frameIds: missing \}/);
+});
+
+test("one frame refusing does not fail the whole page", () => {
+  // A sandboxed ad or an about:blank placeholder can refuse injection while
+  // the page is perfectly usable. Only the top document refusing is fatal.
+  const fn = worker.slice(
+    worker.indexOf("async function _ensureInjected"),
+    worker.indexOf("async function _frameIds"),
+  );
+  assert.match(fn, /if \(missing\.includes\(0\)\)/);
+  assert.match(fn, /frame-inject-partial/);
+});

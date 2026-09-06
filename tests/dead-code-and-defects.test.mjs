@@ -68,11 +68,24 @@ test("the worker injects on demand, and only once per tab", () => {
   const fn = swSrc.match(
     /async function _ensureInjected\(tabId\) \{[\s\S]*?\n\}/,
   )[0];
-  assert.match(fn, /type: "fs:ping"/, "ask before injecting");
+  // Ask before injecting — but ask every frame, not just the top document.
+  // Pinging frame 0 and returning on its answer meant a frame that appeared
+  // after the first injection never got the script at all (K-07).
   assert.match(
     fn,
-    /if \(alive\?\.ok\) return;/,
+    /func: \(\) => Boolean\(globalThis\.__fsInjected\)/,
+    "ask before injecting",
+  );
+  assert.match(fn, /allFrames: true/, "the probe must reach every frame");
+  assert.match(
+    fn,
+    /if \(missing\.length === 0\) return;/,
     "a second injection would double every reply",
+  );
+  assert.match(
+    fn,
+    /target: \{ tabId, frameIds: missing \}/,
+    "only the frames that lack it",
   );
   assert.match(fn, /chrome\.scripting\.executeScript/);
   // Order matters: injector.js dispatches to globals the others define.

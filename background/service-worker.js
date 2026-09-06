@@ -516,24 +516,22 @@ const CONTENT_FILES = [
 async function _ensureInjected(tabId) {
   if (!tabId) throw new Error("No tab to inject into");
 
-  // Aimed at the top document: an unqualified sendMessage reaches every frame
-  // and returns the first answer, so an iframe could report "already injected"
-  // for a page whose top document has no script at all.
-  const alive = await chrome.tabs
-    .sendMessage(tabId, { type: "fs:ping" }, { frameId: 0 })
-    .catch(() => null);
-  if (alive?.ok) return;
-
+  // Ask every frame whether it has the script, not just the top document.
+  //
+  // This used to ping frame 0 and return the moment it answered. Frames that
+  // appeared *after* that first injection therefore never got the script: a
+  // lazy iframe, one that arrives when a tab is opened, one that navigates on
+  // interaction. Since almost anything the user does injects the top document
+  // first, by the time they reached for the picker the top frame answered
+  // "already there" and the iframes had nothing in them at all — so the picker
+  // armed only in the page, clicking inside a frame reached nobody, and both
+  // picking and running a step in an iframe failed. Reproduced with an iframe
+  // added 1.2s after load.
+  let probe;
   try {
-    await chrome.scripting.executeScript({
-      // Every frame, not just the top document. An iframe is a separate
-      // document rather than a branch of its parent's DOM, so a script in the
-      // top frame cannot see into one at all — which is why nothing could
-      // touch an element inside an iframe. injector.js guards against being
-      // evaluated twice, so re-injecting a frame that is already set up is
-      // harmless.
+    probe = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      files: CONTENT_FILES,
+      func: () => Boolean(globalThis.__fsInjected),
     });
   } catch (err) {
     // chrome:// pages, the Web Store, and PDF viewers refuse injection. Saying
@@ -542,6 +540,36 @@ async function _ensureInjected(tabId) {
       `Cannot run steps on this page (${err.message}). Chrome blocks extensions ` +
         `on chrome:// pages, the Web Store and PDF viewers.`,
     );
+  }
+
+  const missing = probe
+    .filter((r) => r.result !== true)
+    .map((r) => r.frameId)
+    .filter((id) => id !== undefined);
+  if (missing.length === 0) return;
+
+  try {
+    await chrome.scripting.executeScript({
+      // Only the frames that need it. injector.js survives a second evaluation
+      // (K-01), but it is 167 KB and there is no reason to send it to a frame
+      // that already has it.
+      target: { tabId, frameIds: missing },
+      files: CONTENT_FILES,
+    });
+  } catch (err) {
+    // A single frame can refuse — a sandboxed ad, an about:blank placeholder —
+    // without the page as a whole being unusable. Only give up when the top
+    // document is the one that refused.
+    if (missing.includes(0)) {
+      throw new Error(
+        `Cannot run steps on this page (${err.message}). Chrome blocks extensions ` +
+          `on chrome:// pages, the Web Store and PDF viewers.`,
+      );
+    }
+    logger.warn(MODULE, "frame-inject-partial", {
+      error: err.message,
+      frames: missing.length,
+    });
   }
 }
 

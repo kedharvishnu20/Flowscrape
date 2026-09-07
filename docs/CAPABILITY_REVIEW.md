@@ -57,7 +57,7 @@ named in the log, with no toggle (K-14).
 | `API`             | Retry on 429/5xx with `Retry-After`      | The rate limiter paces steps, but a single API step that gets a 429 just fails                                                                            |
 | `UPLOAD_ACTIVITY` | Drag-drop upload zones                   | Sites with no `<input type=file>` — increasingly common                                                                                                   |
 | `IF_ELSE`         | Comparing two extracted values           | "If price < last-seen price". Conditions test one selector against a literal                                                                              |
-| `LOOP`            | Loop over a list (an API result, a CSV)  | Iterating 500 product URLs from a file needs a data-source loop; only elements/count/paginate exist                                                       |
+| `LOOP`            | Loop over a list (an API result, a CSV)  | Iterating 500 product URLs from a file needs a data-source loop. Numbered and URL-pattern paginators are covered now (K-20); a data source is not         |
 | `EXPORT`          | Append to an existing file               | A run per day into one dataset                                                                                                                            |
 | `PDF_EXTRACTION`  | Tables                                   | PDF tables come out as a text blob                                                                                                                        |
 

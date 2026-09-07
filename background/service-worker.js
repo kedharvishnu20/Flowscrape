@@ -48,6 +48,9 @@ import {
   loadPool,
   selectProxy,
   rotateProxy,
+  clearProxy,
+  _applyProxy,
+  getPool,
   markProxyFailure,
   testAllProxies,
   parseProxyText,
@@ -370,6 +373,23 @@ async function _bootstrap() {
   await loadPool().catch((err) =>
     logger.error(MODULE, "pool-load-fail", { error: err.message }),
   );
+  // A run that was routing through a proxy when this worker was terminated
+  // left the browser proxied and took the only record of that with it. This
+  // worker starts with no run in flight, so anything still held is stale and
+  // the user's whole browser is going somewhere they did not choose.
+  const held = await chrome.storage.local
+    .get(STORAGE_PROXY_HELD_KEY)
+    .catch(() => ({}));
+  if (held?.[STORAGE_PROXY_HELD_KEY]) {
+    await clearProxy().catch((err) =>
+      logger.error(MODULE, "stale-proxy-clear-fail", { error: err.message }),
+    );
+    await chrome.storage.local.remove(STORAGE_PROXY_HELD_KEY).catch(() => {});
+    logger.warn(MODULE, "stale-proxy-cleared", {
+      runId: held[STORAGE_PROXY_HELD_KEY].runId,
+    });
+  }
+
   // Runs that were in flight when this worker was terminated. Their rows are
   // still in IndexedDB; nothing can resume the pipeline itself.
   const resumable = await getResumePayload().catch(() => null);
@@ -994,6 +1014,10 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
     // Half of what SOLVE_CAPTCHA needs. Strict equality, because an absent
     // field must never read as permission.
     captchaAuthorized: payload.captchaAuthorized === true,
+    // Off unless the run asks. Chrome has one proxy setting for the whole
+    // browser, so this is never a default.
+    useProxy: payload.useProxy === true,
+    proxyRotateEvery: Number(payload.proxyRotateEvery) || 0,
     allowedOrigins: collectDeclaredOrigins(
       pipeline.steps ?? [],
       payload.targetOrigin,
@@ -1003,6 +1027,7 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
   };
   _runStates.set(runId, runState);
   _startHeartbeat(); // only needed while a run is in flight
+  await _startRunProxy(runState);
 
   // The content scripts are no longer declared for every page (C-09), so put
   // them in before the first step needs them. Failing here is better than
@@ -2601,6 +2626,9 @@ async function _waitForTabLoad(tabId, timeoutMs = NAV_TIMEOUT_MS) {
 async function _navigateTo(tabId, url, runState, runId, opts = {}) {
   const { wait = true, timeoutMs, what = "NAVIGATE" } = opts;
   _assertOriginAllowed(url, runState, what);
+  // Before the request, not after: rotating once the page has loaded would
+  // move the proxy for the *next* navigation while attributing it to this one.
+  await _maybeRotateProxy(runState);
   await chrome.tabs.update(tabId, { url });
   if (!wait) {
     // The caller asked not to wait; still give the navigation a beat to
@@ -3206,6 +3234,124 @@ async function _askGatewayForCaptcha(tabId, found, runId) {
   };
 }
 
+// ── Proxies, during a run ────────────────────────────────────────────────────
+//
+// The pool has always parsed, health-checked, deduped and rotated, and no run
+// has ever consulted it (A-05). Wiring it up is less about rotation than about
+// one fact that shapes everything here: `chrome.proxy.settings.set` is
+// **browser-wide**. There is no per-tab proxy in an extension, so a run that
+// takes a proxy takes the user's whole browser with it — their other tabs,
+// their mail, their bank. That is why this is off unless asked for, says so in
+// the log when it starts, and is cleared on every way a run can end, including
+// the ones nobody plans for.
+
+/** Set while a run holds the browser's proxy setting, so it can be given back. */
+const STORAGE_PROXY_HELD_KEY = "fs_proxy_held_v1";
+
+/**
+ * Take a proxy for this run, if it asked for one and the pool has a live entry.
+ *
+ * Returns quietly when proxying is off, which is the ordinary case: a tool that
+ * silently routed traffic somewhere would be a worse failure than one that does
+ * nothing.
+ */
+async function _startRunProxy(runState) {
+  if (!runState?.useProxy) return;
+  const entry = selectProxy({ domain: _hostOf(runState.targetOrigin) });
+  if (!entry) {
+    _broadcastLog(
+      "warn-log",
+      "Proxy rotation is on, but no proxy in the pool is alive — the run is " +
+        "going direct. Test the pool in Settings.",
+      runState.runId,
+    );
+    return;
+  }
+  try {
+    await _applyProxy(entry);
+  } catch (err) {
+    _broadcastLog(
+      "warn-log",
+      `Could not apply a proxy (${err.message}) — the run is going direct.`,
+      runState.runId,
+    );
+    return;
+  }
+  runState.proxyHeld = true;
+  // Recorded outside the run state as well: a service worker that is torn down
+  // mid-run loses `_runStates`, and the browser would be left proxied with
+  // nothing remembering to undo it. Bootstrap reads this.
+  await chrome.storage.local
+    .set({
+      [STORAGE_PROXY_HELD_KEY]: { runId: runState.runId, at: Date.now() },
+    })
+    .catch(() => {});
+  // Never the credentials, and never at info level as a passing detail: this
+  // is the whole browser's traffic, which the person should know about.
+  _broadcastLog(
+    "warn-log",
+    `This run is routing through ${entry.host}:${entry.port} (${entry.type}). ` +
+      "Chrome has one proxy setting for the whole browser, so every tab goes " +
+      "through it until the run ends.",
+    runState.runId,
+  );
+}
+
+/**
+ * Move to the next proxy, if the run asked to rotate on a cadence.
+ *
+ * Counted in navigations rather than in steps: a page load is what a site sees
+ * as a visit, and "every 5 steps" would rotate mid-page, which changes the
+ * proxy between a click and the response it was waiting for.
+ */
+async function _maybeRotateProxy(runState) {
+  if (!runState?.proxyHeld) return;
+  const every = Number(runState.proxyRotateEvery);
+  if (!Number.isFinite(every) || every < 1) return;
+  runState.proxyNavCount = (runState.proxyNavCount ?? 0) + 1;
+  if (runState.proxyNavCount % every !== 0) return;
+  const next = await rotateProxy({
+    domain: _hostOf(runState.targetOrigin),
+  }).catch(() => null);
+  if (next) {
+    _broadcastLog(
+      "info-log",
+      `Rotated to ${next.host}:${next.port} after ${runState.proxyNavCount} page loads.`,
+      runState.runId,
+    );
+  }
+}
+
+/**
+ * Give the browser back its own connection.
+ *
+ * Called on every exit from a run — completed, stopped, crashed — and on
+ * bootstrap for a run that was cut off before it could get here.
+ */
+async function _endRunProxy(runState) {
+  const held = runState?.proxyHeld;
+  if (runState) runState.proxyHeld = false;
+  await chrome.storage.local.remove(STORAGE_PROXY_HELD_KEY).catch(() => {});
+  if (!held) return;
+  try {
+    await clearProxy();
+    _broadcastLog(
+      "info-log",
+      "Proxy released — the browser is back on its own connection.",
+      runState?.runId,
+    );
+  } catch (err) {
+    // Worth shouting about: the browser is still proxied and the run that
+    // asked for it is over.
+    _broadcastLog(
+      "error-log",
+      `Could not release the proxy (${err.message}). Clear it in Settings — ` +
+        "every tab is still going through it.",
+      runState?.runId,
+    );
+  }
+}
+
 // ── Solving, and the two things it needs before it will ──────────────────────
 
 /**
@@ -3618,6 +3764,7 @@ async function _executePipeline(runId, pipeline, targetTabId) {
 
   await finalizeBuffer(runId).catch(() => {});
   await _disableSniffer(runId);
+  await _endRunProxy(_runStates.get(runId));
 
   const endRunState = _runStates.get(runId);
   const stateStr = endRunState?.active ? "completed" : "stopped";
@@ -4113,6 +4260,9 @@ export const __testing = {
   _resolveConfig,
   _runStates,
   _captchaAttested,
+  _startRunProxy,
+  _maybeRotateProxy,
+  _endRunProxy,
 };
 
 // === END service-worker.js ===

@@ -20,6 +20,10 @@ export const calls = {
   downloads: [],
   scriptingRegistered: [],
   injections: [],
+  // Proxy settings are browser-wide, so a test has to be able to see both
+  // halves: what was applied, and whether it was given back.
+  proxySets: [],
+  proxyClears: [],
 };
 
 export function reset() {
@@ -157,10 +161,12 @@ globalThis.chrome = {
       get(_d, cb) {
         cb({ value: { mode: "system" } });
       },
-      set(_d, cb) {
+      set(details, cb) {
+        calls.proxySets.push(details);
         cb();
       },
-      clear(_d, cb) {
+      clear(details, cb) {
+        calls.proxyClears.push(details);
         cb();
       },
     },
@@ -204,6 +210,9 @@ export const {
   _assertOriginAllowed,
   _resolveStr,
   _runStates,
+  _startRunProxy,
+  _maybeRotateProxy,
+  _endRunProxy,
 } = worker.__testing;
 
 /**

@@ -2425,6 +2425,28 @@
               >
                 Update Pool
               </button>
+              <!-- A-05: the pool existed and no run ever consulted it. Off by
+                   default and worded plainly, because Chrome has one proxy
+                   setting for the whole browser: a run that takes a proxy
+                   takes every other tab with it. -->
+              <div class="toggle-wrap" style="margin-top: 14px">
+                <input type="checkbox" id="use-proxy" />
+                <div class="toggle-switch"></div>
+                <span>Route runs through the pool</span>
+              </div>
+              <p class="prose" style="font-size: 11px; margin: 6px 0 10px">
+                Chrome has a single proxy setting for the whole browser, so
+                while a run is using one, every tab is going through it. It is
+                released when the run ends.
+              </p>
+              <label>Rotate every N page loads (0 = keep one proxy)</label>
+              <input
+                type="number"
+                id="proxy-rotate-every"
+                min="0"
+                max="1000"
+                value="0"
+              />
             </div>
           </div>
         </div>

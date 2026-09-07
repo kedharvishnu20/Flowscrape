@@ -141,8 +141,8 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 180 of 182 findings fixed; A-05 and A-07 left by
-decision, as set out above. A-06 was a third — the dead captcha detector — and
+**Still open: nothing.** 181 of 182 findings fixed; A-07 (a phantom `FORM_FILL`
+step type) is the one left by decision. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
@@ -2429,3 +2429,43 @@ plainly because they are the product decision:
 The log says which path answered — "solved on this machine, at no cost" or
 "answered by the model you configured" — because that distinction is the whole
 promise of the free tier.
+
+### A-05 · BLOCKER · The proxy pool was never consulted by a run — now closed
+
+Recorded as left-by-decision for most of this audit, and it was the clearest
+example in the codebase of a feature that looks finished and does nothing: the
+pool parses text, JSON and CSV, infers protocols, dedupes, health-checks with
+latency, counts failures, and rotates round-robin, randomly, stickily or by
+country. `selectProxy` was reachable from one message the panel sends by hand.
+No run ever called it.
+
+The wiring is the small part. What shapes it is a fact about Chrome:
+**`chrome.proxy.settings.set` is browser-wide.** An extension cannot proxy one
+tab. A run that takes a proxy takes the user's whole browser with it — their
+other tabs, their mail, their bank — and the dangerous failure is not "the
+proxy did not apply", it is "the run ended and the browser is still going
+through somebody else's server".
+
+So:
+
+- **Off unless the run asks.** A toggle read at Run, not stored on the pipeline:
+  routing traffic somewhere is a decision about this run on this machine, not a
+  property of a pipeline somebody might share.
+- **It says so, at warning level**, naming the host and stating plainly that
+  every tab is going through it until the run ends. Never the credentials
+  (C-03).
+- **Released on every exit** — completed, stopped, crashed.
+- **And on the exit nobody plans for.** A service worker terminated mid-run
+  loses `_runStates`, and with it the only record that a proxy is held, so the
+  fact is written to `chrome.storage.local` as well and bootstrap clears
+  anything stale: a new worker has no run in flight, so a proxy still held is
+  one nobody is using.
+- **Rotation is counted in page loads, not steps.** A step is not a visit, and
+  rotating between a click and the response it is waiting for changes the proxy
+  mid-request, which is how a session breaks.
+
+A run that asks for a proxy when nothing in the pool is alive goes direct and
+says so, rather than failing: a dead pool is not a reason to throw away the
+rows.
+
+Eight tests, and most of them are about the giving back rather than the taking.

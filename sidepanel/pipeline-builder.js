@@ -711,6 +711,12 @@ function bindGlobalControls() {
       bypassRobots,
       captchaEnabled: solvesCaptcha,
       captchaAuthorized,
+      // Read at Run rather than stored on the pipeline: routing traffic
+      // somewhere is a decision about this run on this machine, not a property
+      // of a pipeline somebody might share.
+      useProxy: document.getElementById("use-proxy")?.checked || false,
+      proxyRotateEvery:
+        Number(document.getElementById("proxy-rotate-every")?.value) || 0,
     };
 
     // Pre-flight: run the ethics gates and show the user what they found before

@@ -156,22 +156,6 @@ export const CHALLENGES = [
       rows: 10,
       columns: ["name", "author", "stars", "price"],
     },
-    // Real defect, found only once this ran against the real markup (K-16):
-    // the real price cell is `<td><span>$</span>10.49</td>`, not plain text.
-    // structure-detector.js's columnsOf() emits a column for the <td> itself
-    // (value "10.49", correctly named "price" via its header) *and* a second
-    // column for the <span> (value "$", constant) — the span's selector
-    // "td:nth-of-type(4) > span" maps to the same header via cellIndex's
-    // leftmost-token rule, so both are named "price" and uniquifyNames
-    // renames the second to "price 2" rather than dropping it. The value
-    // extracted for "price" is still correct (EXTRACT ignores Detect Table's
-    // guess and uses the fixed selectors below), so the pipeline and its
-    // check still run and still have to pass — only the Detect Table
-    // assertion is the known gap.
-    detectGap:
-      "real markup wraps the price in <span>$</span>, which Detect Table " +
-      'reports as a bogus extra "price 2" column alongside the correct ' +
-      '"price" one — see the comment above',
     pipeline: [
       {
         type: "EXTRACT",

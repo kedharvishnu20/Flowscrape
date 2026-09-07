@@ -345,3 +345,63 @@ test("a label inside a named cell does not become its own column", () => {
   );
   assert.deepEqual(JSON.parse(JSON.stringify(names(t))), ["country", "detail"]);
 });
+
+// ── K-19: a cell that mixes text with an element is still one column ────────
+
+test("a currency symbol beside the price does not become a second column", () => {
+  // The real parse challenge writes `<td><span>$</span>10.49</td>`. The cell's
+  // own text is "10.49" and the span's is "$" — disjoint pieces of one cell,
+  // so "drop a column already contained in a shallower one" could not see they
+  // were the same field. Both then matched the same <th>, and the table came
+  // back with "price" and "price 2".
+  const rows = B.map(
+    ([n, p]) => `<tr><td>${n}</td><td><span>$</span>${p}</td></tr>`,
+  ).join("");
+  const t = top(
+    `<table><thead><tr><th>name</th><th>price</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table>`,
+  );
+  const got = names(t);
+  assert.ok(got.includes("price"), got.join(", "));
+  assert.equal(
+    got.filter((n) => n.startsWith("price")).length,
+    1,
+    `the price column appears more than once: ${got.join(", ")}`,
+  );
+});
+
+test("a cell whose text is entirely inside one child still yields that child once", () => {
+  // The guard above must not swallow the ordinary wrapper case: here the <td>
+  // has no text of its own, so the anchor is the only thing carrying the value
+  // and the column has to survive.
+  const rows = B.map(
+    ([n, p]) => `<tr><td><a href="/p/${n}">${n}</a></td><td>${p}</td></tr>`,
+  ).join("");
+  const t = top(
+    `<table><thead><tr><th>name</th><th>price</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table>`,
+  );
+  const got = names(t);
+  assert.ok(got.includes("name"), got.join(", "));
+  assert.ok(got.includes("price"), got.join(", "));
+});
+
+test("columns come back in the page's order, not in coverage order", () => {
+  // Ranking by coverage decides which columns survive the cap; it is the wrong
+  // order to *present* them in. On the real parse challenge the name cell wraps
+  // its text in an <a>, making that column one level deeper, and the table came
+  // back price-first with name last — the same four columns the header row
+  // lists left to right, shuffled.
+  const rows = B.map(
+    ([n, p]) => `<tr><td><a href="/p/${n}">${n}</a></td><td>${p}</td></tr>`,
+  ).join("");
+  const t = top(
+    `<table><thead><tr><th>name</th><th>price</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table>`,
+  );
+  // Spread into this realm's Array first: the detector runs inside the jsdom
+  // VM context, so what it returns is an Array from *there*, and
+  // deepStrictEqual compares prototypes before contents.
+  const got = [...names(t)].filter((n) => n === "name" || n === "price");
+  assert.deepEqual(got, ["name", "price"], names(t).join(", "));
+});

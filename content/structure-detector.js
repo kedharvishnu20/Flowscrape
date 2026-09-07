@@ -577,6 +577,13 @@
               ...extra,
               hits: 0,
               samples: [],
+              // The element's whole rendered text, kept beside the sample
+              // because they are not the same thing and the containment pass
+              // below needs the difference. See the note there.
+              fulls: [],
+              // Where this column sits in the record, in document order. The
+              // detector walks the DOM in order, so first-seen is left-to-right.
+              order: found.size,
               depth: 0,
               // Which cell of the record this is, when it is one. A <th> row
               // names its columns by position, and only a positional selector
@@ -599,6 +606,7 @@
             seen.add(id);
           }
           col.samples.push(sample);
+          if (kind === "text") col.fulls.push(full);
         }
       }
     }
@@ -650,6 +658,14 @@
 
     // Drop a text column whose value is already inside a shallower one. A list
     // and each of its items are not four columns, they are one.
+    //
+    // Compared against the shallower column's *whole* text, not its sample.
+    // Those differ exactly when a cell mixes text with an element —
+    // `<td><span>$</span>10.49</td>` — because a cell's sample is its own text
+    // nodes only, so the two read "10.49" and "$": disjoint pieces of one cell
+    // rather than one containing the other, and this pass let the `<span>`
+    // through as a second column. The page's header row then named both of
+    // them, and the price column appeared twice, the second as "price 2".
     const texts = columns.filter((c) => c.kind === "text");
     columns = columns.filter((col) => {
       if (col.kind !== "text") return true;
@@ -659,14 +675,21 @@
         (other) =>
           other !== col &&
           other.depth < col.depth &&
-          (other.samples[0] ?? "").includes(mine),
+          (other.fulls[0] ?? other.samples[0] ?? "").includes(mine),
       );
     });
 
     const named0 = columnNames;
     const named = columns
+      // Two different jobs, so two different orders. Ranking by coverage picks
+      // *which* columns survive the cap — the ones present in most records are
+      // the real ones. But a reader expects the columns in the order the page
+      // has them: a table whose header says name, author, stars, price should
+      // not come back price-first because the price cell happened to be the
+      // shallowest. So rank, cut, then restore document order.
       .sort((a, b) => b.hits - a.hits || a.depth - b.depth)
       .slice(0, MAX_FIELDS)
+      .sort((a, b) => a.order - b.order)
       .map((c) => ({
         name: nameFrom(c.selector, c.kind, named0, c.childIndex ?? -1),
         selector: c.selector,

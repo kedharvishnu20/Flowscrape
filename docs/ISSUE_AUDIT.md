@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 178 findings — 23 blocker · 50 high · 76 medium · 29 low. The
+**Totals:** 179 findings — 23 blocker · 50 high · 77 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 18       |
+| K · Capability review           | 19       |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 176 of 178 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 177 of 179 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2299,3 +2299,33 @@ then, and already defers its own document report to `DOMContentLoaded`.
 | ------ | ------------------------------------- |
 | before | 2 of 3 passing, no pattern            |
 | after  | 5 of 5 passing                        |
+
+### K-19 · MEDIUM · A currency symbol became a second price column
+
+The real parse challenge writes its price cell as
+`<td><span>$</span>10.49</td>`. Detect Table offered five columns for a
+four-column table: `name`, `author`, `stars`, `price`, and `price 2`.
+
+The pass that exists to catch exactly this — "drop a text column whose value is
+already inside a shallower one" — could not see it. It compared the `<td>`'s
+sample against the `<span>`'s, and a cell's sample is its **own** text nodes
+only. So the two read `"10.49"` and `"$"`: disjoint pieces of one cell rather
+than one containing the other. Both then matched the same `<th>` through
+`cellIndex`'s leftmost-token rule, both were named `price`, and `uniquifyNames`
+renamed the second rather than dropping it.
+
+Each column now carries its element's whole rendered text beside its sample,
+and the containment pass compares against that. `"$10.49"` contains `"$"`, so
+the span drops. The merge conditions and the wrapper-skip are untouched, which
+matters: those are the shared paths the 37-shape battery exercises.
+
+**And the columns come back in the page's own order.** Ranking by coverage is
+right for deciding which columns survive the cap and wrong for presenting them:
+the real page wraps its name in an `<a>`, making that column a level deeper, so
+the table came back price-first with name last — the header row's four columns,
+shuffled. Rank, cut, then restore document order.
+
+|        | detected on the real page           |
+| ------ | ----------------------------------- |
+| before | price, author, stars, price 2, name |
+| after  | name, author, stars, price          |

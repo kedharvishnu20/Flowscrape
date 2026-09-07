@@ -87,6 +87,22 @@ test("a page-supplied filename that is nothing but traversal still names a file"
   assert.equal(path, "evil.sh");
 });
 
+test("a template naming a field that is not there keeps the folder", () => {
+  // Found by an adversarial pass over the builder rather than by a failing
+  // run. Filtering empty segments out before taking the last one promoted the
+  // *folder* into the filename: `shots/{{missing}}` saved every file in the
+  // run as `shots.jpg`, each overwriting the last, and the folder the author
+  // asked for was gone. A missing field is a typo, and a typo should cost a
+  // name, not a directory and the whole set of files.
+  const facts = { index: 7, name: "photo.jpg", stem: "photo", ext: "jpg" };
+  const path = _resolveDownloadPath(
+    "shots/{{nope.missing}}",
+    { file: facts },
+    facts,
+  );
+  assert.equal(path, "shots/photo.jpg");
+});
+
 test("a name the template left without an extension gets the URL's", () => {
   const facts = { index: 2, name: "cover.jpg", stem: "cover", ext: "jpg" };
   assert.equal(

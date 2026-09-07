@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 182 findings — 23 blocker · 51 high · 79 medium · 29 low. The
+**Totals:** 186 findings — 24 blocker · 52 high · 81 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 22       |
+| K · Capability review           | 25       |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 181 of 182 findings fixed; A-07 (a phantom `FORM_FILL`
+**Still open: nothing.** 185 of 186 findings fixed; A-07 (a phantom `FORM_FILL`
 step type) is the one left by decision. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2488,6 +2488,18 @@ template referring to anything a standalone script does not have
 unexportable thing is, instead of being emitted with the value silently blank.
 
 Twenty-three tests, four of them on the filename.
+
+An adversarial pass over the filename builder after the fact found one more
+thing, which no run had hit yet: empty segments were filtered out _before_ the
+last one was taken as the name, so a template naming a field that did not exist
+— `shots/{{missing}}` — promoted the folder into the filename. Every file in
+the run saved as `shots.jpg`, each overwriting the last, and the folder the
+author asked for was gone. A typo should cost a name, not a directory and the
+whole set of files.
+
+The traversal defence held under every input tried at it: `../../etc/passwd`,
+`....//....//`, backslash paths, a Windows drive letter, a null byte, a
+400-character name, and a value that is nothing but `..`.
 
 ### K-26 · MEDIUM · `SCROLL` could only measure the document, never a container
 

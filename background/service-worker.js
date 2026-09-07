@@ -2087,14 +2087,20 @@ function _fileFacts(target, index) {
  * @returns {string}
  */
 function _resolveDownloadPath(template, ctx, facts) {
-  const segments = String(template ?? "")
+  const resolved = String(template ?? "")
     .split("/")
-    .map((segment) => _safeSegment(_resolveStr(segment, ctx)))
-    .filter(Boolean)
-    .slice(0, 8);
+    .map((segment) => _safeSegment(_resolveStr(segment, ctx)));
 
-  let name =
-    segments.pop() || _safeSegment(facts.name) || `file-${facts.index}`;
+  // The last segment is the name, whether or not it survived resolution.
+  // Filtering the empties out *before* taking it promoted a folder into the
+  // filename the moment a template referenced a field that was not there:
+  // `shots/{{missing}}` saved every file as `shots.jpg`, one overwriting the
+  // next, and the folder the author asked for was gone. The folders are
+  // filtered; the name falls back to the file's own.
+  const last = resolved.pop() ?? "";
+  const segments = resolved.filter(Boolean).slice(0, 8);
+
+  let name = last || _safeSegment(facts.name) || `file-${facts.index}`;
   if (facts.ext && !new RegExp(`\\.${facts.ext}$`, "i").test(name)) {
     if (!/\.[A-Za-z0-9]{1,8}$/.test(name)) name = `${name}.${facts.ext}`;
   }

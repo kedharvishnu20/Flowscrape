@@ -1,8 +1,12 @@
-// === extract-runtime.js ===
+// === page-runtime.js ===
 /**
- * @module extract-runtime
- * @description The one definition of "what does this element say", shared by
- *   both emitters.
+ * @module page-runtime
+ * @description The page-side rules both emitters ship into the browser.
+
+ *   Two questions the extension answers with real DOM code, and that a
+ *   generated script has to answer the same way or quietly disagree with the
+ *   pipeline it came from: what does this element *say*, and is this Next
+ *   control dead.
  *
  *   `content/injector.js` reads an element with a dozen small rules that only
  *   look fussy until you meet the pages that need them: an `<img>` answers with
@@ -59,4 +63,34 @@ export const EXTRACT_VALUE_JS = `(node, f) => {
   return (node.innerText || node.textContent || '').trim();
 }`;
 
-// === END extract-runtime.js ===
+/**
+ * Mirrors `_paginateDeadReason` and the anchor check in content/injector.js.
+ *
+ * The emitted scripts used to ask only `count() === 0 || !isEnabled()`, which
+ * misses every way a real paginator says "last page": `aria-disabled`, a
+ * `disabled` class on a `<span>`, an `<a>` with no `href`, a control the site
+ * hides with CSS. The script kept clicking a dead control and re-scraped the
+ * final page until the count ran out — the same bug the extension had, in the
+ * one place a test of the extension could not see it.
+ *
+ * Also reports where the control leads and whether it would open a second tab,
+ * so a `target="_blank"` paginator can be followed in the page the script is
+ * actually reading.
+ */
+export const PAGINATE_STATE_JS = `(el) => {
+  const dead = (() => {
+    if (el.disabled === true) return 'the Next control is disabled';
+    if (el.getAttribute('aria-disabled') === 'true') return 'the Next control is marked aria-disabled';
+    if (/(^|[\\s_-])(disabled|inactive|is-disabled)([\\s_-]|$)/i.test(el.className || '')) return 'the Next control is styled as disabled';
+    if (el.tagName === 'A' && !el.getAttribute('href')) return 'the Next link has no target';
+    const st = el.ownerDocument.defaultView?.getComputedStyle?.(el);
+    if (st && (st.display === 'none' || st.visibility === 'hidden')) return 'the Next control is hidden';
+    return '';
+  })();
+  const a = el.tagName === 'A' ? el : (el.closest ? el.closest('a') : null);
+  const target = String(a?.getAttribute('target') ?? '').trim().toLowerCase();
+  const sameTab = target === '' || target === '_self' || target === '_top';
+  return { dead, href: a?.href ?? '', newTab: Boolean(a) && !sameTab };
+}`;
+
+// === END page-runtime.js ===

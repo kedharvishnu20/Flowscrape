@@ -14,6 +14,7 @@ if (!globalThis.crypto?.subtle) globalThis.crypto = webcrypto;
 /** Everything the mocks observed, cleared between tests with reset(). */
 export const calls = {
   tabUpdates: [],
+  tabsRemoved: [],
   tabGets: [],
   contentMessages: [],
   runtimeMessages: [],
@@ -31,6 +32,7 @@ export function reset() {
   _tabStatuses = ["complete"];
   _onInject = () => {};
   _scriptResults = null;
+  _openedTabs.clear();
 }
 
 /**
@@ -93,6 +95,19 @@ function storageArea() {
  * Tests override this to simulate EXTRACT results or a failing step.
  * @type {(payload: object) => any}
  */
+const _tabCreatedListeners = new Set();
+const _openedTabs = new Map();
+
+/**
+ * Pretend the page opened a tab, the way a target="_blank" link does.
+ *
+ * @param {object} tab - { id, openerTabId, url }
+ */
+export function openTab(tab) {
+  _openedTabs.set(tab.id, { status: "complete", ...tab });
+  for (const fn of _tabCreatedListeners) fn(tab);
+}
+
 export let contentResponder = () => ({ ok: true, result: null });
 export function onContentMessage(fn) {
   contentResponder = fn;
@@ -116,7 +131,23 @@ globalThis.chrome = {
     async update(tabId, props) {
       calls.tabUpdates.push({ tabId, ...props });
     },
-    async get() {
+    // A paginator with target="_blank" opens a second tab, and the worker has
+    // to notice and move the run onto it. Nothing here fires by itself: a test
+    // that wants that shape calls openTab().
+    onCreated: {
+      addListener(fn) {
+        _tabCreatedListeners.add(fn);
+      },
+      removeListener(fn) {
+        _tabCreatedListeners.delete(fn);
+      },
+    },
+    async remove(tabId) {
+      calls.tabsRemoved.push(tabId);
+      _openedTabs.delete(tabId);
+    },
+    async get(tabId) {
+      if (_openedTabs.has(tabId)) return _openedTabs.get(tabId);
       calls.tabGets.push(Date.now());
       // A real tab reports "loading" until the document is ready. Tests that
       // care set _tabStatuses to the sequence they want to observe; the last

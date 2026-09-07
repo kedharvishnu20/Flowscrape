@@ -26,7 +26,7 @@ import {
 } from "../utils/step-types.js";
 import { parseFilenameTemplate } from "./pipeline-compiler.js";
 
-import { EXTRACT_VALUE_JS } from "./extract-runtime.js";
+import { EXTRACT_VALUE_JS, PAGINATE_STATE_JS } from "./page-runtime.js";
 
 const MODULE = "python-emitter";
 
@@ -179,6 +179,7 @@ export function emitPython(pipeline) {
     "# in one place, as JavaScript, and both emitted scripts send the same text",
     "# into the page.",
     `FS_READ_JS = """${EXTRACT_VALUE_JS}"""`,
+    `FS_PAGINATE_JS = """${PAGINATE_STATE_JS}"""`,
     "",
     "",
     "async def fs_read_el(el, f):",
@@ -749,6 +750,9 @@ function _emitStepBody(step) {
           `    _url = "${_escStr(tpl)}".replace("{page}", str(${start} + i * ${stride}))`,
           `    await page.goto(_url)`,
           `    await page.wait_for_load_state("networkidle")`,
+          // Nothing to probe in this mode, so a run asked for 20 pages of a
+          // 5-page site fetched 15 empty ones.
+          `    _rows_before = len(fs_rows)`,
         );
       } else {
         lines.push(`for i in range(${config.max ?? 10}):`);
@@ -757,13 +761,24 @@ function _emitStepBody(step) {
         // The emitted loop ignored paginate mode entirely: it ran the body N
         // times without ever clicking Next, so the script scraped page one N
         // times over.
+        // Then it asked only "does it exist and is it enabled", which misses
+        // every other way a paginator says "last page". FS_PAGINATE_JS is the
+        // extension's own reasons, sent into the page from the same source the
+        // Node script uses.
         lines.push(
           `    if i > 0:`,
           `        _next = page.locator("${_escStr(_sel(config.selector))}").first`,
-          `        if await _next.count() == 0 or not await _next.is_enabled():`,
-          `            print(f"Pagination: stopped after {i} page(s).")`,
+          `        _st = await _next.evaluate(FS_PAGINATE_JS) if await _next.count() else None`,
+          `        if not _st or _st["dead"]:`,
+          `            print("Pagination: stopped after {} page(s) — {}".format(i, _st["dead"] if _st else "no Next control on the page"), file=sys.stderr)`,
           `            break`,
-          `        await _next.click()`,
+          `        if _st["newTab"] and _st["href"]:`,
+          `            # target="_blank": clicking would load the next page in a`,
+          `            # tab this script is not reading, and the loop would`,
+          `            # re-scrape this one until the count ran out.`,
+          `            await page.goto(urljoin(page.url, _st["href"]))`,
+          `        else:`,
+          `            await _next.click()`,
           `        await page.wait_for_load_state("networkidle")`,
         );
       }
@@ -774,6 +789,15 @@ function _emitStepBody(step) {
         lines.push(...(bodyScope ? _pyWithin(bodyScope, emit) : emit()));
       }
       if (!step.children || step.children.length === 0) lines.push("    pass");
+      if (config.type === "paginate-url" && config.stopWhenEmpty !== false) {
+        // The same rule the run applies: only after a page that produced
+        // something, so a first page that is genuinely empty is not cut off.
+        lines.push(
+          `    if _rows_before > 0 and len(fs_rows) == _rows_before:`,
+          `        print("Pagination: stopped after {} page(s) — that page produced no rows.".format(i + 1), file=sys.stderr)`,
+          `        break`,
+        );
+      }
       lines.push("");
       return lines;
     }

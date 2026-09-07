@@ -180,6 +180,12 @@ export const STEP_TYPES = Object.freeze({
       urlTemplate: "",
       startPage: 1,
       pageStep: 1,
+      // paginate-url only: stop once a page yields no rows. That mode has
+      // nothing to probe — the template says where the pages are and `max`
+      // says how many — so without this a run asked for 20 pages of a 5-page
+      // site fetched 15 empty ones, or re-scraped the last one 15 times on a
+      // site that clamps the number.
+      stopWhenEmpty: true,
     },
   },
   PAGINATE: {

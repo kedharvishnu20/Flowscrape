@@ -16,7 +16,7 @@ import {
   retryDelayMs,
   paginationMaxPages,
 } from "../utils/step-types.js";
-import { EXTRACT_VALUE_JS } from "./extract-runtime.js";
+import { EXTRACT_VALUE_JS, PAGINATE_STATE_JS } from "./page-runtime.js";
 import { parseFilenameTemplate } from "./pipeline-compiler.js";
 const MODULE = "node-emitter";
 
@@ -666,6 +666,10 @@ function _emitNodeStepBody(step) {
           `  const _url = '${esc(tpl)}'.split('{page}').join(String(${start} + i * ${stride}));`,
           `  await page.goto(_url);`,
           `  await page.waitForLoadState('networkidle');`,
+          // This mode has nothing to probe, so a run asked for 20 pages of a
+          // 5-page site fetched 15 empty ones — and a site that clamps
+          // ?page=99 to the last page served the same rows 15 times instead.
+          `  const _rowsBefore = fsRows.length;`,
         );
       } else {
         lines.push(`for (let i = 0; i < ${config.max ?? 10}; i++) {`);
@@ -673,15 +677,26 @@ function _emitNodeStepBody(step) {
       if (config.type === "paginate" && config.selector) {
         // The emitted loop used to ignore paginate mode entirely: it ran the
         // body N times without ever clicking Next, so an exported script
-        // scraped page one N times over.
+        // scraped page one N times over. Then it asked only "does it exist and
+        // is it enabled", which misses every other way a paginator says "last
+        // page" — the same reasons the extension checks, now checked here from
+        // the same source.
         lines.push(
           `  if (i > 0) {`,
           `    const _next = page.locator('${esc(_sel(config.selector))}').first();`,
-          `    if ((await _next.count()) === 0 || !(await _next.isEnabled())) {`,
-          `      console.log(\`Pagination: stopped after \${i} page(s).\`);`,
+          `    const _st = (await _next.count()) ? await _next.evaluate(${PAGINATE_STATE_JS}) : null;`,
+          `    if (!_st || _st.dead) {`,
+          `      console.error(\`Pagination: stopped after \${i} page(s) — \${_st ? _st.dead : 'no Next control on the page'}.\`);`,
           `      break;`,
           `    }`,
-          `    await _next.click();`,
+          `    if (_st.newTab && _st.href) {`,
+          `      // target="_blank": clicking would load the next page in a tab`,
+          `      // this script is not reading, and the loop would re-scrape`,
+          `      // this one until the count ran out.`,
+          `      await page.goto(new URL(_st.href, page.url()).href);`,
+          `    } else {`,
+          `      await _next.click();`,
+          `    }`,
           `    await page.waitForLoadState('networkidle');`,
           `  }`,
         );
@@ -693,6 +708,17 @@ function _emitNodeStepBody(step) {
       for (const child of step.children ?? []) {
         const emit = () => _emitNodeStep(child).map((l) => "  " + l);
         lines.push(...(bodyScope ? _within(bodyScope, emit) : emit()));
+      }
+      if (config.type === "paginate-url" && config.stopWhenEmpty !== false) {
+        lines.push(
+          // The same rule the run applies: only after a page that produced
+          // something, so a pipeline whose first page is genuinely empty is
+          // not cut off at page one.
+          `  if (_rowsBefore > 0 && fsRows.length === _rowsBefore) {`,
+          `    console.error(\`Pagination: stopped after \${i + 1} page(s) — that page produced no rows.\`);`,
+          `    break;`,
+          `  }`,
+        );
       }
       lines.push(`}`, "");
       return lines;

@@ -3539,11 +3539,17 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
       // there was another page.
       let paged;
       try {
-        paged = await _executePaginate(tabId, {
-          selector,
-          settleMs: step.config.settleMs,
-          requireChange: step.config.requireChange,
-        });
+        paged = await _executePaginate(
+          tabId,
+          {
+            selector,
+            settleMs: step.config.settleMs,
+            requireChange: step.config.requireChange,
+            timeoutMs: step.config.timeoutMs,
+          },
+          runState,
+          runId,
+        );
       } catch (e) {
         _broadcastLog(
           "warn-log",
@@ -3562,6 +3568,7 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
         break;
       }
     }
+    const rowsBefore = runState?.results?.length ?? 0;
     try {
       await _executeStepList(children, tabId, runId, loopCtx);
       _broadcastLog("info-log", `Loop [${i + 1}/${iters}] done.`, runId);
@@ -3572,6 +3579,33 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
         runId,
       );
       if (onFail === "stop") break;
+    }
+
+    // Past the last page (B-27 / FS-04). "paginate-url" has nothing to probe:
+    // the template says where the pages are and `max` says how many, so a run
+    // asked for 20 pages of a 5-page site fetched 15 empty ones — and sites
+    // that clamp ?page=99 to the last page served the same rows fifteen times
+    // over instead. A page that yields nothing when an earlier page yielded
+    // something is the signal that exists here, and it is the same signal a
+    // person reads off the screen.
+    //
+    // Only after a productive page: a pipeline whose rows all come from a
+    // later step, or whose first page is genuinely empty, must not be cut off
+    // at page one. And only when asked for — a loop whose body extracts
+    // nothing at all (screenshots, downloads) has no rows to count.
+    if (
+      ltype === "paginate-url" &&
+      step.config.stopWhenEmpty !== false &&
+      (runState?.results?.length ?? 0) === rowsBefore &&
+      rowsBefore > 0
+    ) {
+      _broadcastLog(
+        "info-log",
+        `Loop: stopped after ${i + 1} page${i === 0 ? "" : "s"} — that page ` +
+          "produced no rows, so the pages have run out.",
+        runId,
+      );
+      break;
     }
   }
 }
@@ -3751,7 +3785,43 @@ function _pageUrl(template, n) {
   return String(template).replaceAll("{page}", String(n));
 }
 
-async function _executePaginate(tabId, config = {}) {
+/**
+ * Move a run onto the page a click opened in a second tab, and close it.
+ *
+ * A new tab is empty at the moment it is created, so its address has to be
+ * waited for rather than read. Everything here is best-effort: failing to adopt
+ * leaves the run where it was, which is the behaviour before this existed, and
+ * is better than throwing away a page of results over a tab that would not
+ * settle.
+ *
+ * @param {number} tabId - the run's tab
+ * @param {number} openedId - the tab the click opened
+ * @returns {Promise<boolean>} whether the run's tab moved
+ */
+async function _adoptOpenedTab(tabId, openedId, runState = null, runId = null) {
+  let url = "";
+  for (let i = 0; i < 30 && !url; i++) {
+    const tab = await chrome.tabs.get(openedId).catch(() => null);
+    if (!tab) return false;
+    const candidate = String(tab.pendingUrl || tab.url || "");
+    if (candidate && !/^(about:|chrome:)/.test(candidate)) url = candidate;
+    else await _sleep(100);
+  }
+  await chrome.tabs.remove(openedId).catch(() => {});
+  if (!url) return false;
+  logger.info(MODULE, "adopted-opened-tab", { host: _hostOf(url) });
+  await _navigateTo(tabId, url, runState, runId, {
+    what: "Paginate (page opened in a new tab)",
+  });
+  return true;
+}
+
+async function _executePaginate(
+  tabId,
+  config = {},
+  runState = null,
+  runId = null,
+) {
   const selector = String(config.selector || "").trim();
   if (!selector) throw new Error("Paginate: no Next selector configured.");
   const settleMs =
@@ -3767,20 +3837,44 @@ async function _executePaginate(tabId, config = {}) {
   }
   const before = probe.result.fingerprint;
 
-  try {
-    // Deliberately not _sendToPage: a lost reply here means the click
-    // navigated, and re-sending it would turn a second page.
-    await chrome.tabs.sendMessage(tabId, {
-      type: "step:execute",
-      payload: { type: "PAGINATE", config: { selector } },
+  if (probe.result.newTab && probe.result.href) {
+    // The Next link opens in a new tab. Clicking it would leave the run on the
+    // page it was already on while the next one loaded somewhere nobody is
+    // looking — the loop then re-scrapes the same rows until "max pages" runs
+    // out. Following the href in this tab is what the user meant by "next
+    // page", and it is the same request the click would have made.
+    await _navigateTo(tabId, probe.result.href, runState, runId, {
+      timeoutMs: config.timeoutMs,
+      what: "Paginate (next page)",
     });
-  } catch (err) {
-    // The click took the content script with it, which is success. Anything
-    // else is not.
-    if (!_GONE.test(err.message)) throw err;
-  }
+  } else {
+    // A tab this one opens while we are clicking. A JavaScript paginator can
+    // call window.open with no anchor to read, so the href check above cannot
+    // see it coming; this catches it after the fact.
+    let opened = null;
+    const onCreated = (tab) => {
+      if (tab.openerTabId === tabId && !opened) opened = tab;
+    };
+    chrome.tabs.onCreated?.addListener?.(onCreated);
 
-  await _waitForTabLoad(tabId, NAV_TIMEOUT_MS);
+    try {
+      // Deliberately not _sendToPage: a lost reply here means the click
+      // navigated, and re-sending it would turn a second page.
+      await chrome.tabs.sendMessage(tabId, {
+        type: "step:execute",
+        payload: { type: "PAGINATE", config: { selector } },
+      });
+    } catch (err) {
+      // The click took the content script with it, which is success. Anything
+      // else is not.
+      if (!_GONE.test(err.message)) throw err;
+    } finally {
+      chrome.tabs.onCreated?.removeListener?.(onCreated);
+    }
+
+    await _waitForTabLoad(tabId, NAV_TIMEOUT_MS);
+    if (opened) await _adoptOpenedTab(tabId, opened.id, runState, runId);
+  }
   if (settleMs > 0) await _sleep(settleMs);
 
   if (config.requireChange) {
@@ -4036,7 +4130,7 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       return;
 
     case "PAGINATE": {
-      const paged = await _executePaginate(tabId, step.config);
+      const paged = await _executePaginate(tabId, step.config, runState, runId);
       if (paged.exhausted) {
         _broadcastLog("info-log", `Paginate: ${paged.reason}`, runId);
       }

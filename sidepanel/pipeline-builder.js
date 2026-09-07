@@ -1797,6 +1797,15 @@ function _configFields(step) {
         "number",
         c.settleMs ?? 1500,
       );
+      html += toggle(step, "stopWhenEmpty", "Stop when a page has no rows");
+      html += hint(
+        c.stopWhenEmpty === false
+          ? "Off: all the pages above are fetched, empty or not. Ask for exactly " +
+              "as many as the site has."
+          : "This mode cannot ask the site how many pages there are, so a page " +
+              "that produces nothing is the signal that they have run out. " +
+              "Turn off if the loop's rows come from somewhere else.",
+      );
     } else {
       // paginate
       html += `<div class="step-note">

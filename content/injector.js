@@ -1323,8 +1323,28 @@
         reason: `no element matched "${selector}" — this looks like the last page`,
       };
     }
-    const dead = _paginateDeadReason(matches[0]);
-    return { exhausted: Boolean(dead), reason: dead, fingerprint };
+    const el = matches[0];
+    const dead = _paginateDeadReason(el);
+
+    // Where the Next control would take the browser, and whether it would open
+    // a second tab doing it. A paginator with target="_blank" used to leave the
+    // run scraping the page it was already on while the next one appeared in a
+    // tab nobody was looking at — ten "pages" of the same rows, and no error.
+    // The anchor may be an ancestor: sites wrap an icon or a <span> in the link.
+    const anchor =
+      el.tagName === "A" ? el : el.closest ? el.closest("a") : null;
+    const target = String(anchor?.getAttribute("target") ?? "")
+      .trim()
+      .toLowerCase();
+    const sameTab = target === "" || target === "_self" || target === "_top";
+
+    return {
+      exhausted: Boolean(dead),
+      reason: dead,
+      fingerprint,
+      href: anchor?.href ?? "",
+      newTab: Boolean(anchor) && !sameTab,
+    };
   }
 
   /**

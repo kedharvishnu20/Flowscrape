@@ -19,6 +19,33 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Fixed — three ways pagination scraped the same page twice
+
+All three share a shape: the run keeps going, produces rows, finishes without an
+error — and every page after the first is a copy of the first. The exporter's
+dedup used to hide the evidence.
+
+- **A Next link that opens in a new tab** (FS-03). Clicking `target="_blank"`
+  loaded page 2 into a tab nobody was reading while the run went on scraping
+  page 1, once per "page", until the count ran out. The probe now reports where
+  Next leads and whether it would open a tab, and the run follows the href in
+  its own tab — through the same origin gate every other navigation uses. A
+  JavaScript paginator calling `window.open` has no anchor to read, so a tab
+  opened by the run's tab during the click is adopted after the fact and closed.
+- **A URL-pattern loop ran past the last page** (FS-04). That mode has nothing
+  to probe: the template says where the pages are and `max` says how many. A run
+  asked for 20 pages of a 5-page site fetched 15 empty ones, and on a site that
+  clamps `?page=99` to the last page it scraped the same rows 15 times instead.
+  A page that yields no rows after one that did now ends the loop, which is the
+  same signal a person reads off the screen. There is a toggle for the pipeline
+  whose rows come from somewhere else.
+- **The exported script had a cruder idea of "last page"** (FS-08). It asked
+  only whether the Next control exists and is enabled, missing `aria-disabled`,
+  a disabled class on a `<span>`, an `<a>` with no `href`, and a control the
+  site hides with CSS. Those reasons — and the new-tab check, and the empty-page
+  stop — now come from one shared file that both emitters send into the page, so
+  the script and the pipeline cannot drift on what ends a paginator.
+
 ### Fixed — two gates that were not gates
 
 - **Gate 4 measured the wrong thing** (FS-15). It estimated captcha volume from

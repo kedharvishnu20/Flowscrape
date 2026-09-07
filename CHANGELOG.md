@@ -19,6 +19,37 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — logging in, and the headers a site will accept
+
+Two capabilities that needed a Chrome permission each, and so are declared
+`optional_permissions`: installing FlowScrape asks for neither, and Chrome's own
+consent dialog appears at the moment you switch one on in Settings →
+Permissions. Both steps work without their permission and say exactly what they
+lose. [`docs/SESSIONS_AND_HEADERS.md`](docs/SESSIONS_AND_HEADERS.md) is the
+whole story: how to capture a session, where it is kept, what the encryption is
+and is not worth, and how to revoke either permission.
+
+- **`SESSION` — log in once, restore on every later run.** A session lives in
+  two places the extension reaches separately: the cookie jar, which only the
+  worker can read in full, and the page's own localStorage/sessionStorage,
+  which only the page can see. Both halves are saved, so a restore puts back
+  what the save took. With the **Cookies** permission it reads the `HttpOnly`
+  session cookie — which is what a session cookie almost always is; without it
+  it saves the visible cookies and warns, at save time, that a restore will
+  probably be a logged-out one. Restoring onto a different origin is refused,
+  and `HttpOnly` cookies are skipped rather than counted as written. The store
+  is AES-GCM encrypted and persists across restarts (the API-key store
+  deliberately does not); a pipeline's JSON carries only the session's name.
+- **`SET_HEADERS` — send a `User-Agent` a site will accept.** Sites do refuse:
+  tryscrapeme.com answers `403 Invalid User Agent` site-wide. A page cannot
+  change its own request headers, so this uses `declarativeNetRequest` with the
+  narrower `WithHostAccess` variant. The rules are scoped to the run's tab by a
+  `tabIds` condition, replaced rather than stacked by a second step, removed on
+  every exit from the run, and swept again at startup for anything a crash left
+  behind — the lesson of the proxy that outlived its run (A-05). Headers the
+  browser reserves come back named in the log rather than being dropped
+  quietly.
+
 ### Section K — what using it on real sites found
 
 The audit's A–J sections came from reading the code. Section K came from

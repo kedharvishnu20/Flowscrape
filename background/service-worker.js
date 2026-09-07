@@ -51,6 +51,12 @@ import {
 } from "./optional-permissions.js";
 import { initSessionKey } from "./api-key-manager.js";
 import {
+  applyHeaderRules,
+  parseHeaderText,
+  clearHeaderRules,
+  sweepHeaderRules,
+} from "./header-rules.js";
+import {
   saveSession,
   loadSession,
   deleteSession,
@@ -380,6 +386,10 @@ const _runStates = new Map();
  * synchronous.
  */
 async function _bootstrap() {
+  // Anything a crashed run left in force on a tab the user is now browsing by
+  // hand. Session rules survive a worker restart; the run that asked for them
+  // did not.
+  await sweepHeaderRules().catch(() => {});
   await initSessionKey().catch((err) =>
     logger.error(MODULE, "session-key-init-fail", { error: err.message }),
   );
@@ -2289,6 +2299,59 @@ async function _writeCookies(cookies) {
 }
 
 /**
+ * SET_HEADERS — send request headers of your choosing for the rest of the run.
+ *
+ * A browser will not let a page change its own request headers, so this is the
+ * only honest way to send a `User-Agent` a site will accept — and sites do
+ * refuse: tryscrapeme.com answers 403 to anything that looks automated,
+ * site-wide.
+ *
+ * The rules are scoped to this run's tab and removed when the run ends, by
+ * `clearHeaderRules` on every exit path. That lifecycle is the lesson of A-05,
+ * where a run set a browser-wide proxy and never gave it back.
+ *
+ * @param {object} step
+ * @param {number} tabId
+ * @param {string} runId
+ */
+async function _executeSetHeaders(step, tabId, runId) {
+  const config = step.config || {};
+  const headers = parseHeaderText(config.headers);
+  if (!headers.length) {
+    throw new Error("SET_HEADERS has no headers to send.");
+  }
+  if (!(await hasPermission("declarativeNetRequestWithHostAccess"))) {
+    throw new ExplainedRefusal(
+      permissionRefusal("declarativeNetRequestWithHostAccess"),
+    );
+  }
+  if (!tabId) {
+    throw new Error("SET_HEADERS needs the run's tab; there is none open.");
+  }
+
+  const { applied, refused } = await applyHeaderRules(runId, tabId, headers);
+  if (refused.length) {
+    // Named rather than dropped: a user who typed Host and saw nothing happen
+    // would reasonably conclude the step is broken.
+    _broadcastLog(
+      "warn-log",
+      `SET_HEADERS: the browser will not let a rule set ${refused.join(", ")}. ` +
+        "Those are the browser's own to control.",
+      runId,
+    );
+  }
+  if (!applied) {
+    throw new Error("SET_HEADERS: none of those headers can be set.");
+  }
+  _broadcastLog(
+    "info-log",
+    `SET_HEADERS: ${applied} header(s) will be sent on this tab's requests ` +
+      "until the run ends.",
+    runId,
+  );
+}
+
+/**
  * SESSION — save, restore, or forget a logged-in session.
  *
  * The session lives in two places the extension has to reach separately: the
@@ -3818,6 +3881,10 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       return;
     }
 
+    case "SET_HEADERS":
+      await _executeSetHeaders(step, tabId, runId);
+      return;
+
     case "SESSION":
       await _executeSession(step, tabId, runId);
       return;
@@ -4811,6 +4878,7 @@ async function _executePipeline(runId, pipeline, targetTabId) {
   await finalizeBuffer(runId).catch(() => {});
   await _disableSniffer(runId);
   await _endRunProxy(_runStates.get(runId));
+  await clearHeaderRules(runId);
 
   const endRunState = _runStates.get(runId);
   const stateStr = endRunState?.active ? "completed" : "stopped";
@@ -4904,6 +4972,8 @@ const RUN_ONLY_STEPS = {
     "An export needs the rows a run collected. Press Run; the file is written when the run reaches this step.",
   API_SNIFFER:
     "The sniffer records network traffic for the whole run rather than doing anything at this point in it. Press Run, then look at the monitor.",
+  SET_HEADERS:
+    "Headers are set for the length of a run and taken back when it ends, so a single-step test would leave them in force with no run to end. Press Run.",
   SOLVE_CAPTCHA:
     "Answering a challenge is gated on the authorisation a run carries and on your attestation for the domain, and a single-step test carries neither. Press Run.",
 };

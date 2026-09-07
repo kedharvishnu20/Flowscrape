@@ -5,9 +5,6 @@ state that says _you are logged in_, and control over the headers a request
 carries. Both are off by default here, both are switched on by you, and this
 page says exactly what each one buys and what it costs.
 
-> The `SET_HEADERS` half of this page arrives with that step. What is below is
-> the SESSION step, which ships now.
-
 ---
 
 ## 1. Why sessions need a permission at all
@@ -131,3 +128,77 @@ const context = await browser.newContext({ storageState: "session.json" });
 
 Same idea, kept in a file you own and can see, rather than smuggled inside a
 generated script.
+
+---
+
+# Headers
+
+## 6. Why a header needs a permission too
+
+A page cannot change its own request headers. `User-Agent`, `Host`,
+`Referer`, `Cookie` and about a dozen others are on the _forbidden header_
+list precisely so that a script on a page cannot lie about where a request came
+from. That rule is doing its job, and it applies to an extension's content
+script exactly as it applies to the site.
+
+The only way around it is `declarativeNetRequest`, which is a rules engine the
+browser itself applies — you describe the change, Chrome makes it, and no page
+code ever touches the request. FlowScrape asks for the
+**`declarativeNetRequestWithHostAccess`** variant on purpose: it can only act
+on hosts you have already granted, where the plain version is a broader grant
+than this needs.
+
+Turn it on at **Settings → Permissions → Request headers**. Without it the
+SET_HEADERS step refuses and says so; nothing else in the extension asks.
+
+## 7. Using SET_HEADERS
+
+Put it early in the pipeline — before the NAVIGATE whose request should carry
+the headers — and type one header per line, the way a header actually looks:
+
+```
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
+Accept-Language: en-GB,en;q=0.9
+```
+
+- **Leave a value empty** to _remove_ that header instead of setting it. Some
+  sites treat the mere presence of a header as a signal.
+- **A second SET_HEADERS replaces the first**, rather than merging both. That
+  is what reading the pipeline top to bottom leads you to expect.
+- **Refusals are named.** `Host`, `Content-Length`, `Connection`, the `Sec-`
+  family and the rest of the browser's own headers come back in the log by
+  name. A header that was silently dropped would look exactly like a step that
+  does not work.
+
+## 8. Where the rules stop
+
+Two boundaries, both deliberate:
+
+- **This run's tab only.** The rule carries a `tabIds` condition, so the tabs
+  you are browsing by hand are untouched. This is the lesson of the proxy bug
+  (A-05), where a run set something browser-wide and never gave it back.
+- **Until the run ends.** The rules are removed on every exit — finished,
+  stopped, or crashed — and swept again when the extension next starts, for
+  anything a crash left behind.
+
+## 9. And the honest caveat
+
+A convincing `User-Agent` is not a disguise. A site that fingerprints in
+earnest also reads your header _order_, your TLS handshake, and what your
+JavaScript environment looks like — none of which this changes, and the last of
+which is real Chrome, because it is real Chrome. This step is for the very
+common case of a site that rejects an obviously-automated UA string out of
+hand. It is not a defeat for a serious bot-detection service, and treating it
+as one will waste your afternoon.
+
+A SET_HEADERS step is not exported into a generated script, for the same reason
+SESSION is not: the run-scoped lifecycle has no equivalent there. A Playwright
+script sets its headers when it creates the context, which is the right shape
+on that side:
+
+```js
+const context = await browser.newContext({
+  userAgent: "Mozilla/5.0 (…) Chrome/120.0.0.0 Safari/537.36",
+  extraHTTPHeaders: { "Accept-Language": "en-GB,en;q=0.9" },
+});
+```

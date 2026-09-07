@@ -2651,6 +2651,34 @@ function _configFields(step) {
     return html;
   }
 
+  // ── SET_HEADERS ──
+  if (step.type === "SET_HEADERS") {
+    html += `<div style="background:rgba(139,124,246,0.10);border:1px solid rgba(139,124,246,0.35);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">Headers, for this run's tab only</div>
+      <div style="font-size:11px;color:var(--text-dim);line-height:1.5;">
+        Some sites answer <b>403</b> to anything whose User-Agent looks
+        automated. A page cannot change its own request headers, so this needs
+        the <b>Request headers</b> permission in Settings → Permissions.<br><br>
+        The rules apply to this run's tab and are taken back when the run ends.
+      </div>
+    </div>`;
+
+    html += `<label>Headers — one <code>Name: value</code> per line</label>
+      <textarea id="cfg-${step.id}-headers" data-id="${step.id}" data-key="headers" class="cfg-bind" rows="4" placeholder="User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36&#10;Accept-Language: en-GB,en;q=0.9" style="margin-bottom:8px;">${esc(c.headers || "")}</textarea>`;
+    html += hint(
+      "Leave a value empty to remove that header instead of setting it. " +
+        "Host, Content-Length and the Sec- headers are the browser's own and " +
+        "will be refused by name rather than dropped quietly.",
+    );
+
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
   // ── SESSION ──
   if (step.type === "SESSION") {
     const mode = c.mode || "save";

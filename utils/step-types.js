@@ -217,6 +217,17 @@ export const STEP_TYPES = Object.freeze({
     },
   },
 
+  SET_HEADERS: {
+    icon: "🏷️",
+    cat: "Flow",
+    desc: "Send request headers of your choosing",
+    runsIn: "background",
+    def: { headers: "" },
+    // The rules are scoped to the run's tab and removed when it ends, which a
+    // standalone script has no equivalent of — it sets its own headers when it
+    // creates the browser context instead. See docs/SESSIONS_AND_HEADERS.md.
+    exportable: false,
+  },
   SESSION: {
     icon: "🔐",
     cat: "Flow",

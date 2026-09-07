@@ -258,6 +258,9 @@ test("the unexportable types are the ones that need the extension", () => {
     // pipeline must not carry someone's cookies out with it. Playwright's own
     // storageState is the right tool on that side.
     "SESSION",
+    // Scoped to the run's tab and taken back when it ends; a standalone script
+    // sets its headers when it creates the browser context instead.
+    "SET_HEADERS",
     "SOLVE_CAPTCHA",
     "UPLOAD_ACTIVITY",
   ]);

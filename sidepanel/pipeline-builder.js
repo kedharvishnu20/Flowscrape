@@ -822,6 +822,7 @@ function bindGlobalControls() {
   document
     .getElementById("btn-gateway-test")
     ?.addEventListener("click", () => _testGatewayConnection());
+  _renderPermissions();
   document
     .getElementById("btn-update-proxies")
     ?.addEventListener("click", async () => {
@@ -2919,6 +2920,63 @@ async function _saveGatewayConfig() {
   const keyEl = document.getElementById("gateway-key");
   if (keyEl && fields.apiKey) keyEl.value = "";
   notify("info-log", `AI gateway settings saved (${fields.provider}).`);
+}
+
+/**
+ * The two optional permissions, with a button for each.
+ *
+ * The grant happens *here*, not in the worker: `chrome.permissions.request`
+ * needs a user gesture, and a request made from a service worker is refused
+ * without ever prompting — which looks exactly like the user saying no.
+ */
+async function _renderPermissions() {
+  const host = document.getElementById("perm-list");
+  if (!host) return;
+  const status = await chrome.runtime
+    .sendMessage({ type: "permissions:status" })
+    .catch(() => null);
+  const perms = status?.ok ? status.result : status;
+  if (!perms) return;
+
+  host.textContent = "";
+  for (const [name, meta] of Object.entries(perms)) {
+    const row = document.createElement("div");
+    row.style.cssText =
+      "display:flex;align-items:flex-start;gap:10px;margin-bottom:12px;";
+
+    const text = document.createElement("div");
+    text.style.flex = "1";
+    const title = document.createElement("div");
+    title.style.cssText = "font-size:12px;font-weight:600;";
+    title.textContent = meta.label;
+    const why = document.createElement("div");
+    why.className = "prose";
+    why.style.cssText = "font-size:11px;margin-top:2px;";
+    why.textContent = meta.granted
+      ? `Granted — used for ${meta.forWhat}.`
+      : `For ${meta.forWhat}. Without it, ${meta.without}.`;
+    text.append(title, why);
+
+    const btn = document.createElement("button");
+    btn.className = "btn";
+    btn.style.cssText = "height:26px;font-size:11px;white-space:nowrap;";
+    btn.textContent = meta.granted ? "Remove" : "Grant";
+    btn.addEventListener("click", async () => {
+      const ok = meta.granted
+        ? await chrome.permissions.remove({ permissions: [name] })
+        : await chrome.permissions.request({ permissions: [name] });
+      logToMonitor(
+        "info-log",
+        ok
+          ? `${meta.label}: ${meta.granted ? "removed" : "granted"}.`
+          : `${meta.label}: ${meta.granted ? "still granted" : "not granted"}.`,
+      );
+      _renderPermissions();
+    });
+
+    row.append(text, btn);
+    host.append(row);
+  }
 }
 
 async function _testGatewayConnection() {

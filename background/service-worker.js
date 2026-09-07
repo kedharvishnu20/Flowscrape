@@ -44,6 +44,11 @@ import { evaluateCondition } from "../utils/conditions.js";
 import { evaluateAssertion } from "../utils/assertions.js";
 import { solveLocalChallenge, tierOf } from "../utils/captcha-solvers.js";
 import { matchesSnifferFilter } from "../utils/sniffer-filter.js";
+import {
+  hasPermission,
+  permissionRefusal,
+  permissionStatus,
+} from "./optional-permissions.js";
 import { initSessionKey } from "./api-key-manager.js";
 import { setApiKey } from "./api-key-manager.js";
 import {
@@ -4923,6 +4928,12 @@ _registerHandler("gateway:save", async (payload) => {
   // of the log for the same reason a proxy line does — C-03).
   return { ok: true };
 });
+
+// The panel asks what is granted; the grant itself must happen in the panel,
+// because chrome.permissions.request needs a user gesture and a service worker
+// has none. A request made from here is refused without ever prompting, which
+// is indistinguishable from the user saying no.
+_registerHandler("permissions:status", async () => permissionStatus());
 
 _registerHandler("gateway:config-get", async () => {
   const stored = await chrome.storage.local.get(STORAGE_GATEWAY_KEY);

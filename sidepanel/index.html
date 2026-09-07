@@ -2400,6 +2400,24 @@
             </div>
           </div>
 
+          <!-- Optional permissions: neither is asked for at install, and a
+               step that needs one refuses with a message pointing here. -->
+          <div class="accordion-section">
+            <div class="accordion-header">
+              <span>Permissions</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
+            </div>
+            <div class="accordion-content">
+              <p class="prose" style="font-size: 11px; margin: 0 0 10px">
+                Two things this extension does not ask for when you install it,
+                because most runs never need them. Chrome will ask you to
+                confirm, and you can take either back here or from
+                chrome://extensions.
+              </p>
+              <div id="perm-list"></div>
+            </div>
+          </div>
+
           <!-- Proxies -->
           <div class="accordion-section">
             <div class="accordion-header">

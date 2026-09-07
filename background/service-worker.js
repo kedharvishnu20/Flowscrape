@@ -40,7 +40,7 @@ import {
 import { applyTransforms } from "../utils/value-transforms.js";
 import { evaluateCondition } from "../utils/conditions.js";
 import { evaluateAssertion } from "../utils/assertions.js";
-import { solveLocalChallenge } from "../utils/captcha-solvers.js";
+import { solveLocalChallenge, tierOf } from "../utils/captcha-solvers.js";
 import { matchesSnifferFilter } from "../utils/sniffer-filter.js";
 import { initSessionKey } from "./api-key-manager.js";
 import { setApiKey } from "./api-key-manager.js";
@@ -3041,7 +3041,10 @@ async function _checkCaptcha(tabId) {
       target: { tabId },
       func: () => globalThis.__fsCheckCaptcha?.() ?? null,
     });
-    return result ?? null;
+    if (!result) return null;
+    // The page reports what it saw; the tier is decided here, where the parser
+    // that would have to answer a written question actually lives.
+    return { ...result, tier: tierOf(result) };
   } catch {
     // A page that refuses injection cannot be checked, and saying nothing is
     // better than claiming there is no captcha.
@@ -3102,6 +3105,105 @@ async function _pauseForCaptcha(runId, tabId, stepType, known = null) {
     })
     .catch(() => {});
   return true;
+}
+
+/**
+ * Ask a configured model to read a captcha image.
+ *
+ * The last resort, and only ever reached after the free path has declined. It
+ * is the user's own key and the user's own money — or their own machine, if
+ * they pointed the gateway at a local model — so this spends neither without
+ * being asked twice: the step exists because somebody added it, the run
+ * carries the authorisation, the domain carries the attestation, and a
+ * provider had to be configured in Settings.
+ *
+ * Only image captchas. A reCAPTCHA or hCaptcha widget is not a picture with an
+ * answer in it — it is a behavioural check whose token comes from a solving
+ * service, and handing its screenshot to a vision model spends tokens to be
+ * told nothing. Refusing is the honest answer there.
+ *
+ * @returns {Promise<{answer: string, how: string}|{error: string}|null>} null
+ *   when no provider is configured, which is not a failure — it is the
+ *   default state of a tool that costs nothing to use.
+ */
+async function _askGatewayForCaptcha(tabId, found, runId) {
+  const stored = await chrome.storage.local
+    .get(STORAGE_GATEWAY_KEY)
+    .catch(() => ({}));
+  const config = stored?.[STORAGE_GATEWAY_KEY];
+  if (!config?.provider) return null;
+
+  const { getApiKey } = await import("./api-key-manager.js");
+  const apiKey = await getApiKey(`gateway:${config.provider}`).catch(
+    () => null,
+  );
+  // A local endpoint needs no key; every hosted provider does.
+  if (!apiKey && config.provider !== "openai-compatible") return null;
+
+  let grabbed = null;
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => globalThis.__fsGrabCaptchaImage?.() ?? null,
+    });
+    grabbed = result;
+  } catch {
+    return { error: "the page would not let the image be read" };
+  }
+  if (!grabbed) return { error: "no captcha image was found on the page" };
+  if (grabbed.error) return { error: grabbed.error };
+
+  const { askVision } = await import("../utils/ai-gateway.js");
+  _broadcastLog(
+    "info-log",
+    `SOLVE_CAPTCHA is asking your ${config.provider} model to read the image (${grabbed.width}×${grabbed.height}).`,
+    runId,
+  );
+  const said = await askVision(
+    {
+      // Written to make a wrong answer less likely to look like a right one:
+      // no explanation to parse out, and an explicit way to say "I cannot".
+      prompt:
+        "This image is a captcha from a web form. Reply with only the " +
+        "characters it shows, exactly as they appear, with no spaces, " +
+        "quotes, punctuation or explanation. If you cannot read it with " +
+        "confidence, reply with the single word UNREADABLE.",
+      image: {
+        data: String(grabbed.dataUrl).split(",")[1] ?? "",
+        mediaType: grabbed.mediaType,
+      },
+    },
+    {
+      provider: config.provider,
+      apiKey,
+      model: config.model,
+      baseUrl: config.baseUrl,
+    },
+  );
+  if (!said?.ok) {
+    return { error: said?.error || "the model could not be reached" };
+  }
+
+  // Trusted no further than a local parse is. A model that pads its answer, or
+  // answers a different question, produces a failed attempt against a site
+  // that usually allows three — so anything that is not a short, clean token
+  // is treated as no answer at all.
+  const text = String(said.text ?? "")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "");
+  if (!text || /unreadable/i.test(text)) {
+    return { error: "the model said it could not read the image" };
+  }
+  if (text.length > 12 || /\s/.test(text)) {
+    return {
+      error: `the model answered with something that is not a captcha code: "${text.slice(0, 40)}"`,
+    };
+  }
+  return {
+    answer: text,
+    how: `read by your ${config.provider} model`,
+    answerSelector: grabbed.answerSelector,
+  };
 }
 
 // ── Solving, and the two things it needs before it will ──────────────────────
@@ -3180,25 +3282,34 @@ _registerHandler("captcha:attest-get", async (payload) => {
 async function _executeSolveCaptcha(step, tabId, runId) {
   const runState = _runStates.get(runId);
 
-  if (!runState?.captchaAuthorized) {
-    throw new ExplainedRefusal(
-      "SOLVE_CAPTCHA did not run: this run is not authorised to answer challenges. " +
-        "Press Run and confirm the captcha prompt, which is what sets that for the run.",
-    );
-  }
-
+  // Both gates are read before either is reported. They have different
+  // lifetimes on purpose — the flag is per run, the attestation is per domain —
+  // and refusing on the first one found missing meant a user who had given
+  // neither satisfied one, pressed Run, and was told about the other. One
+  // refusal, naming the state of both.
   let host = "";
   try {
     host = _hostOf((await chrome.tabs.get(tabId))?.url);
   } catch {
-    host = _hostOf(runState.targetOrigin);
+    host = _hostOf(runState?.targetOrigin);
   }
-  if (!(await _captchaAttested(host))) {
+  const authorised = Boolean(runState?.captchaAuthorized);
+  const attested = await _captchaAttested(host);
+  if (!authorised || !attested) {
+    const where = host || "this domain";
     throw new ExplainedRefusal(
-      `SOLVE_CAPTCHA did not run: you have not attested for ${host || "this domain"}. ` +
-        "Open the step and confirm that you own the site, have permission to " +
-        "automate it, or are signing in to your own account there. " +
-        "That is given once per domain and is not something the tool can decide for you.",
+      "SOLVE_CAPTCHA did not run. Answering a challenge needs two things, and " +
+        `${!authorised && !attested ? "neither is in place" : "one of them is missing"}:\n` +
+        (authorised
+          ? "✓ This run is authorised to answer challenges.\n"
+          : "✗ This run is not authorised to answer challenges — turn on " +
+            "“Answer captchas” in Settings, which applies for the run.\n") +
+        (attested
+          ? `✓ You have attested for ${where}.`
+          : `✗ You have not attested for ${where} — open the step and confirm ` +
+            "that you own the site, have permission to automate it, or are " +
+            "signing in to your own account there. That is given once per " +
+            "domain and is not something the tool can decide for you."),
     );
   }
 
@@ -3226,13 +3337,35 @@ async function _executeSolveCaptcha(step, tabId, runId) {
       ? solveLocalChallenge(found.question)
       : null;
 
-  if (!answer) {
+  // Free has declined. An image captcha is the one shape a vision model can
+  // actually read, and only if the user configured one — their key, their
+  // money, or their own machine. Everything else falls through to the pause.
+  let viaGateway = null;
+  if (!answer && found.type === "image") {
+    viaGateway = await _askGatewayForCaptcha(tabId, found, runId);
+    if (viaGateway?.error) {
+      _broadcastLog(
+        "warn-log",
+        `SOLVE_CAPTCHA asked your model and got no usable answer: ${viaGateway.error}.`,
+        runId,
+      );
+      viaGateway = null;
+    }
+  }
+  const solved = answer ?? viaGateway;
+
+  if (!solved) {
     // Either a widget, which needs a service this build deliberately has none
     // of, or a written question the solver would only be guessing at. Both end
     // the same way, and it is the way the tool already behaved (K-02).
+    // Keyed on what the page is, not on its tier. A written question the
+    // parser could not answer is tiered `needs-a-service` precisely *because*
+    // it could not answer it, so keying on the tier gave the generic "no free
+    // way" line for the one case where we can say something more useful: we
+    // read your question and would only be guessing.
     _broadcastLog(
       "warn-log",
-      found.tier === "solvable-locally"
+      found.type === "question"
         ? `SOLVE_CAPTCHA read the question but is not certain of the answer, and a wrong answer is worse than a pause: "${found.question}".`
         : `SOLVE_CAPTCHA has no free way to answer a ${found.type} challenge (${found.tier}).`,
       runId,
@@ -3247,8 +3380,10 @@ async function _executeSolveCaptcha(step, tabId, runId) {
     type: "FILL",
     config: {
       mode: "single",
-      selector: found.answerSelector,
-      text: answer.answer,
+      // The image path finds its own answer box, beside the picture; a written
+      // question's box came back with the question.
+      selector: solved.answerSelector || found.answerSelector,
+      text: solved.answer,
       delayMs: 60,
     },
   });
@@ -3257,9 +3392,17 @@ async function _executeSolveCaptcha(step, tabId, runId) {
       fill?.error || "SOLVE_CAPTCHA could not type into the answer field",
     );
   }
+  // The provenance is not decoration: "solved on this machine" is the whole
+  // promise of the free tier, and "your model" is the line that spent the
+  // user's money. Whichever answered has to be the part they can see.
+  const provenance = answer
+    ? "solved on this machine, at no cost"
+    : "answered by the model you configured";
   _broadcastLog(
     "info-log",
-    `SOLVE_CAPTCHA answered "${found.question}" with "${answer.answer}" (${answer.how}), solved on this machine.`,
+    found.question
+      ? `SOLVE_CAPTCHA answered "${found.question}" with "${solved.answer}" (${solved.how}) — ${provenance}.`
+      : `SOLVE_CAPTCHA answered the image captcha with "${solved.answer}" (${solved.how}) — ${provenance}.`,
     runId,
   );
 

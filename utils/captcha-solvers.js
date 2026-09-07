@@ -270,4 +270,60 @@ export function solveLocalChallenge(raw) {
   return answers[0];
 }
 
+/**
+ * What, if anything, can be done about a challenge without paying for it.
+ *
+ * These strings travel into the log and the refusal messages, so they are
+ * written to be read there rather than decoded.
+ */
+export const TIER = Object.freeze({
+  LOCAL: "solvable-locally",
+  SERVICE: "needs-a-service",
+  NONE: "not-solvable",
+});
+
+/**
+ * Cloudflare and Akamai interstitials are the entries worth being explicit
+ * about: they are bot management, not captchas. There is no puzzle to answer —
+ * the wall lifts on a browser fingerprint and a TLS handshake, or it does not
+ * lift — so a solving service has nothing to sell for one, and marking them
+ * `not-solvable` is what stops somebody spending money on one later.
+ */
+const TYPE_TIER = Object.freeze({
+  recaptcha: TIER.SERVICE,
+  hcaptcha: TIER.SERVICE,
+  turnstile: TIER.SERVICE,
+  image: TIER.SERVICE,
+  cloudflare: TIER.NONE,
+  akamai: TIER.NONE,
+});
+
+/**
+ * Which tier a detected challenge falls into.
+ *
+ * The page reports what it saw; this decides what that means. The split is the
+ * one IF_ELSE and ASSERT already use, and here it matters more than usual: the
+ * page cannot import this module (a classic content script cannot import at
+ * all), so a tier assigned there would be a second opinion about solvability,
+ * free to drift from the parser that actually has to produce the answer. It
+ * did drift — a page reporting `solvable-locally` from a shape test, while
+ * this module then declined to answer the question, told the user the run
+ * stopped on something free and then did nothing free about it.
+ *
+ * A written question is `solvable-locally` only if it can actually be
+ * answered, which is a question only `solveLocalChallenge` can settle.
+ *
+ * @param {{type: string|null, question?: string}|null} found
+ * @returns {string|null}
+ */
+export function tierOf(found) {
+  if (!found?.type) return null;
+  if (found.type === "question") {
+    return solveLocalChallenge(found.question ?? "")
+      ? TIER.LOCAL
+      : TIER.SERVICE;
+  }
+  return TYPE_TIER[found.type] ?? TIER.SERVICE;
+}
+
 // === END captcha-solvers.js ===

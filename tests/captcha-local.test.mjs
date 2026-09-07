@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
-import { solveLocalChallenge } from "../utils/captcha-solvers.js";
+import { solveLocalChallenge, tierOf } from "../utils/captcha-solvers.js";
 import { STEP_TYPES, USER_STEP_TYPES } from "../utils/step-types.js";
 import {
   _executeSteps,
@@ -137,9 +137,32 @@ test("a written question is reported as solvable on this machine", () => {
   );
   assert.equal(out.blocking, true);
   assert.equal(out.type, "question");
-  assert.equal(out.tier, "solvable-locally");
   assert.match(out.question, /3 \+ 4/);
   assert.equal(out.answerSelector, "#cap");
+  // The page does not decide this — it cannot, since whether the question is
+  // answerable is the parser's answer and a content script cannot import the
+  // parser. It reports what it saw and the worker tiers it.
+  assert.equal(out.tier, null, "the page assigned a tier of its own");
+  assert.equal(tierOf(out), "solvable-locally");
+});
+
+test("a question the parser cannot answer is not called solvable", () => {
+  // The bug this closes: the page used to report `solvable-locally` from a
+  // shape test alone, so a challenge that looked like arithmetic and was not
+  // told the user the run had stopped on something free, and then nothing
+  // free happened.
+  const out = check(
+    `<form><label for="cap">What is 3 + 4 + 9 - 2 * 7?</label>` +
+      `<input type="text" id="cap" name="captcha"></form>`,
+    { visible: ["#cap"] },
+  );
+  assert.equal(out.type, "question");
+  assert.equal(
+    solveLocalChallenge(out.question),
+    null,
+    "the parser answered this after all — pick a harder example",
+  );
+  assert.equal(tierOf(out), "needs-a-service");
 });
 
 test("a written question is not filed under image captcha", () => {
@@ -161,7 +184,8 @@ test("a widget captcha is reported as needing a service", () => {
     [`<img src="/captcha.png" alt="captcha">`, "img"],
   ]) {
     const out = check(html, { visible: [sel] });
-    assert.equal(out.tier, "needs-a-service", `${sel} was tiered wrongly`);
+    assert.equal(out.tier, null, `${sel}: the page tiered it itself`);
+    assert.equal(tierOf(out), "needs-a-service", `${sel} was tiered wrongly`);
   }
 });
 
@@ -172,7 +196,7 @@ test("a Cloudflare interstitial is not solvable at any price", () => {
   const out = check(`<div id="challenge-running"></div>`, {
     title: "Just a moment...",
   });
-  assert.equal(out.tier, "not-solvable");
+  assert.equal(tierOf(out), "not-solvable");
   assert.match(out.reason, /bot.management|no answer to type/i);
 });
 
@@ -181,7 +205,7 @@ test("an Akamai interstitial is recognised, and is not solvable either", () => {
     title: "Access Denied",
   });
   assert.equal(out.type, "akamai");
-  assert.equal(out.tier, "not-solvable");
+  assert.equal(tierOf(out), "not-solvable");
 });
 
 test("an ordinary page has no tier because it has no challenge", () => {
@@ -401,4 +425,194 @@ test("the attestation is stored per domain and outlives the run", async () => {
     false,
     "one domain's attestation covered another",
   );
+});
+
+test("with neither gate given, one refusal names both", async () => {
+  // The two consent artefacts have different lifetimes on purpose — the flag
+  // is per run, the attestation is per domain — and refusing on whichever was
+  // checked first meant a user who had given neither satisfied one, pressed
+  // Run, and was told about the other. Both, once.
+  await attest(false);
+  const { sent, lines } = await runSolve(arithmetic, {
+    captchaAuthorized: false,
+  });
+  assert.ok(!sent.some((p) => p.type === "FILL"));
+  const said = lines.join("\n");
+  assert.match(said, /not authorised/i, "the run flag is not mentioned");
+  assert.match(said, /not attested/i, "the attestation is not mentioned");
+  assert.match(said, /shop\.test/, "it does not say which domain");
+  assert.match(said, /neither is in place/i);
+});
+
+// ── The bring-your-own-key path, reached only after free has declined ────────
+
+const imageCaptcha = {
+  blocking: true,
+  present: true,
+  type: "image",
+  tier: "needs-a-service",
+  where: "img.captcha",
+  reason: "a challenge is rendered on the page",
+};
+
+/** A gateway pointed at a local OpenAI-compatible endpoint: no key, no cost. */
+const configureGateway = () =>
+  globalThis.chrome.storage.local.set({
+    fs_gateway_config_v1: {
+      provider: "openai-compatible",
+      model: "llava",
+      baseUrl: "http://localhost:11434/v1",
+    },
+  });
+
+/**
+ * Drive SOLVE_CAPTCHA with the page reporting `found`, the image grab
+ * returning `grab`, and the model replying `said`. Nothing here touches the
+ * network: fetch is replaced for the duration.
+ */
+async function runWithGateway(found, grab, said) {
+  reset();
+  const { runId, runState } = startRun({ captchaAuthorized: true });
+  onExecuteScript((details) => {
+    if (!details.func) return [];
+    return String(details.func).includes("__fsGrabCaptchaImage")
+      ? [{ result: grab }]
+      : [{ result: found }];
+  });
+  onContentMessage(async () => ({ ok: true, result: { typed: true } }));
+
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), body: init?.body });
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      text: async () =>
+        JSON.stringify({ choices: [{ message: { content: said } }] }),
+    };
+  };
+  try {
+    // Not awaited straight away: every path that has no answer pauses, and
+    // _awaitResume polls until somebody resumes. End the pause the way the
+    // user does, then let the step finish.
+    const running = _executeSteps(
+      [{ id: "s1", type: "SOLVE_CAPTCHA", config: {} }],
+      1,
+      runId,
+      { extracted: {} },
+      { total: 1, count: 0 },
+    );
+    // Waited for, not slept past. Clearing the pause on a fixed delay is a
+    // race: when the step reaches the pause *after* that delay, the flag is
+    // set with nobody left to clear it and _awaitResume polls for ever.
+    for (let i = 0; i < 200 && !runState.paused; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    runState.paused = false;
+    await running;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const sent = calls.contentMessages.map((m) => m.payload);
+  await endRun(runId);
+  return { sent, lines: logs(), seen };
+}
+
+const pixel = {
+  dataUrl:
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  mediaType: "image/png",
+  answerSelector: "#vcode",
+  width: 120,
+  height: 40,
+};
+
+test("an image captcha is read by the configured model and typed in", async () => {
+  await attest(true);
+  await configureGateway();
+  const { sent, lines, seen } = await runWithGateway(
+    imageCaptcha,
+    pixel,
+    "A7X9K",
+  );
+
+  assert.equal(seen.length, 1, "it did not ask the model exactly once");
+  const fill = sent.find((p) => p.type === "FILL");
+  assert.ok(fill, "it never typed the answer");
+  assert.equal(fill.config.text, "A7X9K");
+  // The image path finds its own answer box beside the picture; the written
+  // path's selector came back with the question.
+  assert.equal(fill.config.selector, "#vcode");
+  assert.match(lines.join("\n"), /model you configured/i);
+});
+
+test("a widget captcha never reaches the model", async () => {
+  // A reCAPTCHA is a behavioural check, not a picture with an answer in it.
+  // Sending its screenshot to a vision model spends the user's money to be
+  // told nothing.
+  await attest(true);
+  await configureGateway();
+  const { sent, seen } = await runWithGateway(
+    { ...imageCaptcha, type: "recaptcha" },
+    pixel,
+    "whatever",
+  );
+  assert.equal(seen.length, 0, "it paid a model to look at a reCAPTCHA");
+  assert.ok(!sent.some((p) => p.type === "FILL"));
+});
+
+test("a model that pads its answer is not believed", async () => {
+  // A failed attempt is recorded by the site and there are usually three
+  // before a lockout, so anything that is not a short clean token is treated
+  // as no answer rather than as an answer worth trying.
+  await attest(true);
+  await configureGateway();
+  const { sent, lines } = await runWithGateway(
+    imageCaptcha,
+    pixel,
+    "The captcha shows the characters A7X9K",
+  );
+  assert.ok(!sent.some((p) => p.type === "FILL"), "it typed a sentence");
+  assert.match(lines.join("\n"), /not a captcha code/i);
+});
+
+test("a model that says it cannot read the image is believed", async () => {
+  await attest(true);
+  await configureGateway();
+  const { sent, lines } = await runWithGateway(
+    imageCaptcha,
+    pixel,
+    "UNREADABLE",
+  );
+  assert.ok(!sent.some((p) => p.type === "FILL"));
+  assert.match(lines.join("\n"), /could not read/i);
+});
+
+test("with no provider configured nothing is asked and nothing is spent", async () => {
+  // The default state of the tool. It is not a failure — it is what "free
+  // unless you choose otherwise" means.
+  await attest(true);
+  await globalThis.chrome.storage.local.set({ fs_gateway_config_v1: null });
+  const { sent, seen } = await runWithGateway(imageCaptcha, pixel, "A7X9K");
+  assert.equal(seen.length, 0);
+  assert.ok(!sent.some((p) => p.type === "FILL"));
+});
+
+test("a cross-origin captcha image is reported, not guessed at", async () => {
+  await attest(true);
+  await configureGateway();
+  const { sent, lines, seen } = await runWithGateway(
+    imageCaptcha,
+    { error: "the captcha image is served from another origin" },
+    "A7X9K",
+  );
+  assert.equal(
+    seen.length,
+    0,
+    "it asked the model about an image it never had",
+  );
+  assert.ok(!sent.some((p) => p.type === "FILL"));
+  assert.match(lines.join("\n"), /another origin/i);
 });

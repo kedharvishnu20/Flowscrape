@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 180 findings — 23 blocker · 51 high · 77 medium · 29 low. The
+**Totals:** 182 findings — 23 blocker · 51 high · 79 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 20       |
+| K · Capability review           | 22       |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 178 of 180 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 180 of 182 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2374,3 +2374,58 @@ to the same route.
 | ------ | ----------------------------- |
 | before | 10 rows, page one, five times |
 | after  | 50 rows, five distinct pages  |
+
+### K-21 · MEDIUM · The page decided what the worker would have to do
+
+`content/captcha-check.js` reported a `tier` — can anything free answer this? —
+from a shape regex, while the parser that would actually have to produce the
+answer lives in `utils/captcha-solvers.js`, which a classic content script
+cannot import. Two opinions about the same question, free to disagree, and they
+did: a page reporting `solvable-locally` while the solver then declined told the
+user the run had stopped on something free, and then nothing free happened.
+
+The page reports what it saw; `tierOf` in the worker decides what that means. A
+written question is `solvable-locally` only if `solveLocalChallenge` can
+actually answer it, which is the only honest test. Same split `IF_ELSE` and
+`ASSERT` use, and the G-01 rule that put it there.
+
+Moving the verdict exposed a real bug the old arrangement hid. `_promptFor`
+joins a field's label, its wrapper's text, its aria-label and its placeholder —
+and the label and the wrapper both contain the question, so the solver was
+handed `"What is 3 + 4? What is 3 + 4?"`. Two arithmetic expressions in one
+string, which its "two readings is not certainty" rule correctly refuses to
+answer. The question was solvable; the way it had been quoted was not. The
+parts are deduplicated now.
+
+The refusal changed too. Both gates are read before either is reported, so a
+user who has given neither is told about both at once rather than satisfying
+one, pressing Run, and being told about the other.
+
+### K-22 · MEDIUM · The bring-your-own-key gateway answered nothing
+
+`utils/ai-gateway.js` landed complete and wired to no caller (K-17), which is
+the same shape as every other finding in this audit about a feature that looks
+finished. `SOLVE_CAPTCHA` now reaches for it, under conditions worth stating
+plainly because they are the product decision:
+
+- **Only after free has declined.** The local solver runs first, every time.
+- **Only image captchas.** A reCAPTCHA or hCaptcha widget is a behavioural
+  check whose token comes from a solving service; handing its screenshot to a
+  vision model spends the user's money to be told nothing. Refusing is the
+  honest answer, and a test asserts the model is never asked.
+- **Only if the user configured a provider**, which by default nobody has. A
+  local endpoint (Ollama, LM Studio) needs no key and costs nothing, and is a
+  first-class option rather than an afterthought.
+- **The image comes from the rendered `<img>`, drawn through a canvas**, not
+  from re-fetching its URL: a captcha endpoint issues a _new_ challenge per
+  request, so the fetched image is one the page is no longer asking about. A
+  cross-origin image taints the canvas and is reported rather than worked
+  around.
+- **The answer is not believed on sight.** Anything longer than a token,
+  containing whitespace, or saying it could not read the image is treated as no
+  answer. A wrong answer is a failed attempt against a site that usually allows
+  three; a pause costs nothing.
+
+The log says which path answered — "solved on this machine, at no cost" or
+"answered by the model you configured" — because that distinction is the whole
+promise of the free tier.

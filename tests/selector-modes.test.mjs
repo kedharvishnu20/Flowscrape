@@ -191,3 +191,73 @@ test("exactly one mode is marked as the suggestion", () => {
   );
   assert.match(modal, /classList\.add\("suggested"\)/);
 });
+
+// ── FS-01 / K-32: bulk on a repeating element that carries no class ──────────
+//
+// Reported from real use, twice: "I am trying to use bulk in the extract
+// activity but it is still finding only 1 image, not all of them —
+// `div.grid > img:nth-of-type(1)` instead of `div.grid > img`."
+//
+// The grid of bare <img> is the shape that broke it. _buildBulkSelector only
+// treated repetition as bulk-worthy when the siblings shared a class, or when
+// the tag was one of li/tr/td/article/section. A repeating <img>, <a>, <p> or
+// <span> with no class matched neither test, so the path it had built was
+// thrown away and the *specific* selector returned — positional, one match,
+// which is the opposite of what Bulk means.
+
+const GRID = `
+  <div class="grid">
+    <img src="/1.jpg" alt="one">
+    <img src="/2.jpg" alt="two">
+    <img src="/3.jpg" alt="three">
+    <img src="/4.jpg" alt="four">
+  </div>
+`;
+
+test("Bulk on a repeating element with no class matches all of them", async () => {
+  const h = await loadInjector(GRID);
+  const el = h.document.querySelector(".grid img:nth-of-type(2)");
+  const sel = h.api._buildSelector(el, true);
+
+  assert.ok(
+    !sel.includes(":nth-of-type("),
+    `Bulk produced a positional selector: "${sel}"`,
+  );
+  assert.equal(
+    count(h, sel),
+    4,
+    `Bulk produced "${sel}", matching ${count(h, sel)} of 4 images`,
+  );
+});
+
+test("Bulk on a bare repeating tag is anchored to its container", async () => {
+  // "img" would match all four too, and would also match every image
+  // elsewhere on the page. The container is what makes it this grid's images.
+  const h = await loadInjector(`
+    <img src="/logo.png" alt="site logo">
+    ${GRID}
+    <footer><img src="/badge.png" alt="badge"></footer>
+  `);
+  const el = h.document.querySelector(".grid img:nth-of-type(2)");
+  const sel = h.api._buildSelector(el, true);
+
+  assert.equal(
+    count(h, sel),
+    4,
+    `"${sel}" matched ${count(h, sel)} — the logo and the badge are not grid images`,
+  );
+  assert.ok(sel.includes(".grid"), `"${sel}" is not anchored to the grid`);
+});
+
+test("Bulk still keeps one field per record on a table", async () => {
+  // The guard on the fix: a <td> among differing <td> siblings must not become
+  // a bare tag matching every cell of every column (the J-x regression).
+  const h = await loadInjector(TABLE);
+  const el = h.document.querySelector("tbody tr:nth-of-type(2) td.price");
+  const sel = h.api._buildSelector(el, true);
+  assert.equal(
+    count(h, sel),
+    count(h, "tbody tr"),
+    `"${sel}" is not one per row`,
+  );
+});

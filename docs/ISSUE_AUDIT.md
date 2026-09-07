@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 191 findings — 24 blocker · 56 high · 82 medium · 29 low. The
+**Totals:** 192 findings — 24 blocker · 57 high · 82 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 29       |
+| K · Capability review           | 30       |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 190 of 191 findings fixed; A-07 (a phantom `FORM_FILL`
+**Still open: nothing.** 191 of 192 findings fixed; A-07 (a phantom `FORM_FILL`
 step type) is the one left by decision. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2774,6 +2774,37 @@ Two details that would otherwise have turned an optimisation into a bug:
 | ------ | ------------------------------------------ |
 | before | 201 KB, always                             |
 | after  | 119 KB, plus one specialist when asked for |
+
+### K-32 · HIGH · Bulk returned one match when the repeating element had no class
+
+Reported from real use twice, and the second report carried the evidence that
+settled it: picking an image in a grid, in **Bulk** mode, produced
+`div.grid > img:nth-of-type(1)` — one image of four — where the user wanted
+`div.grid > img`.
+
+`_buildBulkSelector` walks up from the picked element looking for repetition,
+and it only recognised repetition two ways: the siblings shared a class, or the
+tag was one of `li`, `tr`, `td`, `article`, `section`. A grid of bare `<img>`
+matched neither, so `foundBulkSequence` stayed false, the path it had just
+built was thrown away, and the function fell through to its last line — which
+returns the **specific** selector. In Bulk mode. Positional, one match, exactly
+the opposite of what the control means.
+
+Repetition with nothing to name it is still repetition, and the siblings there
+are the same kind of thing as each other — which is what separates this case
+from the `<td>` one directly above it, where the siblings are the _different_
+fields of one record and a bare `td` would return every cell of every column
+(the earlier regression that put that list there).
+
+One condition on accepting it: a bare tag is only taken once a container is in
+the path. `img` alone matches all four grid images and also the site logo and
+the footer badge; `div.grid > img` matches the four. So the candidate check
+waits for a parent before it will accept a tag that names nothing.
+
+|        | Bulk on an image in `div.grid`           |
+| ------ | ---------------------------------------- |
+| before | `div.grid > img:nth-of-type(1)` — 1 of 4 |
+| after  | `div.grid > img` — 4 of 4                |
 
 ### K-28 · HIGH · An exported loop searched the whole page, every iteration
 

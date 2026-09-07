@@ -2382,6 +2382,11 @@
     let path = [];
     let current = el;
     let foundBulkSequence = false;
+    // Set when the repetition was recognised from the tag alone, with nothing
+    // on the element to name it. A bare tag is a true bulk answer — every image
+    // in the grid *is* `img` — but on its own it also matches every image on
+    // the page, so it is only accepted once a container is in the path.
+    let needsAnchor = false;
 
     for (let depth = 0; depth < 5; depth++) {
       if (!current || current === document.documentElement) break;
@@ -2425,6 +2430,19 @@
             if (idx > 0) part += `:nth-of-type(${idx})`;
           }
           foundBulkSequence = true;
+        } else {
+          // Repetition with nothing to name it: a grid of bare <img>, a list of
+          // <a>, a column of <p>. This used to fall through with the sequence
+          // unrecognised, so the path built here was discarded and the
+          // *specific* selector returned instead — `div.grid > img:nth-of-type(1)`
+          // for a picker the user had put in Bulk mode, matching one image of
+          // four. Reported from real use twice (FS-01).
+          //
+          // The siblings here are the same kind of thing as each other, which
+          // is what separates this from the td case above: every cell of a row
+          // is a different field, but every image of a grid is an image.
+          foundBulkSequence = true;
+          needsAnchor = true;
         }
       } else {
         // Try to add stable classes
@@ -2444,7 +2462,10 @@
       if (foundBulkSequence) {
         try {
           const candidate = path.join(" > ");
-          if (document.querySelectorAll(candidate).length >= 2) {
+          // A bare tag needs its container before it means anything: `img`
+          // matches the site logo and the footer badge too.
+          const anchored = !needsAnchor || path.length >= 2;
+          if (anchored && document.querySelectorAll(candidate).length >= 2) {
             return {
               selector: candidate,
               count: document.querySelectorAll(candidate).length,

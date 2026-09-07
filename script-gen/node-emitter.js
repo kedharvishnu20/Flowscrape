@@ -132,6 +132,37 @@ export function emitNode(pipeline) {
     `// MCP runner reads off stdout — but a printed row is not a file.`,
     `const fsRows = [];`,
     "",
+    `// DEDUPE. Null until a DEDUPE step sets it, and from then on every row`,
+    `// the script collects is checked — the same gate the extension applies,`,
+    `// for the same reason: rows are written as they are read, so filtering`,
+    `// afterwards would mean unwriting.`,
+    `let fsDedupe = null;`,
+    `let fsDropped = 0;`,
+    `const fsSeen = new Map();`,
+    `const fsKey = (row, fields) => {`,
+    `  const names = fields.length ? fields : Object.keys(row ?? {}).sort();`,
+    `  return names.map(n => {`,
+    `    const v = (row ?? {})[n];`,
+    `    if (v === undefined) return '\\u001fundef';`,
+    `    if (v === null) return '\\u001fnull';`,
+    `    if (typeof v === 'object') return JSON.stringify(v);`,
+    `    return String(v).replace(/\\s+/g, ' ').trim().toLowerCase();`,
+    `  }).join('\\u001f');`,
+    `};`,
+    `const fsCollect = row => {`,
+    `  if (fsDedupe) {`,
+    `    const k = fsKey(row, fsDedupe.fields);`,
+    `    if (fsSeen.has(k)) { fsDropped++; return false; }`,
+    `    fsSeen.set(k, 1);`,
+    `    // Forget the oldest rather than grow without bound; a Map iterates in`,
+    `    // insertion order, so the first key is the oldest.`,
+    `    if (fsSeen.size > fsDedupe.limit) fsSeen.delete(fsSeen.keys().next().value);`,
+    `  }`,
+    `  fsRows.push(row);`,
+    `  console.log(JSON.stringify(row));`,
+    `  return true;`,
+    `};`,
+    "",
     `// What an element says, mirroring content/injector.js exactly: an <img>`,
     `// answers with its src, a bare <a> with its href, a checkbox only when`,
     `// checked. innerText() for all of it — which is what this used to emit —`,
@@ -481,6 +512,38 @@ function _emitNodeStepBody(step) {
       return _extractNode(config);
     case "FORM_FILL":
       return _formFillNode(config);
+    case "DEDUPE": {
+      const fields = String(config.fields ?? "")
+        .split(",")
+        .map((f) => f.trim())
+        .filter(Boolean);
+      const limit = Number(config.limit) > 0 ? Number(config.limit) : 100000;
+      const lines = [
+        `// DEDUPE: ${fields.length ? fields.join(", ") : "every field"}`,
+        `fsDedupe = { fields: ${JSON.stringify(fields)}, limit: ${limit} };`,
+      ];
+      if (config.scope === "forever") {
+        // The script's equivalent of the extension's stored keys: a file it
+        // reads at the start and rewrites at the end. Named, and next to the
+        // output, so it is obvious what to delete to start over.
+        lines.push(
+          `const _seenFile = process.env.FS_SEEN_FILE ?? '.fs-seen.json';`,
+          `if (fs.existsSync(_seenFile)) {`,
+          `  try {`,
+          `    for (const k of JSON.parse(fs.readFileSync(_seenFile, 'utf8'))) fsSeen.set(k, 1);`,
+          `  } catch (err) {`,
+          `    console.error(\`DEDUPE: could not read \${_seenFile} (\${err.message}); starting fresh.\`);`,
+          `  }`,
+          `}`,
+          `process.on('exit', () => {`,
+          `  try { fs.writeFileSync(_seenFile, JSON.stringify([...fsSeen.keys()])); }`,
+          `  catch (err) { console.error(\`DEDUPE: could not save \${_seenFile} (\${err.message}).\`); }`,
+          `});`,
+        );
+      }
+      lines.push("");
+      return lines;
+    }
     case "EXPORT": {
       // It used to emit a comment saying "implement write here", which is a
       // script that runs, exits 0, and leaves no file — the failure this whole
@@ -498,7 +561,7 @@ function _emitNodeStepBody(step) {
         `{`,
         `  const _out = process.env.FS_OUT_FILE ?? 'export.${FORMAT_EXT[fmt]}';`,
         `  fs.writeFileSync(_out, fsFormatRows(fsRows, '${fmt}'), 'utf8');`,
-        `  console.error(\`FlowScrape: wrote \${fsRows.length} row(s) to \${_out}\`);`,
+        `  console.error(\`FlowScrape: wrote \${fsRows.length} row(s) to \${_out}\${fsDropped ? \` (\${fsDropped} duplicate(s) dropped)\` : ''}\`);`,
         `}`,
         "",
       ];
@@ -1168,8 +1231,7 @@ function _extractNode(config) {
     `      // ?? not ||: "0", "" and false are real extracted values.`,
     `      row[_k] = (_v.length === 1 ? _v[0] : (_i < _v.length ? _v[_i] : null)) ?? null;`,
     `    }`,
-    `    fsRows.push(row);`,
-    `    console.log(JSON.stringify(row));`,
+    `    fsCollect(row);`,
     `  }`,
     "}",
     "",

@@ -19,6 +19,40 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — DEDUPE
+
+Duplicate rows are the normal outcome of scraping, not an exotic one: a
+paginator that repeats its last page, a feed re-rendering what is already on
+screen, a run repeated tomorrow over a list that has moved on by three items.
+The file ended up with the same record several times and nothing said so.
+
+`DEDUPE` is a **gate, not a filter**, and the placement matters: rows reach
+storage as they are extracted, so a step that "filtered the results" would be
+unwriting rows already on disk. Put it before the steps that extract, and from
+there on every row the run collects is checked.
+
+- **The key is yours.** Name the fields that identify a record — a URL, an id, a
+  title. Whole-row equality is almost never what a person means: two readings of
+  one product differ by a stock count that moved between page loads. Values are
+  compared the way a person compares them (trimmed, whitespace collapsed,
+  case-folded), and a field the page did not have stays distinct from one it had
+  empty.
+- **"Across runs" is a real mode.** The keys persist under the pipeline and the
+  site, so tomorrow's run collects only what is new — the mode a watchlist
+  actually wants, with the cost stated: the keys are kept until you clear them.
+- **The seen-set is bounded.** Past the limit the oldest keys are forgotten,
+  which can let an old duplicate through. The panel says so rather than
+  presenting the count as exact.
+- **The exported script carries the same gate**, including the across-runs mode,
+  which becomes a JSON file the script reads at the start and rewrites at the
+  end. Verified by running a generated script twice against a page with a
+  repeated link: the first run wrote two rows and dropped one, the second wrote
+  none and dropped three.
+
+Collecting rows also went from five copies of the same two lines — in EXTRACT,
+PAGE_DATA, PAGE_JSON, API and AUTO_EXTRACT — to one path, because a gate added
+to four of five is a gate that leaks.
+
 ### Fixed — three ways pagination scraped the same page twice
 
 All three share a shape: the run keeps going, produces rows, finishes without an

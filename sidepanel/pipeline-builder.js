@@ -2693,6 +2693,64 @@ function _configFields(step) {
     return html;
   }
 
+  // ── DEDUPE ──
+  if (step.type === "DEDUPE") {
+    const scope = c.scope || "run";
+    html += `<div style="background:rgba(79,201,168,0.10);border:1px solid rgba(79,201,168,0.35);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">Drop rows you already have</div>
+      <div style="font-size:11px;color:var(--text-dim);line-height:1.5;">
+        Put this <b>before</b> the steps that extract. From here on, every row
+        the run collects is checked, and one it has seen before is dropped
+        rather than written.
+      </div>
+    </div>`;
+
+    html += field(
+      step,
+      "fields",
+      "Fields that identify a row (comma separated)",
+      "text",
+      c.fields ?? "",
+    );
+    html += hint(
+      "Leave blank to compare whole rows — which is rarely what you mean: two " +
+        "readings of the same product differ by a stock count that moved. Name " +
+        "the URL, the id, the title.",
+    );
+
+    html += `<label>Remember for how long</label>
+    <select id="cfg-${step.id}-scope" data-id="${step.id}" data-key="scope" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="run"     ${scope === "run" ? "selected" : ""}>This run only</option>
+      <option value="forever" ${scope === "forever" ? "selected" : ""}>Across runs of this pipeline</option>
+    </select>`;
+    html += hint(
+      scope === "forever"
+        ? "Tomorrow's run of this pipeline on this site collects only what is " +
+            "new. The keys are kept on this machine until you clear them."
+        : "The memory is thrown away when the run ends.",
+    );
+
+    html += field(
+      step,
+      "limit",
+      "Rows to remember (bound)",
+      "number",
+      c.limit ?? 100000,
+    );
+    html += hint(
+      "A run cannot remember a million keys for free. Past this, the oldest " +
+        "are forgotten — an old duplicate can get through, which is worth " +
+        "knowing rather than assuming.",
+    );
+
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
   // ── SESSION ──
   if (step.type === "SESSION") {
     const mode = c.mode || "save";

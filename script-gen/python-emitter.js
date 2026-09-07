@@ -64,7 +64,7 @@ export function emitPython(pipeline) {
     `# Pipeline: ${_escStr(pipeline.name ?? "Untitled")}`,
     `# Generated: ${new Date().toISOString()}`,
     "",
-    "import asyncio, os, re, sys, io, json, csv, time, random, base64",
+    "import asyncio, os, re, sys, io, json, csv, time, random, base64, atexit",
     "from playwright.async_api import async_playwright",
     "import requests",
     "from requests.adapters import HTTPAdapter",
@@ -170,6 +170,47 @@ export function emitPython(pipeline) {
     "# to write. EXTRACT still prints each row as it goes — that is what the",
     "# MCP runner reads off stdout — but a printed row is not a file.",
     "fs_rows = []",
+    "",
+    "# DEDUPE. None until a DEDUPE step sets it, and from then on every row the",
+    "# script collects is checked — the same gate the extension applies, for the",
+    "# same reason: rows are written as they are read, so filtering afterwards",
+    "# would mean unwriting.",
+    "fs_dedupe = None",
+    "fs_dropped = 0",
+    "fs_seen = {}",
+    "",
+    "",
+    "def fs_key(row, fields):",
+    "    names = fields if fields else sorted((row or {}).keys())",
+    "    parts = []",
+    "    for n in names:",
+    "        v = (row or {}).get(n, KeyError)",
+    "        if v is KeyError:",
+    '            parts.append("\\u001fundef")',
+    "        elif v is None:",
+    '            parts.append("\\u001fnull")',
+    "        elif isinstance(v, (dict, list)):",
+    '            parts.append(json.dumps(v, separators=(",", ":")))',
+    "        else:",
+    '            parts.append(re.sub(r"\\s+", " ", str(v)).strip().lower())',
+    '    return "\\u001f".join(parts)',
+    "",
+    "",
+    "def fs_collect(row):",
+    "    global fs_dropped",
+    "    if fs_dedupe:",
+    '        k = fs_key(row, fs_dedupe["fields"])',
+    "        if k in fs_seen:",
+    "            fs_dropped += 1",
+    "            return False",
+    "        fs_seen[k] = 1",
+    "        # Forget the oldest rather than grow without bound; a dict keeps",
+    "        # insertion order, so the first key is the oldest.",
+    '        if len(fs_seen) > fs_dedupe["limit"]:',
+    "            del fs_seen[next(iter(fs_seen))]",
+    "    fs_rows.append(row)",
+    "    print(json.dumps(row))",
+    "    return True",
     "",
     "",
     "# What an element says, mirroring content/injector.js exactly: an <img>",
@@ -594,6 +635,8 @@ function _emitStepBody(step) {
       return _emitExtract(config);
     case "FORM_FILL":
       return _emitFormFill(config);
+    case "DEDUPE":
+      return _emitDedupe(config);
     case "EXPORT":
       return _emitExport(config);
     case "SCROLL": {
@@ -1143,8 +1186,7 @@ function _emitExtract(config) {
     `    row = {}`,
     `    for _k, _v in _cols.items():`,
     `        row[_k] = _v[0] if len(_v) == 1 else (_v[_i] if _i < len(_v) else None)`,
-    `    fs_rows.append(row)`,
-    `    print(json.dumps(row))`,
+    `    fs_collect(row)`,
     "",
   );
   return lines;
@@ -1283,6 +1325,46 @@ function _emitDownload(config) {
   return lines;
 }
 
+/**
+ * DEDUPE, as the script's own gate.
+ *
+ * "forever" becomes a file the script reads at the start and rewrites at the
+ * end, named and sitting next to the output so it is obvious what to delete to
+ * start over.
+ */
+function _emitDedupe(config) {
+  const fields = String(config.fields ?? "")
+    .split(",")
+    .map((f) => f.trim())
+    .filter(Boolean);
+  const limit = Number(config.limit) > 0 ? Number(config.limit) : 100000;
+  const lines = [
+    `# DEDUPE: ${fields.length ? fields.join(", ") : "every field"}`,
+    `fs_dedupe = {"fields": ${JSON.stringify(fields)}, "limit": ${limit}}`,
+  ];
+  if (config.scope === "forever") {
+    lines.push(
+      `_seen_file = os.environ.get("FS_SEEN_FILE", ".fs-seen.json")`,
+      `if os.path.exists(_seen_file):`,
+      `    try:`,
+      `        with open(_seen_file, encoding="utf-8") as _fh:`,
+      `            for _k in json.load(_fh):`,
+      `                fs_seen[_k] = 1`,
+      `    except Exception as _err:`,
+      `        print("DEDUPE: could not read {} ({}); starting fresh.".format(_seen_file, _err), file=sys.stderr)`,
+      `@atexit.register`,
+      `def _fs_save_seen():`,
+      `    try:`,
+      `        with open(_seen_file, "w", encoding="utf-8") as _fh:`,
+      `            json.dump(list(fs_seen.keys()), _fh)`,
+      `    except Exception as _err:`,
+      `        print("DEDUPE: could not save {} ({}).".format(_seen_file, _err), file=sys.stderr)`,
+    );
+  }
+  lines.push("");
+  return lines;
+}
+
 function _emitExport(config) {
   // It used to emit three comments, one of which said "write to file here" —
   // a script that runs, exits 0, and leaves nothing behind.
@@ -1299,7 +1381,7 @@ function _emitExport(config) {
     `_out = os.environ.get("FS_OUT_FILE", "export.${FORMAT_EXT[fmt]}")`,
     `with open(_out, "w", encoding="utf-8", newline="") as _fh:`,
     `    _fh.write(fs_format_rows(fs_rows, "${fmt}"))`,
-    `print("FlowScrape: wrote {} row(s) to {}".format(len(fs_rows), _out), file=sys.stderr)`,
+    `print("FlowScrape: wrote {} row(s) to {}{}".format(len(fs_rows), _out, " ({} duplicate(s) dropped)".format(fs_dropped) if fs_dropped else ""), file=sys.stderr)`,
     "",
   ];
 }

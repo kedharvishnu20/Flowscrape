@@ -30,6 +30,7 @@
  */
 
 import { logger } from "../utils/logger.js";
+import { SeenKeys, filterRows, parseFields } from "../utils/row-dedupe.js";
 import { extractPdfText } from "../utils/pdf-text.js";
 import {
   ALL_STEP_TYPES,
@@ -1114,6 +1115,9 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
     enableSniffer,
     snifferFilter,
     targetOrigin: payload.targetOrigin ?? null,
+    // Named so a "forever" DEDUPE can tell one pipeline's memory from
+    // another's, over the same site.
+    pipelineName: pipeline.name ?? "",
     // Half of what SOLVE_CAPTCHA needs. Strict equality, because an absent
     // field must never read as permission.
     captchaAuthorized: payload.captchaAuthorized === true,
@@ -2304,6 +2308,129 @@ async function _writeCookies(cookies) {
     }
   }
   return { written, refused };
+}
+
+/** Where a "forever" dedupe remembers its keys, one entry per pipeline+site. */
+const STORAGE_DEDUPE_PREFIX = "fs_seen_";
+
+/**
+ * Collect rows into the run, dropping the ones a DEDUPE step has already seen.
+ *
+ * The one path rows take. Every producer — EXTRACT, PAGE_DATA, PAGE_JSON, API,
+ * AUTO_EXTRACT — used to push into `results` and the buffer itself, in five
+ * copies of the same two lines; a filter added to four of them would have been
+ * a filter that leaks.
+ *
+ * @param {object} runState
+ * @param {string} runId
+ * @param {object[]} rows
+ * @returns {Promise<{kept: object[], dropped: number}>}
+ */
+async function _collectRows(runState, runId, rows) {
+  const dedupe = runState?.dedupe;
+  const { kept, dropped } = dedupe
+    ? filterRows(rows, dedupe.seen, dedupe.fields)
+    : { kept: rows, dropped: 0 };
+
+  if (dedupe && dropped) {
+    dedupe.dropped += dropped;
+    dedupe.dirty = true;
+  }
+  if (kept.length) {
+    runState.results.push(...kept);
+    for (const row of kept) await pushRow(runId, row);
+  }
+  return { kept, dropped };
+}
+
+/**
+ * DEDUPE — from here on, drop rows this run (or an earlier one) already has.
+ *
+ * A gate rather than a transform, and the reason is where the rows are: they
+ * reach IndexedDB as they are extracted, so a step that "filtered the results"
+ * would be unwriting rows that are already on disk. Placed before the LOOP that
+ * extracts, it reads exactly as it behaves.
+ *
+ * "forever" persists the keys under the pipeline and the site, so tomorrow's
+ * run of the same pipeline collects only what is new. That is the mode people
+ * actually want for a watchlist, and it is the one with a cost worth stating:
+ * the keys are kept until you clear them.
+ *
+ * @param {object} step
+ * @param {string} runId
+ */
+async function _executeDedupe(step, runId) {
+  const runState = _runStates.get(runId);
+  if (!runState) return;
+  const config = step.config || {};
+  const fields = parseFields(config.fields);
+  const scope = config.scope === "forever" ? "forever" : "run";
+  const limit = Number(config.limit) > 0 ? Number(config.limit) : undefined;
+
+  let restored = [];
+  let storageKey = "";
+  if (scope === "forever") {
+    // Keyed by pipeline and site together: the same pipeline pointed at a
+    // second site is a different list, and two pipelines over one site are two
+    // different questions.
+    storageKey =
+      STORAGE_DEDUPE_PREFIX +
+      _safeSegment(
+        `${runState.pipelineName || "pipeline"}@${_hostOf(runState.targetOrigin) || "site"}`,
+      );
+    const stored = await chrome.storage.local
+      .get([storageKey])
+      .catch(() => ({}));
+    restored = Array.isArray(stored?.[storageKey]) ? stored[storageKey] : [];
+  }
+
+  runState.dedupe = {
+    fields,
+    scope,
+    storageKey,
+    seen: new SeenKeys(limit, restored),
+    dropped: 0,
+    dirty: false,
+  };
+
+  _broadcastLog(
+    "info-log",
+    `DEDUPE: on${fields.length ? ` ${fields.join(", ")}` : " every field"}, ` +
+      (scope === "forever"
+        ? `remembering ${restored.length} row(s) from earlier runs.`
+        : "within this run.") +
+      " Rows collected from here on are checked.",
+    runId,
+  );
+}
+
+/**
+ * Write a "forever" dedupe's keys back, at the end of the run.
+ *
+ * Once, not per row: a storage write for every row of a 50,000-row run would
+ * cost more than the scrape. Called on every exit from a run, so a stopped run
+ * still remembers what it collected — those rows are on disk either way, and
+ * re-collecting them tomorrow is the thing this exists to prevent.
+ *
+ * @param {object} runState
+ */
+async function _saveDedupeKeys(runState) {
+  const dedupe = runState?.dedupe;
+  if (!dedupe || dedupe.scope !== "forever" || !dedupe.storageKey) return;
+  if (!dedupe.dirty && !runState.results?.length) return;
+  try {
+    await chrome.storage.local.set({
+      [dedupe.storageKey]: dedupe.seen.toArray(),
+    });
+  } catch (err) {
+    // Worth saying: the next run will re-collect everything this one did.
+    _broadcastLog(
+      "warn-log",
+      `DEDUPE: could not remember this run's rows (${err.message}), so the ` +
+        "next run will see them as new.",
+      runState.runId,
+    );
+  }
 }
 
 /**
@@ -3967,8 +4094,7 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       // PAGE_DATA's do — one path into the buffer, whether the response came
       // from a single call or was walked across several pages of pagination.
       if (Array.isArray(apiResult.rows) && apiResult.rows.length > 0) {
-        runState.results.push(...apiResult.rows);
-        for (const row of apiResult.rows) await pushRow(runId, row);
+        await _collectRows(runState, runId, apiResult.rows);
       }
       _broadcastLog(
         "info-log",
@@ -3982,6 +4108,10 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       );
       return;
     }
+
+    case "DEDUPE":
+      await _executeDedupe(step, runId);
+      return;
 
     case "SET_HEADERS":
       await _executeSetHeaders(step, tabId, runId);
@@ -4013,8 +4143,7 @@ async function _dispatchStep(step, tabId, runId, ctx) {
 
     case "AUTO_EXTRACT": {
       const row = await _executeAutoExtract(step.config, tabId, runId, ctx);
-      runState.results.push(row);
-      await pushRow(runId, row);
+      await _collectRows(runState, runId, [row]);
       Object.assign(ctx.extracted, row);
       _broadcastLog(
         "info-log",
@@ -4057,8 +4186,7 @@ async function _dispatchStep(step, tabId, runId, ctx) {
         nodes: page.nodes,
         content: page.tree ?? page.text ?? page.rows,
       };
-      runState.results.push(row);
-      await pushRow(runId, row);
+      await _collectRows(runState, runId, [row]);
       _broadcastLog(
         "info-log",
         `PAGE_JSON: read ${page.nodes} elements as ${page.mode}.`,
@@ -4088,8 +4216,7 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       }
 
       const rows = data.records ?? [];
-      runState.results.push(...rows);
-      for (const row of rows) await pushRow(runId, row);
+      await _collectRows(runState, runId, rows);
       if (rows.length > 0) {
         Object.assign(ctx.extracted, rows[rows.length - 1]);
       }
@@ -4180,11 +4307,11 @@ async function _dispatchStep(step, tabId, runId, ctx) {
 
       if (step.type === "EXTRACT" && Array.isArray(resp.result)) {
         const rows = await _transformRows(resp.result, step.config, tabId);
-        runState.results.push(...rows);
-        for (const row of rows) await pushRow(runId, row);
+        const { kept, dropped } = await _collectRows(runState, runId, rows);
         _broadcastLog(
           "info-log",
-          `Extracted ${rows.length} rows (total: ${runState.results.length}).`,
+          `Extracted ${kept.length} rows (total: ${runState.results.length})` +
+            (dropped ? `, ${dropped} already seen.` : "."),
           runId,
         );
         // Without this the count only moves on the next step's status message,
@@ -4984,6 +5111,7 @@ async function _executePipeline(runId, pipeline, targetTabId) {
   await _disableSniffer(runId);
   await _endRunProxy(_runStates.get(runId));
   await clearHeaderRules(runId);
+  await _saveDedupeKeys(_runStates.get(runId));
 
   const endRunState = _runStates.get(runId);
   const stateStr = endRunState?.active ? "completed" : "stopped";
@@ -5077,6 +5205,8 @@ const RUN_ONLY_STEPS = {
     "An export needs the rows a run collected. Press Run; the file is written when the run reaches this step.",
   API_SNIFFER:
     "The sniffer records network traffic for the whole run rather than doing anything at this point in it. Press Run, then look at the monitor.",
+  DEDUPE:
+    "Dedupe checks the rows a run collects from this step onward, so on its own there is nothing for it to check. Press Run.",
   SET_HEADERS:
     "Headers are set for the length of a run and taken back when it ends, so a single-step test would leave them in force with no run to end. Press Run.",
   SOLVE_CAPTCHA:

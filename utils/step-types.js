@@ -223,6 +223,17 @@ export const STEP_TYPES = Object.freeze({
     },
   },
 
+  DEDUPE: {
+    icon: "🧹",
+    cat: "Data",
+    desc: "Drop rows already seen",
+    // A gate on the rows a run collects, not a transform of a list it is
+    // handed: rows reach IndexedDB as they are extracted, so filtering them
+    // afterwards would mean unwriting rows that are already on disk. From this
+    // step onward, every row the run collects is checked.
+    runsIn: "background",
+    def: { fields: "", scope: "run", limit: 100000 },
+  },
   SET_HEADERS: {
     icon: "🏷️",
     cat: "Flow",

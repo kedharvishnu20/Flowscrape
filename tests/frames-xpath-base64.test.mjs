@@ -188,7 +188,7 @@ test("both emitters carry the base64 transform", async () => {
   assert.match(py, /def fs_b64/);
   assert.match(
     py,
-    /import asyncio, os, re, sys, io, json, csv, time, random, base64/,
+    /import asyncio, os, re, sys, io, json, csv, time, random, base64, atexit/,
   );
   assert.match(node, /name === "base64"/);
   assert.match(node, /const fsB64 =/);

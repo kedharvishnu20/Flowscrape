@@ -249,6 +249,15 @@ export function findUnresolvedTemplates(ast) {
   const scan = (value, step, path) => {
     if (typeof value === "string") {
       for (const m of value.matchAll(/\{\{([^}]+)\}\}/g)) {
+        // The one template a script does resolve for itself: both emitters
+        // build a DOWNLOAD_FILE name out of the URL they are about to fetch.
+        if (
+          step.type === "DOWNLOAD_FILE" &&
+          path === "config.filename" &&
+          DOWNLOAD_FILE_VARS.includes(m[1].trim())
+        ) {
+          continue;
+        }
         found.push({
           stepId: step.id ?? null,
           type: step.type,
@@ -272,6 +281,53 @@ export function findUnresolvedTemplates(ast) {
 
   walk(ast?.steps);
   return found;
+}
+
+/**
+ * The `{{...}}` fields a generated script can fill in for a downloaded file.
+ *
+ * Everything else in a filename template — {{extracted.title}}, {{item.href}} —
+ * comes from a run context a standalone script does not have, so the emitters
+ * refuse the whole step rather than dropping the value and saving files under
+ * names the user did not ask for.
+ */
+export const DOWNLOAD_FILE_VARS = Object.freeze([
+  "file.name",
+  "file.stem",
+  "file.ext",
+  "file.index",
+  "file.host",
+]);
+
+/**
+ * A filename template, split the way both emitters need it.
+ *
+ * Path segments first, values second — the same order the extension resolves
+ * them in, and the reason a value from the page cannot introduce a directory.
+ *
+ * @param {string} template
+ * @returns {{segments: Array<Array<{lit?: string, var?: string}>>, unsupported: string[]}}
+ */
+export function parseFilenameTemplate(template) {
+  const unsupported = [];
+  const segments = String(template ?? "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map((segment) => {
+      const parts = [];
+      let at = 0;
+      for (const m of segment.matchAll(/\{\{([^}]+)\}\}/g)) {
+        if (m.index > at) parts.push({ lit: segment.slice(at, m.index) });
+        const name = m[1].trim();
+        if (DOWNLOAD_FILE_VARS.includes(name)) parts.push({ var: name });
+        else unsupported.push(m[0]);
+        at = m.index + m[0].length;
+      }
+      if (at < segment.length) parts.push({ lit: segment.slice(at) });
+      return parts;
+    });
+  return { segments, unsupported };
 }
 
 // === END pipeline-compiler.js ===

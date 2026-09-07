@@ -2430,6 +2430,65 @@ The log says which path answered — "solved on this machine, at no cost" or
 "answered by the model you configured" — because that distinction is the whole
 promise of the free tier.
 
+### K-23 · HIGH · A scrape could name every file it found and fetch none of them
+
+The capability review called this "the single most common thing a scraper does
+that this cannot do at all", and the shape of the gap was the giveaway: the
+manifest already asked for the `downloads` permission, and the whole of it was
+spent on the export. "Get every product image" ended as a column of URLs.
+
+`DOWNLOAD_FILE` is a step in two halves, split where the abilities are. The page
+resolves the URLs, because only it knows its own base, its own shadow roots and
+which candidate a responsive `<img>` actually loaded — and because doing it there
+makes the step loop-scoped for nothing, since `_queryScoped` already answers
+against the record the loop is on. The worker downloads them, because a content
+script cannot reach `chrome.downloads`. `auto` reads `href` from a link and the
+loaded `src` from an image, then the `data-` attributes a lazy loader parks the
+real URL in; naming an attribute overrides all of it.
+
+**The filename is the part with a security shape**, because it is built out of
+values the page supplied. Two rules, and the order matters:
+
+- The template is split on `/` **before** the values go in. The author's
+  subfolders survive; a separator arriving inside a value cannot become one.
+- Each resolved segment then goes through an allowlist — letters, digits, and
+  punctuation no filesystem argues about. A denylist is the one that is never
+  finished; this way both separators, the control range and `<>:"|?*` fall out
+  without being enumerated, an accented or Japanese filename survives, and the
+  `.`/`..` parts of anything that tried to be a path are dropped rather than
+  underscored, so `../../etc/passwd` saves as `etc_passwd` and not as a row of
+  punctuation. Four tests aim directly at this.
+
+Resolving it needed one change elsewhere. `_resolveConfig` runs over every step
+before dispatch, and `{{file.name}}` names something that does not exist until a
+file has been chosen — so the pass blanked it and every file would have landed
+under the same name. The step now carries `__fsRawConfig`, the config as its
+author wrote it, and resolves the template once per file against `_resolveStr`.
+The same resolver, not a second one.
+
+**What it refuses.** Only `http`, `https` and `data:` URLs are handed to Chrome.
+A URL the author typed is held to the pipeline's declared origins exactly as a
+NAVIGATE is. A URL read off the page is not: product images live on a CDN, and
+blocking every undeclared origin would refuse the ordinary case — so the origins
+are named in the log instead, once each, which is the trade this records rather
+than hides. Every file costs a token from the same rate limiter the rest of the
+run pays into: a gallery is forty requests, and pacing them is the only thing
+between a scrape and something that looks like an attack.
+
+**And it counts.** Saved, failed, and why for each failure, capped so one broken
+gallery cannot flood the log. A step that found files and saved none of them
+throws; a selector that matched nothing warns and lets the run continue, because
+an empty gallery is data and a failed download is not.
+
+Both emitters express it through Playwright's `context.request`, which carries
+the context's cookies, rather than through a click — an `<img>` cannot be clicked
+into a download, and a gallery would become forty navigations. A filename
+template referring to anything a standalone script does not have
+(`{{extracted.title}}`, `{{item.href}}`) is refused there the way every other
+unexportable thing is, instead of being emitted with the value silently blank.
+
+Twenty-three tests, four of them on the filename.
+
 ### K-26 · MEDIUM · `SCROLL` could only measure the document, never a container
 
 `SCROLL` already took a `selector`, but every mode measured

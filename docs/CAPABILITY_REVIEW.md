@@ -60,18 +60,33 @@ named in the log, with no toggle (K-14).
 | `LOOP`            | Loop over a list (an API result, a CSV)  | Iterating 500 product URLs from a file needs a data-source loop. Numbered and URL-pattern paginators are covered now (K-20); a data source is not                                  |
 | `EXPORT`          | Append to an existing file               | A run per day into one dataset                                                                                                                                                     |
 | `PDF_EXTRACTION`  | Tables                                   | PDF tables come out as a text blob                                                                                                                                                 |
+| Step              | Missing                                  | Real case it fails on                                                                                                                                                              |
+| ----------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------                          |
+| `CLICK`           | Wait-for-navigation-or-XHR after click   | Click "Load more", next step runs before the rows exist. Today you add a WAIT and guess the number                                                                                 |
+| `CLICK`           | Right-click / middle-click / modifier    | Opening results in a new tab; context menus                                                                                                                                        |
+| `SCROLL`          | Scroll a specific container              | `selector` exists, but infinite-scroll inside a `div` with its own scrollbar is the common shape and needs the container's own height, not the document's                          |
+| ~~`EXTRACT`~~     | ~~Download a matched file/image~~        | **Closed by K-23.** `DOWNLOAD_FILE` is its own step: point it at the links or images and the files land on disk                                                                    |
+| ~~`EXTRACT`~~     | ~~Regex capture group as a field~~       | **Closed by K-11.** The transform existed but reached only group 1; it now takes a group number and flags                                                                          |
+| `SCREENSHOT`      | Per-element scroll-into-view first       | An element below the fold crops to whatever the viewport held                                                                                                                      |
+| `API`             | Pagination (cursor / page / Link header) | Any paged JSON API needs a LOOP whose exit condition it cannot express                                                                                                             |
+| `API`             | Retry on 429/5xx with `Retry-After`      | The rate limiter paces steps, but a single API step that gets a 429 just fails                                                                                                     |
+| `UPLOAD_ACTIVITY` | Drag-drop upload zones                   | Sites with no `<input type=file>` — increasingly common                                                                                                                            |
+| `IF_ELSE`         | Comparing two extracted values           | "If price < last-seen price". Conditions test one selector against a literal                                                                                                       |
+| `LOOP`            | Loop over a list (an API result, a CSV)  | Iterating 500 product URLs from a file needs a data-source loop. Numbered and URL-pattern paginators are covered now (K-20); a data source is not                                  |
+| `EXPORT`          | Append to an existing file               | A run per day into one dataset                                                                                                                                                     |
+| `PDF_EXTRACTION`  | Tables                                   | PDF tables come out as a text blob                                                                                                                                                 |
 
 ### Missing entirely
 
-| Proposed step                  | Why                                                                                                                                |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `DOWNLOAD_FILE`                | Images, PDFs and CSVs from a scrape. The single most common thing a scraper does that this cannot do at all                        |
-| `COOKIES` / `SESSION`          | Save the logged-in state after a manual login and reuse it. Today every run re-logs-in, which is slow and gets accounts flagged    |
-| `SET_HEADERS`                  | User-agent and `Accept-Language` per run. Fixed values are a fingerprint                                                           |
-| ~~`SOLVE_CAPTCHA`~~            | **Closed by K-15,** for what can be answered without paying. See §4                                                                |
-| ~~`RETRY` / step-level retry~~ | **Closed by K-12.** Any step takes `retries` and `retryDelayMs`; a retry queues behind the rate limiter like a first attempt       |
-| `DEDUPE`                       | "Scrape only what is new since last run". Needs a key column and a persisted seen-set                                              |
-| ~~`ASSERT`~~                   | **Closed by K-13.** Exists, does not exist, a count comparison, or text equals/contains — and `optional` still lets a run past one |
+| Proposed step                  | Why                                                                                                                                                       |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ~~`DOWNLOAD_FILE`~~            | **Closed by K-23.** A selector, an optional attribute and a filename template; loop-scoped, paced by the rate limiter, and it says what it failed to save |
+| `COOKIES` / `SESSION`          | Save the logged-in state after a manual login and reuse it. Today every run re-logs-in, which is slow and gets accounts flagged                           |
+| `SET_HEADERS`                  | User-agent and `Accept-Language` per run. Fixed values are a fingerprint                                                                                  |
+| ~~`SOLVE_CAPTCHA`~~            | **Closed by K-15,** for what can be answered without paying. See §4                                                                                       |
+| ~~`RETRY` / step-level retry~~ | **Closed by K-12.** Any step takes `retries` and `retryDelayMs`; a retry queues behind the rate limiter like a first attempt                              |
+| `DEDUPE`                       | "Scrape only what is new since last run". Needs a key column and a persisted seen-set                                                                     |
+| ~~`ASSERT`~~                   | **Closed by K-13.** Exists, does not exist, a count comparison, or text equals/contains — and `optional` still lets a run past one                        |
 
 ---
 
@@ -275,7 +290,7 @@ Ordered by (pain removed ÷ work).
 proxy application during a run; MCP `run_pipeline`.
 
 **Third — reach:**
-`DOWNLOAD_FILE`; `COOKIES`; loop over a data source; API pagination.
+~~`DOWNLOAD_FILE`~~ (K-23); `COOKIES`; loop over a data source; API pagination.
 
 **Fourth — load and polish:**
 split `CONTENT_FILES`; conditional `allFrames`; match counts in the UI; dry run.

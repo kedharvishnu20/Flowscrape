@@ -1987,6 +1987,317 @@ async function _doExport(runId, config) {
   }
 }
 
+// ── DOWNLOAD_FILE ─────────────────────────────────────────────────────────────
+
+/** However many a step asks for, this is where one step stops. */
+const DOWNLOAD_HARD_CAP = 200;
+
+/**
+ * What a filename segment may contain — letters, digits, and a short list of
+ * punctuation that no filesystem argues about.
+ *
+ * An allowlist rather than a list of forbidden characters, because the input is
+ * page-supplied and the forbidden list is the one that is never finished: both
+ * separators, the control range, and `<>:"|?*` all fall out of it without being
+ * enumerated, while a Japanese or accented filename survives intact.
+ */
+const UNSAFE_IN_SEGMENT = /[^\p{L}\p{N} ._()\[\]{}@#&+,;'!~=%-]/gu;
+
+/**
+ * One path segment, made safe to write.
+ *
+ * The split is the traversal defence, and it comes first so that the answer is
+ * a readable name rather than a row of underscores: anything the value tried to
+ * make a path out of is flattened, and the `.` and `..` in it are dropped on
+ * the way — `../../etc/passwd` becomes `etc_passwd`. The leading-dot strip
+ * catches what is left, `...` included. Trailing dots and spaces go for a
+ * duller reason: Windows drops them silently, so `report. ` and `report` become
+ * the same file and one overwrites the other.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function _safeSegment(value) {
+  return String(value ?? "")
+    .split(/[\\/]/)
+    .filter((part) => part !== "" && part !== "." && part !== "..")
+    .join("_")
+    .replace(UNSAFE_IN_SEGMENT, "_")
+    .replace(/^[.\s]+/, "")
+    .replace(/[.\s]+$/, "")
+    .slice(0, 100);
+}
+
+/**
+ * What `{{file.*}}` means for one URL.
+ *
+ * @param {{url: string, text?: string, alt?: string, title?: string}} target
+ * @param {number} index - 1-based, so it reads like {{loop.index}}
+ */
+function _fileFacts(target, index) {
+  const url = String(target.url || "");
+  let name = "";
+  let host = "";
+
+  if (/^data:/i.test(url)) {
+    // A data: URL has no name and no path; its media type is the only thing in
+    // it that describes the file, so that is what the extension comes from.
+    const subtype = /^data:[^/;,]*\/([A-Za-z0-9.+-]+)/.exec(url)?.[1] || "bin";
+    name = `file-${index}.${subtype.replace(/\+.*$/, "")}`;
+  } else {
+    try {
+      const u = new URL(url);
+      host = u.hostname;
+      name = decodeURIComponent(
+        u.pathname.split("/").filter(Boolean).pop() ?? "",
+      );
+    } catch {
+      name = "";
+    }
+  }
+
+  if (!name) name = `file-${index}`;
+  const dot = name.lastIndexOf(".");
+  const hasExt = dot > 0 && dot < name.length - 1 && name.length - dot <= 9;
+  return {
+    index,
+    url,
+    host,
+    name,
+    stem: hasExt ? name.slice(0, dot) : name,
+    ext: hasExt ? name.slice(dot + 1) : "",
+    text: target.text || "",
+    alt: target.alt || "",
+    title: target.title || "",
+  };
+}
+
+/**
+ * The template, rendered into a path the downloads API will accept.
+ *
+ * The template is split on `/` *before* the values go in, so the author keeps
+ * their subfolders and no value can add one. Everything after that is about the
+ * name being a name: 8 segments deep at most, 100 characters a segment, and an
+ * extension put back when the template produced a name without one — a JPEG
+ * saved as `Blue Widget` is a file the operating system cannot open.
+ *
+ * @param {string} template
+ * @param {object} ctx - the run context, with `file` added for this URL
+ * @param {object} facts - _fileFacts, for the fallbacks
+ * @returns {string}
+ */
+function _resolveDownloadPath(template, ctx, facts) {
+  const segments = String(template ?? "")
+    .split("/")
+    .map((segment) => _safeSegment(_resolveStr(segment, ctx)))
+    .filter(Boolean)
+    .slice(0, 8);
+
+  let name =
+    segments.pop() || _safeSegment(facts.name) || `file-${facts.index}`;
+  if (facts.ext && !new RegExp(`\\.${facts.ext}$`, "i").test(name)) {
+    if (!/\.[A-Za-z0-9]{1,8}$/.test(name)) name = `${name}.${facts.ext}`;
+  }
+  return [...segments, name].join("/");
+}
+
+/** Schemes chrome.downloads can be handed without surprising the user. */
+function _downloadableScheme(url) {
+  return /^(?:https?|data):/i.test(String(url));
+}
+
+/**
+ * Download every file a selector points at.
+ *
+ * Two halves on purpose. The page resolves the URLs, because only it knows its
+ * own base and its own shadow roots, and because doing it there makes the step
+ * loop-scoped for nothing — `_queryScoped` already answers against the loop's
+ * current record. The worker downloads them, because a content script cannot.
+ *
+ * The counting is the feature. A gallery step that saves nine of ten files and
+ * says "done" is the failure this codebase is written against, so the step
+ * reports what it saved, what it refused and why, and fails outright when it
+ * found URLs and saved none of them.
+ *
+ * @param {object} step  - already template-resolved; `__fsRawConfig` still has
+ *                         the filename template, which is resolved per file
+ * @param {number} tabId
+ * @param {?string} runId
+ * @param {object} ctx
+ * @returns {Promise<object>} the summary, also left on ctx.downloads
+ */
+async function _executeDownloadFile(step, tabId, runId, ctx = {}) {
+  const config = step.config || {};
+  const authored = step.__fsRawConfig || config;
+  const runState = _runStates.get(runId);
+  const literal = String(config.url || "").trim();
+
+  let targets = [];
+  let matched = 0;
+  let unusable = [];
+
+  if (literal) {
+    // The author typed this one, so it is held to the same origin rule a
+    // NAVIGATE is. A URL read off the page is not: see K-23.
+    _assertOriginAllowed(literal, runState, "DOWNLOAD_FILE");
+    targets = [{ url: literal }];
+    matched = 1;
+  } else {
+    const selector = String(config.selector || "").trim();
+    if (!selector) {
+      throw new Error(
+        "DOWNLOAD_FILE needs a selector to match, or a URL to fetch directly.",
+      );
+    }
+    const resp = await _sendToPage(tabId, {
+      type: "DOWNLOAD_COLLECT",
+      config: {
+        selector,
+        attr: config.attr,
+        inFrame: config.inFrame,
+        frameUrl: config.frameUrl,
+      },
+      __fsContext: step.__fsContext || ctx,
+    });
+    if (!resp?.ok) {
+      throw new Error(resp?.error || "DOWNLOAD_FILE could not read the page");
+    }
+    targets = resp.result?.urls ?? [];
+    matched = resp.result?.matched ?? 0;
+    unusable = resp.result?.skipped ?? [];
+  }
+
+  const asked = Number(authored.max ?? config.max);
+  const limit = Number.isFinite(asked) && asked > 0 ? asked : targets.length;
+  const queue = targets.slice(0, Math.min(limit, DOWNLOAD_HARD_CAP));
+  const template =
+    String(authored.filename ?? config.filename ?? "").trim() ||
+    "flowscrape/{{file.name}}";
+  const domain = _runDomain(runState);
+
+  const files = [];
+  const failures = [];
+  const offOrigin = new Set();
+
+  for (let i = 0; i < queue.length; i++) {
+    if (runState && !runState.active) break;
+    const target = queue[i];
+    const shown = String(target.url).slice(0, 120);
+
+    if (!_downloadableScheme(target.url)) {
+      failures.push({
+        url: shown,
+        reason: "only http, https and data URLs can be downloaded",
+      });
+      continue;
+    }
+    if (!literal && runState?.allowedOrigins?.size) {
+      try {
+        const origin = new URL(target.url).origin;
+        if (!runState.allowedOrigins.has(origin)) offOrigin.add(origin);
+      } catch {
+        // A data: URL has no origin; there is nothing to report.
+      }
+    }
+
+    const facts = _fileFacts(target, i + 1);
+    const filename = _resolveDownloadPath(
+      template,
+      { ...ctx, file: facts },
+      facts,
+    );
+
+    // Paced like every other request this run makes. A gallery is forty
+    // requests to the same site, and the limiter is the only thing standing
+    // between a scrape and a burst that looks like an attack.
+    await acquire(domain);
+    try {
+      const id = await chrome.downloads.download({
+        url: target.url,
+        filename,
+        // Two files called product.jpg are two files, not one overwritten.
+        conflictAction: "uniquify",
+        saveAs: false,
+      });
+      if (id === undefined || id === null) {
+        throw new Error("Chrome accepted the request and started no download");
+      }
+      files.push({ id, filename, url: target.url });
+    } catch (err) {
+      failures.push({ url: shown, reason: err?.message || String(err) });
+    }
+  }
+
+  const summary = {
+    matched,
+    requested: queue.length,
+    saved: files.length,
+    failed: failures.length,
+    files,
+    failures,
+  };
+  ctx.downloads = summary;
+
+  if (!literal && matched === 0) {
+    _broadcastLog(
+      "warn-log",
+      `DOWNLOAD_FILE: nothing matched "${config.selector}" — no files.`,
+      runId,
+    );
+  }
+  for (const item of unusable.slice(0, 3)) {
+    _broadcastLog("warn-log", `DOWNLOAD_FILE: ${item.reason}.`, runId);
+  }
+  if (unusable.length > 3) {
+    _broadcastLog(
+      "warn-log",
+      `DOWNLOAD_FILE: ${unusable.length - 3} more matched elements carried no URL.`,
+      runId,
+    );
+  }
+  if (targets.length > queue.length) {
+    _broadcastLog(
+      "info-log",
+      `DOWNLOAD_FILE: ${targets.length} files matched, ${queue.length} downloaded — raise the limit to take the rest.`,
+      runId,
+    );
+  }
+  if (offOrigin.size > 0) {
+    _broadcastLog(
+      "warn-log",
+      `DOWNLOAD_FILE: files came from ${[...offOrigin].join(", ")}, which this pipeline never declared. ` +
+        "That is normal for a CDN, and it is the page that chose the address — check it is one you expect.",
+      runId,
+    );
+  }
+  for (const failure of failures.slice(0, 5)) {
+    _broadcastLog(
+      "warn-log",
+      `DOWNLOAD_FILE: ${failure.url} — ${failure.reason}`,
+      runId,
+    );
+  }
+
+  if (queue.length > 0 && files.length === 0) {
+    // Found something to fetch and fetched none of it. Reported as a failure
+    // rather than as a quiet zero, which is how "the images did not download"
+    // goes unnoticed until the folder is empty.
+    throw new Error(
+      `DOWNLOAD_FILE saved none of the ${queue.length} file(s) it found: ${failures[0]?.reason ?? "no reason given"}`,
+    );
+  }
+  if (files.length > 0) {
+    _broadcastLog(
+      "info-log",
+      `Downloaded ${files.length} file${files.length === 1 ? "" : "s"}` +
+        (failures.length ? `, ${failures.length} failed` : "") +
+        ` — first: ${files[0].filename}`,
+      runId,
+    );
+  }
+  return summary;
+}
+
 // ── Template resolver ── {{loop.index}}, {{item.href}}, {{extracted.name}} ────
 function _resolvePath(ctx, expr) {
   const parts = expr.trim().split(".");
@@ -2036,6 +2347,11 @@ function _resolveConfig(step, ctx) {
     ...step,
     config: _resolveAny(step.config || {}, ctx),
     __fsContext: ctx,
+    // The step as its author wrote it. DOWNLOAD_FILE needs it: its filename
+    // template is resolved once per file, against a context that does not
+    // exist yet here, and a pass through _resolveStr now would blank
+    // {{file.name}} before the first file is known.
+    __fsRawConfig: step.config,
   };
 }
 
@@ -2806,6 +3122,10 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       );
       return;
     }
+
+    case "DOWNLOAD_FILE":
+      await _executeDownloadFile(step, tabId, runId, ctx);
+      return;
 
     case "API_SNIFFER":
       // Capture is set up when the run starts; nothing to do per step.
@@ -3923,6 +4243,12 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
     return _executePaginate(targetTabId, resolvedStep.config);
   }
 
+  if (type === "DOWNLOAD_FILE") {
+    // Testing it really downloads: a step whose whole point is a file on disk
+    // cannot be tested by a dry run that reports what it would have saved.
+    return _executeDownloadFile(resolvedStep, targetTabId, null, testCtx);
+  }
+
   if (type === "AUTO_EXTRACT") {
     return _executeAutoExtract(resolvedStep.config, targetTabId, null, {
       extracted: {},
@@ -4285,6 +4611,8 @@ export const __testing = {
   _assertOriginAllowed,
   _resolveStr,
   _resolveConfig,
+  _resolveDownloadPath,
+  _safeSegment,
   _runStates,
   _captchaAttested,
   _startRunProxy,

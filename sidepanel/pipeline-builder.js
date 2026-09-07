@@ -2429,6 +2429,67 @@ function _configFields(step) {
     return html;
   }
 
+  // ── DOWNLOAD_FILE ──
+  if (step.type === "DOWNLOAD_FILE") {
+    html += selectorRow(step, "selector", "Files to download");
+    html += hint(
+      "Point it at the links or images themselves — a[href$='.pdf'], " +
+        ".gallery img. Inside a loop the selector is read against the record " +
+        "the loop is on, so one image per product needs no index.",
+    );
+    html += field(
+      step,
+      "attr",
+      "Attribute holding the URL",
+      "text",
+      c.attr || "auto",
+    );
+    html += hint(
+      "auto reads href from a link and the loaded src from an image, falling " +
+        "back to the data- attributes lazy loaders use. Name one explicitly " +
+        "if the file lives somewhere else, such as data-full-size.",
+    );
+    html += field(
+      step,
+      "url",
+      "…or one fixed URL, with no selector",
+      "text",
+      c.url || "",
+    );
+    html += field(
+      step,
+      "filename",
+      "Save as",
+      "text",
+      c.filename ?? "flowscrape/{{file.name}}",
+    );
+    html += hint(
+      "A template. {{file.name}}, {{file.stem}}, {{file.ext}}, {{file.index}} " +
+        "and {{file.host}} describe the file; {{extracted.*}}, {{item.*}} and " +
+        "{{loop.index}} work here as anywhere else. A / makes a subfolder of " +
+        "your downloads directory; a / inside a value from the page does not.",
+    );
+    html += field(
+      step,
+      "max",
+      "Most files per run of this step",
+      "number",
+      c.max ?? 25,
+    );
+    html += toggle(step, "inFrame", "Look inside iframes as well");
+    html += hint(
+      "The run log says how many files were saved, how many failed and why. " +
+        "Files land in your normal downloads folder; Chrome numbers a name " +
+        "that already exists rather than replacing it.",
+    );
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
   // ── SCREENSHOT ──
   if (step.type === "SCREENSHOT") {
     const area = c.area || "viewport";

@@ -306,6 +306,30 @@
     return _deepQueryAll(root, selector, all);
   }
 
+  /**
+   * The attribute an element keeps its URL in, when the user did not name one.
+   *
+   * `currentSrc` first because a responsive `<img>` has already chosen which of
+   * its candidates it loaded, and that is the file on the screen. The data-*
+   * fallbacks are for lazy loaders, which leave `src` pointing at a placeholder
+   * until the image scrolls into view: downloading the 1x1 spacer instead of
+   * the product photo is the failure they avoid.
+   */
+  function _urlAttrOf(el) {
+    const tag = el.tagName?.toLowerCase();
+    if (tag === "a" || tag === "area") return el.getAttribute("href");
+    if (tag === "object") return el.getAttribute("data");
+    return (
+      el.currentSrc ||
+      el.getAttribute("src") ||
+      el.getAttribute("href") ||
+      el.getAttribute("data-src") ||
+      el.getAttribute("data-original") ||
+      el.getAttribute("data-lazy-src") ||
+      ""
+    );
+  }
+
   function _queryScoped(selector, context, all = false) {
     const root = _getScopedRoot(context);
     const resolved = _normalizeScopedSelector(selector, context);
@@ -644,6 +668,58 @@
         }
         return read(config);
       }
+      case "DOWNLOAD_COLLECT": {
+        // The page says which URLs it can see; the worker fetches them. The
+        // split is what lets DOWNLOAD_FILE work inside a LOOP for nothing —
+        // _queryScoped already resolves against the loop's current record —
+        // and it keeps chrome.downloads out of a context that cannot call it.
+        const dEls = _queryScoped(config.selector || "", context, true);
+        const wanted = String(config.attr || "auto").trim();
+        const named = wanted && wanted !== "auto" ? wanted : "";
+        const urls = [];
+        const skipped = [];
+        for (const el of dEls) {
+          const raw = named ? el.getAttribute(named) : _urlAttrOf(el);
+          const value = String(raw ?? "").trim();
+          const tag = el.tagName.toLowerCase();
+          if (!value) {
+            skipped.push({
+              tag,
+              reason: named
+                ? `<${tag}> has no ${named} attribute`
+                : `<${tag}> carries no URL attribute`,
+            });
+            continue;
+          }
+          let absolute;
+          try {
+            // Resolved here because only the page knows its own base: a
+            // document with a <base href> resolves its relative URLs against
+            // that and not against the tab's address, which is all the worker
+            // can see.
+            absolute = value.startsWith("data:")
+              ? value
+              : new URL(value, document.baseURI).href;
+          } catch {
+            skipped.push({
+              tag,
+              reason: `"${value.slice(0, 80)}" is not a URL`,
+            });
+            continue;
+          }
+          urls.push({
+            url: absolute,
+            text: (el.textContent || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 120),
+            alt: el.getAttribute("alt") || "",
+            title: el.getAttribute("title") || "",
+          });
+        }
+        return { urls, matched: dEls.length, skipped };
+      }
+
       case "QUERY_COUNT": {
         const els = _queryScoped(config.selector || "*", context, true);
         return { count: els.length };

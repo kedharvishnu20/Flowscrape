@@ -209,6 +209,8 @@ export const {
   _executeStepList,
   _assertOriginAllowed,
   _resolveStr,
+  _resolveDownloadPath,
+  _safeSegment,
   _runStates,
   _startRunProxy,
   _maybeRotateProxy,

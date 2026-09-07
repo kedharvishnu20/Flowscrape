@@ -429,6 +429,11 @@ const KITCHEN_SINK = [
   step("PAGE_DATA", { source: "auto", type: "Product", flatten: true }),
   step("PAGE_DATA", { source: "jsonld", type: "", flatten: false }),
   step("SCREENSHOT", { quality: 90 }),
+  step("DOWNLOAD_FILE", {
+    selector: ".gallery img",
+    filename: "images/{{file.index}}-{{file.stem}}.{{file.ext}}",
+    max: 5,
+  }),
   step("EXPORT", { format: "csv" }),
 ];
 
@@ -894,4 +899,80 @@ test("a URL-pattern loop with no {page} refuses instead of exporting a lie", () 
   assert.match(js, /throw new Error/);
   assert.match(py, /UNSUPPORTED/);
   assert.match(py, /raise ValueError/);
+});
+
+// ── DOWNLOAD_FILE (K-23) ─────────────────────────────────────────────────────
+
+test("DOWNLOAD_FILE fetches through the browser context, and says what it saved", () => {
+  const { py, js } = emit([
+    step("DOWNLOAD_FILE", { selector: ".gallery img", max: 3 }),
+  ]);
+
+  // context.request rather than a click: the context's cookies come with it,
+  // so a file behind a login downloads the way it does in the extension.
+  assert.match(py, /await page\.context\.request\.get\(_u\)/);
+  assert.match(js, /await page\.context\(\)\.request\.get\(_u\)/);
+  assert.match(py, /saved \{\}, failed \{\}/);
+  assert.match(js, /saved \$\{_saved\}, failed \$\{_failed\}/);
+  // Found files and saved none is a failure in the script for the same reason
+  // it is one in the run.
+  assert.match(py, /raise IOError\("FlowScrape: DOWNLOAD_FILE saved none/);
+  assert.match(js, /DOWNLOAD_FILE saved none of the files/);
+});
+
+test("an exported filename is built one sanitised segment at a time", () => {
+  const { py, js } = emit([
+    step("DOWNLOAD_FILE", {
+      selector: "img",
+      filename: "shots/{{file.index}}-{{file.name}}",
+    }),
+  ]);
+
+  assert.match(py, /os\.path\.join\("downloads", fs_safe_seg\(.*fs_safe_seg\(/);
+  assert.match(js, /path\.join\('downloads', fsSafeSeg\(.*fsSafeSeg\(/);
+  // The helper is the same allowlist the extension applies, so a name the page
+  // supplied cannot name a directory in an exported run either.
+  assert.match(py, /def fs_safe_seg/);
+  assert.match(js, /const fsSafeSeg/);
+});
+
+test("a filename template the script cannot resolve is refused, not dropped", () => {
+  // {{extracted.title}} comes from a run context a standalone script does not
+  // have. Emitting the download with the value silently blank would save every
+  // file under a name the user did not ask for.
+  const { py, js } = emit([
+    step("DOWNLOAD_FILE", {
+      selector: "img",
+      filename: "{{extracted.title}}.jpg",
+    }),
+  ]);
+
+  assert.match(py, /UNSUPPORTED/);
+  assert.match(py, /raise ValueError/);
+  assert.match(js, /UNSUPPORTED/);
+  assert.match(js, /throw new Error/);
+});
+
+test("the pre-download template warning ignores the fields the script fills in", async () => {
+  const { findUnresolvedTemplates } =
+    await import("../script-gen/pipeline-compiler.js");
+  const ok = findUnresolvedTemplates(
+    compile([
+      step("DOWNLOAD_FILE", {
+        selector: "img",
+        filename: "flowscrape/{{file.name}}",
+      }),
+    ]),
+  );
+  assert.deepEqual(ok, [], "{{file.*}} is resolved by the emitted script");
+
+  const bad = findUnresolvedTemplates(
+    compile([
+      step("DOWNLOAD_FILE", {
+        selector: "img",
+        filename: "{{item.title}}.jpg",
+      }),
+    ]),
+  );
+  assert.equal(bad.length, 1, "everything else is still reported");
 });

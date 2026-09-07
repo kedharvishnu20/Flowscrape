@@ -263,6 +263,22 @@ export const STEP_TYPES = Object.freeze({
     // walker; see the note in the emitters.
     exportable: false,
   },
+  DOWNLOAD_FILE: {
+    icon: "📥",
+    cat: "Data",
+    desc: "Download matched files",
+    // The worker owns chrome.downloads; the page only says which URLs it can
+    // see, which is what DOWNLOAD_COLLECT below is for.
+    runsIn: "background",
+    def: {
+      selector: "",
+      attr: "auto",
+      url: "",
+      filename: "flowscrape/{{file.name}}",
+      max: 25,
+      inFrame: false,
+    },
+  },
   EXPORT: {
     icon: "💾",
     cat: "Data",
@@ -372,6 +388,14 @@ export const STEP_TYPES = Object.freeze({
     desc: "Measure one element, for an element screenshot",
     runsIn: "page",
     def: { selector: "" },
+    internal: true,
+  },
+  DOWNLOAD_COLLECT: {
+    icon: "🔗",
+    cat: "Data",
+    desc: "Read the URLs a DOWNLOAD_FILE selector matches",
+    runsIn: "page",
+    def: { selector: "", attr: "auto" },
     internal: true,
   },
   PAGINATE_PROBE: {

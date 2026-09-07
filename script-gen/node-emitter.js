@@ -12,6 +12,7 @@ import {
   normalizeRegexGroup,
 } from "../utils/value-transforms.js";
 import { retryCount, retryDelayMs } from "../utils/step-types.js";
+import { parseFilenameTemplate } from "./pipeline-compiler.js";
 const MODULE = "node-emitter";
 
 export function emitNode(pipeline) {
@@ -89,6 +90,13 @@ export function emitNode(pipeline) {
     `// missing row into the wrong branch.`,
     `const fsText = async loc => (await loc.count()) > 0 ? fsTrim(await loc.first().innerText()) : null;`,
     `const fsAttr = async (loc, a) => (await loc.count()) > 0 ? await loc.first().getAttribute(a) : null;`,
+    "",
+    `// An allowlist, mirroring the extension: a filename built from page`,
+    `// content must not be able to name a directory, so both separators fall`,
+    `// outside it and '..' reduces to nothing.`,
+    `const fsSafeSeg = v => String(v ?? '')`,
+    `  .replace(/[^\\p{L}\\p{N} ._()\\[\\]{}@#&+,;'!~=%-]/gu, '_')`,
+    `  .replace(/^[.\\s]+/, '').replace(/[.\\s]+$/, '').slice(0, 100);`,
     "",
     `const sleep = ms => new Promise(r => setTimeout(r, ms));`,
     `const jitter = (min, max) => min + Math.random() * (max - min);`,
@@ -508,6 +516,9 @@ function _emitNodeStepBody(step) {
         "",
       ];
 
+    case "DOWNLOAD_FILE":
+      return _downloadNode(config, esc);
+
     case "SCREENSHOT":
       return [
         `await page.screenshot({ path: \`screenshot_\${Date.now()}.png\` });`,
@@ -628,6 +639,105 @@ function _emitNodeStepBody(step) {
         "",
       ];
   }
+}
+
+/**
+ * DOWNLOAD_FILE, through Playwright's request API rather than through a click.
+ *
+ * `context.request` carries the context's cookies, so a file behind a login
+ * downloads for the same reason it does in the extension. The click-and-catch
+ * path Playwright also offers does not fit: an `<img>` cannot be clicked into a
+ * download, and a gallery of forty would become forty navigations.
+ */
+function _downloadNode(config, esc) {
+  const { segments, unsupported } = parseFilenameTemplate(
+    String(config.filename ?? "") || "flowscrape/{{file.name}}",
+  );
+  if (unsupported.length > 0) {
+    return [
+      `// UNSUPPORTED: the filename template uses ${unsupported.join(", ")}, which`,
+      `// comes from the run's context and is not available to a standalone script.`,
+      `throw new Error('FlowScrape: DOWNLOAD_FILE filename template is not exportable');`,
+      "",
+    ];
+  }
+
+  const VARS = {
+    "file.name": "_name",
+    "file.stem": "_stem",
+    "file.ext": "_ext",
+    "file.index": "String(_i)",
+    "file.host": "_host",
+  };
+  const pathExpr = segments.length
+    ? segments
+        .map(
+          (parts) =>
+            `fsSafeSeg([${parts
+              .map((p) =>
+                p.lit !== undefined ? `'${esc(p.lit)}'` : VARS[p.var],
+              )
+              .join(", ")}].join(''))`,
+        )
+        .join(", ")
+    : "fsSafeSeg(_name)";
+
+  const literal = String(config.url ?? "").trim();
+  const max = Number(config.max) > 0 ? Number(config.max) : 25;
+  // Braced, like ASSERT and IF_ELSE: two DOWNLOAD_FILE steps in one pipeline
+  // would otherwise redeclare _urls at the same scope and refuse to parse.
+  const lines = ["// DOWNLOAD_FILE", "{"];
+
+  if (literal) {
+    lines.push(`const _urls = ['${esc(literal)}'];`);
+  } else {
+    lines.push(
+      `const _els = (await page.locator('${esc(_sel(config.selector ?? ""))}').all()).slice(0, ${max});`,
+      `const _urls = [];`,
+      `for (const _el of _els) {`,
+      // The same order the content script reads: what the browser actually
+      // loaded, then the markup, then the data- attribute a lazy loader leaves
+      // the real URL in.
+      `  const _raw = await _el.evaluate(e => e.currentSrc || e.getAttribute('href') || e.getAttribute('src') || e.getAttribute('data-src') || '');`,
+      `  if (_raw) _urls.push(new URL(_raw, page.url()).href);`,
+      `}`,
+      `if (!_urls.length) console.log('DOWNLOAD_FILE: nothing matched ${esc(_sel(config.selector ?? ""))} — no files.');`,
+    );
+  }
+
+  lines.push(
+    `let _saved = 0, _failed = 0;`,
+    `for (let _i = 1; _i <= _urls.length; _i++) {`,
+    `  const _u = _urls[_i - 1];`,
+    `  if (!/^https?:/i.test(_u)) { _failed++; console.log('DOWNLOAD_FILE: skipped ' + _u.slice(0, 120) + ' — only http(s) URLs are fetched here'); continue; }`,
+    `  const _url = new URL(_u);`,
+    `  const _host = _url.hostname;`,
+    `  const _name = decodeURIComponent(_url.pathname.split('/').filter(Boolean).pop() || '') || ('file-' + _i);`,
+    `  const _dot = _name.lastIndexOf('.');`,
+    `  const _stem = _dot > 0 ? _name.slice(0, _dot) : _name;`,
+    `  const _ext  = _dot > 0 ? _name.slice(_dot + 1) : '';`,
+    `  let _path = path.join('downloads', ${pathExpr});`,
+    `  if (_ext && !_path.toLowerCase().endsWith('.' + _ext.toLowerCase())) _path += '.' + _ext;`,
+    `  fs.mkdirSync(path.dirname(_path), { recursive: true });`,
+    `  try {`,
+    `    const _resp = await page.context().request.get(_u);`,
+    `    if (!_resp.ok()) throw new Error('HTTP ' + _resp.status());`,
+    `    fs.writeFileSync(_path, await _resp.body());`,
+    `    _saved++;`,
+    `  } catch (err) {`,
+    `    _failed++;`,
+    `    console.log('DOWNLOAD_FILE: ' + _u.slice(0, 120) + ' — ' + err.message);`,
+    `  }`,
+    `  await sleep(MIN_DELAY_MS);`,
+    `}`,
+    `console.log(\`DOWNLOAD_FILE: saved \${_saved}, failed \${_failed}\`);`,
+    // The rule the extension applies: files were found and none arrived, which
+    // is a failure however cheerfully the rest of the script would continue.
+    `if (_urls.length && _saved === 0) throw new Error('FlowScrape: DOWNLOAD_FILE saved none of the files it found');`,
+    "}",
+    "",
+  );
+  return lines;
 }
 
 /** Playwright key names differ slightly from the panel's combo strings. */

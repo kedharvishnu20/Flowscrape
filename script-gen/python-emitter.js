@@ -20,6 +20,7 @@ import {
   normalizeRegexGroup,
 } from "../utils/value-transforms.js";
 import { retryCount, retryDelayMs } from "../utils/step-types.js";
+import { parseFilenameTemplate } from "./pipeline-compiler.js";
 
 const MODULE = "python-emitter";
 
@@ -68,7 +69,7 @@ export function emitPython(pipeline) {
     "# Mirrors utils/value-transforms.js. The pipeline cleans values as it",
     "# extracts them; a script that skipped this would run, produce a file, and",
     "# fill the number columns with currency symbols.",
-    "from urllib.parse import urljoin",
+    "from urllib.parse import urljoin, urlparse, unquote",
     "",
     "",
     "def fs_number(t):",
@@ -145,6 +146,20 @@ export function emitPython(pipeline) {
     "",
     "async def fs_attr(loc, a):",
     "    return await loc.first.get_attribute(a) if await loc.count() > 0 else None",
+    "",
+    "",
+    "# ── Downloads ────────────────────────────────────────────────",
+    "# An allowlist, mirroring the extension: a filename built from page content",
+    "# must not be able to name a directory, so both separators fall outside it",
+    '# and ".." reduces to nothing.',
+    "def fs_safe_seg(v):",
+    '    s = re.sub(r"[^\\w .()\\[\\]{}@#&+,;\'!~=%-]", "_", str(v or ""), flags=re.UNICODE)',
+    '    return re.sub(r"[.\\s]+$", "", re.sub(r"^[.\\s]+", "", s))[:100]',
+    "",
+    "",
+    "def fs_file_name(url, index):",
+    '    name = unquote(urlparse(url).path.rstrip("/").split("/")[-1]) if url else ""',
+    '    return name or "file-{}".format(index)',
     "",
     "# ── Config ────────────────────────────────────────────────────",
     `TARGET_ORIGIN = "${pipeline.targetOrigin ?? ""}"`,
@@ -586,6 +601,9 @@ function _emitStepBody(step) {
         "",
       ];
 
+    case "DOWNLOAD_FILE":
+      return _emitDownload(config);
+
     case "SCREENSHOT":
       return [
         "# SCREENSHOT",
@@ -860,6 +878,103 @@ function _emitFormFill(config) {
   const delay = (config.interRowDelay?.min ?? 1200) / 1000;
   lines.push(`        await asyncio.sleep(${delay} + random.random())`);
   lines.push("");
+  return lines;
+}
+
+/**
+ * DOWNLOAD_FILE, as Playwright's request API rather than as a click.
+ *
+ * `context.request` carries the browser context's cookies, so a file behind a
+ * login downloads for the same reason it downloads in the extension. The
+ * click-and-catch-the-download path Playwright also offers is the wrong shape
+ * here: an `<img>` is not clickable into a download, and a gallery of forty
+ * would be forty navigations.
+ */
+function _emitDownload(config) {
+  const { segments, unsupported } = parseFilenameTemplate(
+    String(config.filename ?? "") || "flowscrape/{{file.name}}",
+  );
+  if (unsupported.length > 0) {
+    return [
+      `# UNSUPPORTED: the filename template uses ${unsupported.join(", ")}, which`,
+      `# comes from the run's context and is not available to a standalone script.`,
+      `raise ValueError("FlowScrape: DOWNLOAD_FILE filename template is not exportable")`,
+      "",
+    ];
+  }
+
+  const pieces = (parts) =>
+    parts
+      .map((p) =>
+        p.lit !== undefined
+          ? `"${_escStr(p.lit)}"`
+          : { "file.name": "_name", "file.stem": "_stem", "file.ext": "_ext" }[
+              p.var
+            ] || (p.var === "file.index" ? "str(_i)" : "_host"),
+      )
+      .join(", ");
+  const pathExpr = segments.length
+    ? segments
+        .map((parts) => `fs_safe_seg("".join([${pieces(parts)}]))`)
+        .join(", ")
+    : `fs_safe_seg(_name)`;
+
+  const literal = String(config.url ?? "").trim();
+  const max = Number(config.max) > 0 ? Number(config.max) : 25;
+  const lines = ["# DOWNLOAD_FILE"];
+
+  if (literal) {
+    lines.push(`_urls = ["${_escStr(literal)}"]`);
+  } else {
+    lines.push(
+      `_els = await page.locator("${_escStr(_sel(config.selector ?? ""))}").all()`,
+      `_urls = []`,
+      `for _el in _els[:${max}]:`,
+      // One evaluate rather than three get_attribute calls, and the same order
+      // the content script uses: what the browser loaded, then the markup, then
+      // the data- attributes a lazy loader leaves the real URL in.
+      `    _raw = await _el.evaluate("e => e.currentSrc || e.getAttribute('href') || e.getAttribute('src') || e.getAttribute('data-src') || ''")`,
+      `    if _raw:`,
+      `        _urls.append(urljoin(page.url, _raw))`,
+      `if not _urls:`,
+      `    print("DOWNLOAD_FILE: nothing matched ${_escStr(_sel(config.selector ?? ""))} — no files.")`,
+    );
+  }
+
+  lines.push(
+    `_saved, _failed = 0, 0`,
+    `for _i, _u in enumerate(_urls, 1):`,
+    `    if not _u.startswith("http"):`,
+    `        _failed += 1`,
+    `        print("DOWNLOAD_FILE: skipped {} — only http(s) URLs are fetched here".format(_u[:120]))`,
+    `        continue`,
+    `    _name = fs_file_name(_u, _i)`,
+    `    _stem, _, _ext = _name.rpartition(".")`,
+    `    if not _stem:`,
+    `        _stem, _ext = _name, ""`,
+    `    _host = urlparse(_u).netloc`,
+    `    _path = os.path.join("downloads", ${pathExpr})`,
+    `    if _ext and not _path.lower().endswith("." + _ext.lower()):`,
+    `        _path = _path + "." + _ext`,
+    `    os.makedirs(os.path.dirname(_path) or ".", exist_ok=True)`,
+    `    try:`,
+    `        _resp = await page.context.request.get(_u)`,
+    `        if not _resp.ok:`,
+    `            raise IOError("HTTP {}".format(_resp.status))`,
+    `        with open(_path, "wb") as _fh:`,
+    `            _fh.write(await _resp.body())`,
+    `        _saved += 1`,
+    `    except Exception as _err:`,
+    `        _failed += 1`,
+    `        print("DOWNLOAD_FILE: {} — {}".format(_u[:120], _err))`,
+    `    await asyncio.sleep(MIN_DELAY_MS / 1000)`,
+    `print("DOWNLOAD_FILE: saved {}, failed {}".format(_saved, _failed))`,
+    `if _urls and _saved == 0:`,
+    // The same rule the extension applies: files were found and none arrived,
+    // which is a failure however cheerfully the rest of the script continues.
+    `    raise IOError("FlowScrape: DOWNLOAD_FILE saved none of the files it found")`,
+    "",
+  );
   return lines;
 }
 

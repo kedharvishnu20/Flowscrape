@@ -207,6 +207,7 @@ export const {
   _dispatchStep,
   _executeSteps,
   _executeStepList,
+  _executeApiStep,
   _assertOriginAllowed,
   _resolveStr,
   _resolveDownloadPath,

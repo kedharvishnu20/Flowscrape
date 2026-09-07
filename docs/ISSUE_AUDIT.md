@@ -2610,4 +2610,98 @@ A run that asks for a proxy when nothing in the pool is alive goes direct and
 says so, rather than failing: a dead pool is not a reason to throw away the
 rows.
 
+### K-24 · HIGH · An API step that hit 429 just failed, guessing nothing
+
+`rate-limiter.js` paces a run between steps, but the pacing has no opinion
+about what a server says back. A single `API` step that got a 429 threw once
+and stopped the run, even though the response usually carries `Retry-After`
+— the server naming, in the header, exactly how long to wait before trying
+again. Nothing read it. The same was true of a 5xx: a server saying "give me
+a moment" and one saying "I'm broken right now" were both just a failure.
+
+The retry lives inside `_executeApiStep` now, ahead of the step-level retry
+(K-12) rather than instead of it — a 429 exhausting its own attempts still
+falls through to `retries` on the step if the user configured one. It is held
+to the same rules `_dispatchWithRetries` already established: a retry is a
+fresh HTTP request, so it queues behind the rate limiter and holds for a
+pause exactly like the first attempt did, and it stops the moment the run is
+stopped. Two things it does not do that a hand-rolled version would be
+tempted to: retry a 404 or any other 4xx (only 429 and 5xx are transient in
+the way this exists to cover), and trust `Retry-After` without limit — it is
+parsed as either the RFC 9110 delta-seconds form or an HTTP-date, and either
+way clamped against `API_RETRY_LIMITS.maxTotalWaitMs` (one minute) with a
+hard cap on attempts (four) besides. A server can ask for an hour; honouring
+`Retry-After` is not the same as obeying it without limit, and the point of
+the feature was never "wait as long as told" — it was "don't guess when the
+server already said."
+
+No `Retry-After` at all — the common shape for a 5xx — falls back to the same
+exponential-backoff shape used elsewhere, seeded from `API_RETRY_LIMITS.fallbackBaseMs`.
+
+Six tests, stubbing `fetch` and Node's mock timers rather than sleeping for
+real: seconds-form and HTTP-date `Retry-After` both honoured, backoff on a
+bare 5xx bounded by the attempt cap, a 404 left alone, the total-wait cap
+holding against a server naming an hour, and a retry actually queuing behind
+a starved rate-limiter bucket rather than bypassing it.
+
+### K-25 · HIGH · A paged JSON API had no LOOP that could read it
+
+Every other paginator in this codebase (K-20's `paginate-links` and
+`paginate-url`) drives the _page_, because the thing being paginated is a
+website with a Next control or numbered links. An `API` step has no page to
+click through — the pagination lives in the JSON itself, in one of three
+shapes: a cursor or token the server hands back for the next request, a page
+or offset number the caller increments, or the `Link` response header
+(RFC 8288) naming `rel="next"`. None of the three can be expressed by
+clicking anything, so `API` needed pagination of its own rather than a mode
+on `LOOP`.
+
+`pagination.mode` picks the shape: `"cursor"` reads `cursorPath` — a dotted
+path, the same vocabulary `_resolvePath` already uses for templates — out of
+each page's body and sends it back as a query parameter (`cursorParam`) on
+the next request; `"page"` increments `pageParam` by `pageStep` from
+`startPage` on every request, the first included; `"link"` reads the `Link`
+header and follows whatever URL it names for `rel="next"`. `maxPages` is a
+safety limit, never the exit condition — the three real stopping signals are
+no next cursor, no `rel="next"`, and an empty page, and pagination stops on
+whichever of those the source gives first. A `"cursor"` mode with no
+`cursorPath`, or any pagination mode with no `rowsPath`, refuses at the step
+rather than running: the first has nowhere to read the cursor from, and the
+second has no way to tell an empty page from a full one, so either would loop
+by the count alone — a safety cap standing in for an exit condition it should
+never have to be.
+
+`rowsPath` is the other half, and it is not new machinery bolted onto
+pagination — it is what makes a single, unpaginated `API` call's rows reach
+the run's results at all, which nothing did before this. A dotted path into
+the response body (empty meaning "the body itself, if it is an array") picks
+out the records; they land in `runState.results` and the row buffer through
+the exact same two lines EXTRACT and PAGE_DATA already use. Pagination reuses
+that same path once per page rather than building a second one, so "does a
+paginated call's rows reach the buffer the way a single call's do" is true
+because there is only one way rows get there.
+
+A later page failing does not throw the rows already collected away — it
+stops there and hands back what it has, the same shape K-20's numbered
+paginator already chose when a page will not open. Only the first page
+failing fails the whole step, same as before this existed.
+
+Both emitters gained the equivalent: `fs_api_session()` / `fsApiFetch` carry
+K-24's retry in the exported script, `fs_dig`/`fsDig` and
+`fs_api_rows`/`fsApiRows` mirror `_resolvePath` and rowsPath, and the three
+pagination shapes are each a small loop rather than a library — Python's
+`requests.Session` already parses `Link` into `.links`, so link-mode costs
+nothing extra there. The same three refusals the worker enforces (unknown
+mode, cursor with no `cursorPath`, pagination with no `rowsPath`) are UNSUPPORTED
+refusals in both languages rather than a script that silently loops once.
+
+Seventeen tests for the retry (shared with K-24) and pagination together —
+each of the three modes, the nested-path cursor case (`meta.next`, not only a
+top-level field), the `maxPages` safety cap actually capping against a source
+that never stops on its own, the later-page-failure/partial-rows behaviour,
+and the three refusals — plus four more on the emitted scripts, including a
+regression the emitter changes caught on their own: two `API` steps in one
+Node pipeline used to redeclare `apiHeaders` at the top level and fail to
+parse, the same reason `IF_ELSE` and `ASSERT` already brace their bodies.
+
 Eight tests, and most of them are about the giving back rather than the taking.

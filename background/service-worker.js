@@ -36,6 +36,8 @@ import {
   STEP_TYPES,
   retryCount,
   retryDelayMs,
+  API_RETRY_LIMITS,
+  paginationMaxPages,
 } from "../utils/step-types.js";
 import { applyTransforms } from "../utils/value-transforms.js";
 import { evaluateCondition } from "../utils/conditions.js";
@@ -2396,42 +2398,112 @@ function _parseApiHeaders(rawHeaders, ctx) {
   return {};
 }
 
-async function _executeApiStep(config = {}, ctx = {}) {
-  const method = String(config.method || "GET").toUpperCase();
-  const url = _resolveStr(config.url || config.endpoint || "", ctx);
-  if (!url) throw new Error("API step missing URL");
+/**
+ * `Retry-After` (RFC 9110 §10.2.3) comes as either a delta in seconds or an
+ * HTTP date, and real servers use both. Anything else means the header did
+ * not answer, not that the caller should guess a number.
+ * @param {?string} value
+ * @returns {?number} milliseconds to wait, or null when the header is absent
+ *   or unparseable
+ */
+function _parseRetryAfterMs(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
+}
 
-  const headers = _parseApiHeaders(config.headers, ctx);
-  const timeoutMs = Math.max(500, Number(config.timeoutMs ?? 15000));
-  const responseType = String(config.responseType || "auto").toLowerCase();
+/** Set (not append) a query parameter, tolerating a URL fetch would resolve
+ * relatively rather than one `new URL()` can parse on its own. */
+function _addQueryParam(url, key, value) {
+  try {
+    const u = new URL(url);
+    u.searchParams.set(key, String(value));
+    return u.toString();
+  } catch {
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`;
+  }
+}
 
+/**
+ * The `rel="next"` target out of an RFC 8288 `Link` header, or null when
+ * there is none. Split on commas that precede a new `<`, not on every comma,
+ * because a quoted attribute (`title="a, b"`) can carry one too.
+ * @param {string} value
+ * @param {string} baseUrl - resolves a relative target against the page that answered
+ * @returns {?string}
+ */
+function _linkHeaderNext(value, baseUrl) {
+  if (!value) return null;
+  for (const part of String(value).split(/,(?=\s*<)/)) {
+    const urlMatch = part.match(/<([^>]+)>/);
+    const relMatch = part.match(/rel\s*=\s*"?([^",;]+)"?/i);
+    if (!urlMatch || !relMatch || relMatch[1].toLowerCase() !== "next") {
+      continue;
+    }
+    try {
+      return new URL(urlMatch[1], baseUrl).toString();
+    } catch {
+      return urlMatch[1];
+    }
+  }
+  return null;
+}
+
+/**
+ * The array of records inside a response body. An empty `rowsPath` means the
+ * body itself, if it is an array — the shape of an endpoint with no
+ * envelope. A path that does not resolve to an array yields no rows rather
+ * than throwing, the same way a miss elsewhere in this file becomes an empty
+ * result instead of a crash.
+ * @param {*} body
+ * @param {string} rowsPath
+ * @returns {Array}
+ */
+function _extractApiRows(body, rowsPath) {
+  const path = String(rowsPath || "").trim();
+  const target = path ? _resolvePath(body, path) : body;
+  return Array.isArray(target) ? target : [];
+}
+
+/** Hold for a run's pause, and report whether the run is still worth continuing. */
+async function _apiRunGate(runCtx) {
+  const runState = runCtx?.runState;
+  if (!runState) return true; // a standalone step test carries no run to gate on
+  while (runState.paused && runState.active) await _sleep(500);
+  return Boolean(runState.active);
+}
+
+/** Sleep in slices so Stop is answered inside the wait rather than after it. */
+async function _apiSleep(ms, runCtx) {
+  const runState = runCtx?.runState;
+  if (!runState) {
+    await _sleep(ms);
+    return true;
+  }
+  const until = Date.now() + ms;
+  while (runState.active && Date.now() < until) {
+    await _sleep(Math.min(200, until - Date.now()));
+  }
+  return Boolean(runState.active);
+}
+
+/** One bare HTTP request for an API step — no retry, no pagination. */
+async function _apiRequestOnce(
+  url,
+  method,
+  headers,
+  bodyInit,
+  timeoutMs,
+  responseType,
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const init = {
-      method,
-      headers,
-      signal: controller.signal,
-    };
-
-    if (!["GET", "HEAD"].includes(method)) {
-      const bodyText = _resolveStr(config.body || "", ctx);
-      if (bodyText) {
-        if (
-          (headers["Content-Type"] || headers["content-type"] || "").includes(
-            "application/json",
-          )
-        ) {
-          try {
-            init.body = JSON.stringify(JSON.parse(bodyText));
-          } catch {
-            init.body = bodyText;
-          }
-        } else {
-          init.body = bodyText;
-        }
-      }
-    }
+    const init = { method, headers, signal: controller.signal };
+    if (bodyInit !== undefined) init.body = bodyInit;
 
     const startedAt = Date.now();
     const resp = await fetch(url, init);
@@ -2451,7 +2523,7 @@ async function _executeApiStep(config = {}, ctx = {}) {
       body = await resp.text();
     }
 
-    const result = {
+    return {
       ok: resp.ok,
       status: resp.status,
       statusText: resp.statusText,
@@ -2459,16 +2531,9 @@ async function _executeApiStep(config = {}, ctx = {}) {
       method,
       elapsedMs: Date.now() - startedAt,
       headers: Object.fromEntries(resp.headers.entries()),
+      linkHeader: resp.headers.get("link") || "",
       body,
     };
-
-    if (!resp.ok && config.failOnHttpError !== false) {
-      throw new Error(
-        `API ${method} ${url} failed: ${resp.status} ${resp.statusText}`,
-      );
-    }
-
-    return result;
   } catch (err) {
     if (err?.name === "AbortError") {
       throw new Error(`API ${method} ${url} timed out after ${timeoutMs}ms`);
@@ -2477,6 +2542,263 @@ async function _executeApiStep(config = {}, ctx = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * One page's worth of an API step: fetch, and retry it in place on a 429 or
+ * 5xx. `Retry-After` is the server naming exactly how long to wait — ignoring
+ * it and guessing would be both ruder and worse — and a server that names
+ * none falls back to the same exponential shape `backoff()` uses elsewhere.
+ * Bounded by API_RETRY_LIMITS so a server that keeps asking for more time
+ * cannot stall a run for an hour; a count is a courtesy, not a promise.
+ *
+ * Consistent with `_dispatchWithRetries` (K-12): a retry is a fresh HTTP
+ * request, so it queues behind the rate limiter and holds for a pause
+ * exactly like the first attempt did, and stops the moment the run is
+ * stopped. `isFirstRequest` skips that gate for the very first fetch of the
+ * whole step — the caller already queued behind the limiter for that one.
+ *
+ * @returns {Promise<object>} the last response, success or failure — HTTP
+ *   status is not itself a thrown error here; the caller decides what a
+ *   failing status means
+ */
+async function _apiFetchWithRetry(
+  url,
+  method,
+  headers,
+  bodyInit,
+  timeoutMs,
+  responseType,
+  runCtx,
+  { isFirstRequest = false } = {},
+) {
+  let attempt = 0;
+  let waitedMs = 0;
+  let first = isFirstRequest;
+
+  for (;;) {
+    if (!first) {
+      if (!(await _apiRunGate(runCtx))) {
+        throw new Error("API request abandoned: the run was stopped.");
+      }
+      if (runCtx?.runState) await acquire(_runDomain(runCtx.runState));
+    }
+    first = false;
+
+    const result = await _apiRequestOnce(
+      url,
+      method,
+      headers,
+      bodyInit,
+      timeoutMs,
+      responseType,
+    );
+    attempt += 1;
+
+    const retryable =
+      result.status === 429 || (result.status >= 500 && result.status <= 599);
+    if (
+      !retryable ||
+      attempt >= API_RETRY_LIMITS.maxAttempts ||
+      waitedMs >= API_RETRY_LIMITS.maxTotalWaitMs
+    ) {
+      return result;
+    }
+
+    const headerWaitMs = _parseRetryAfterMs(result.headers["retry-after"]);
+    const backoffMs =
+      API_RETRY_LIMITS.fallbackBaseMs * Math.pow(2, attempt - 1);
+    const remainingMs = API_RETRY_LIMITS.maxTotalWaitMs - waitedMs;
+    const waitMs = Math.max(
+      0,
+      Math.min(headerWaitMs ?? backoffMs, remainingMs),
+    );
+
+    if (runCtx?.runId) {
+      _broadcastLog(
+        "warn-log",
+        `API ${method} ${url} → ${result.status}${headerWaitMs != null ? " (Retry-After)" : ""} — ` +
+          `retry ${attempt} of ${API_RETRY_LIMITS.maxAttempts - 1} in ${waitMs}ms.`,
+        runCtx.runId,
+      );
+    }
+
+    waitedMs += waitMs;
+    if (!(await _apiSleep(waitMs, runCtx))) return result;
+  }
+}
+
+async function _executeApiStep(config = {}, ctx = {}, runCtx = null) {
+  const method = String(config.method || "GET").toUpperCase();
+  const baseUrl = _resolveStr(config.url || config.endpoint || "", ctx);
+  if (!baseUrl) throw new Error("API step missing URL");
+
+  const headers = _parseApiHeaders(config.headers, ctx);
+  const timeoutMs = Math.max(500, Number(config.timeoutMs ?? 15000));
+  const responseType = String(config.responseType || "auto").toLowerCase();
+  const rowsPath = String(config.rowsPath || "").trim();
+
+  let bodyInit;
+  if (!["GET", "HEAD"].includes(method)) {
+    const bodyText = _resolveStr(config.body || "", ctx);
+    if (bodyText) {
+      if (
+        (headers["Content-Type"] || headers["content-type"] || "").includes(
+          "application/json",
+        )
+      ) {
+        try {
+          bodyInit = JSON.stringify(JSON.parse(bodyText));
+        } catch {
+          bodyInit = bodyText;
+        }
+      } else {
+        bodyInit = bodyText;
+      }
+    }
+  }
+
+  const pagination =
+    config.pagination && typeof config.pagination === "object"
+      ? config.pagination
+      : {};
+  const mode = String(pagination.mode || "none").toLowerCase();
+
+  if (mode !== "none" && !rowsPath) {
+    // Without rowsPath there is no way to tell "an empty page" from a page
+    // that just does not carry rows the way this endpoint's envelope is
+    // shaped — and an empty page is one of the three things pagination has
+    // to be able to stop on.
+    throw new Error(
+      "API pagination needs rowsPath — a dotted path to the array of " +
+        "records in each page's body — so it knows what an empty page is.",
+    );
+  }
+  if (mode === "cursor" && !String(pagination.cursorPath || "").trim()) {
+    throw new Error(
+      'API pagination is set to "cursor" but has no cursorPath — nothing ' +
+        "names where the next cursor lives in the response body, for " +
+        'example "next_cursor" or "meta.next".',
+    );
+  }
+  if (!["none", "cursor", "page", "link"].includes(mode)) {
+    throw new Error(`API pagination has an unknown mode "${pagination.mode}".`);
+  }
+
+  const maxPages = mode === "none" ? 1 : paginationMaxPages(pagination);
+  const cursorParam =
+    String(pagination.cursorParam || "cursor").trim() || "cursor";
+  const pageParam = String(pagination.pageParam || "page").trim() || "page";
+  const startPage = Number.isFinite(Number(pagination.startPage))
+    ? Number(pagination.startPage)
+    : 1;
+  const pageStep =
+    Number.isFinite(Number(pagination.pageStep)) &&
+    Number(pagination.pageStep) !== 0
+      ? Number(pagination.pageStep)
+      : 1;
+
+  const rows = [];
+  // Page mode names its number on every request, including the first — the
+  // start page is a request parameter, not just a step the loop counts from.
+  let requestUrl =
+    mode === "page" ? _addQueryParam(baseUrl, pageParam, startPage) : baseUrl;
+  let pageNumber = startPage;
+  let pageCount = 0;
+  let lastResult = null;
+  let stopReason = "";
+
+  for (let i = 0; i < maxPages; i++) {
+    let result;
+    try {
+      result = await _apiFetchWithRetry(
+        requestUrl,
+        method,
+        headers,
+        bodyInit,
+        timeoutMs,
+        responseType,
+        runCtx,
+        { isFirstRequest: i === 0 },
+      );
+    } catch (err) {
+      // The first page failing is the whole step failing, same as before
+      // pagination existed. A later page failing after real rows were
+      // already collected should not throw them away — it stops here and
+      // hands back what it has, the way a numbered LOOP paginator stops
+      // rather than erroring when a page will not open (K-20).
+      if (i === 0) throw err;
+      stopReason = `page ${i + 1} could not be fetched: ${err.message}`;
+      break;
+    }
+
+    lastResult = result;
+    pageCount += 1;
+
+    if (!result.ok && config.failOnHttpError !== false) {
+      if (i === 0) {
+        throw new Error(
+          `API ${method} ${requestUrl} failed: ${result.status} ${result.statusText}`,
+        );
+      }
+      stopReason = `page ${i + 1} failed: ${result.status} ${result.statusText}`;
+      break;
+    }
+
+    const pageRows = _extractApiRows(result.body, rowsPath);
+    rows.push(...pageRows);
+
+    if (mode === "none") break;
+
+    if (pageRows.length === 0) {
+      stopReason = "the page was empty";
+      break;
+    }
+    if (i === maxPages - 1) {
+      stopReason = `reached the ${maxPages}-page limit`;
+      break;
+    }
+
+    let next = null;
+    if (mode === "cursor") {
+      const cursorValue = _resolvePath(result.body, pagination.cursorPath);
+      if (
+        cursorValue !== undefined &&
+        cursorValue !== null &&
+        cursorValue !== ""
+      ) {
+        next = _addQueryParam(baseUrl, cursorParam, cursorValue);
+      }
+    } else if (mode === "page") {
+      pageNumber += pageStep;
+      next = _addQueryParam(baseUrl, pageParam, pageNumber);
+    } else if (mode === "link") {
+      next = _linkHeaderNext(result.linkHeader, result.url || requestUrl);
+    }
+
+    if (!next) {
+      stopReason =
+        mode === "cursor"
+          ? "no next cursor in the response"
+          : 'no rel="next" in the Link header';
+      break;
+    }
+    requestUrl = next;
+  }
+
+  if (!lastResult) {
+    // Unreachable in practice — the first iteration always either returns or
+    // throws — but a clear message beats a crash reading .ok below.
+    throw new Error(`API ${method} ${baseUrl} produced no response.`);
+  }
+
+  return {
+    ...lastResult,
+    paginated: mode !== "none",
+    pages: pageCount,
+    rows,
+    stopReason,
+  };
 }
 
 async function _executeUploadActivityStep(config = {}, tabId, runId = null) {
@@ -3109,7 +3431,10 @@ async function _dispatchStep(step, tabId, runId, ctx) {
 
     case "API": {
       _assertOriginAllowed(step.config.url, runState, "API");
-      const apiResult = await _executeApiStep(step.config, ctx);
+      const apiResult = await _executeApiStep(step.config, ctx, {
+        runId,
+        runState,
+      });
       const storeAs = String(step.config.storeAs || "api").trim() || "api";
       ctx[storeAs] = apiResult;
       ctx.api = apiResult;
@@ -3121,9 +3446,21 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       ) {
         Object.assign(ctx.extracted, apiResult.body);
       }
+      // rowsPath rows land in the run's results the same way EXTRACT's and
+      // PAGE_DATA's do — one path into the buffer, whether the response came
+      // from a single call or was walked across several pages of pagination.
+      if (Array.isArray(apiResult.rows) && apiResult.rows.length > 0) {
+        runState.results.push(...apiResult.rows);
+        for (const row of apiResult.rows) await pushRow(runId, row);
+      }
       _broadcastLog(
         "info-log",
-        `API ${apiResult.method} ${apiResult.url} → ${apiResult.status}`,
+        apiResult.paginated
+          ? `API ${apiResult.method} ${apiResult.url} → ${apiResult.status} ` +
+              `(${apiResult.pages} page${apiResult.pages === 1 ? "" : "s"}, ` +
+              `${apiResult.rows.length} row${apiResult.rows.length === 1 ? "" : "s"}` +
+              `${apiResult.stopReason ? ", " + apiResult.stopReason : ""}).`
+          : `API ${apiResult.method} ${apiResult.url} → ${apiResult.status}`,
         runId,
       );
       return;
@@ -4614,6 +4951,7 @@ export const __testing = {
   _executeSteps,
   _executeStepList,
   _executePipeline,
+  _executeApiStep,
   _assertOriginAllowed,
   _resolveStr,
   _resolveConfig,

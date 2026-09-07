@@ -11,7 +11,11 @@ import {
   normalizeRegexFlags,
   normalizeRegexGroup,
 } from "../utils/value-transforms.js";
-import { retryCount, retryDelayMs } from "../utils/step-types.js";
+import {
+  retryCount,
+  retryDelayMs,
+  paginationMaxPages,
+} from "../utils/step-types.js";
 import { parseFilenameTemplate } from "./pipeline-compiler.js";
 const MODULE = "node-emitter";
 
@@ -100,6 +104,74 @@ export function emitNode(pipeline) {
     "",
     `const sleep = ms => new Promise(r => setTimeout(r, ms));`,
     `const jitter = (min, max) => min + Math.random() * (max - min);`,
+    "",
+    `// ── API step: pagination and retry (K-24, K-25) ────────────────`,
+    `// A dotted path into a response body — mirrors the worker's _resolvePath,`,
+    `// so a rowsPath or cursorPath configured in the panel means the same`,
+    `// thing here. A miss anywhere along the path is undefined, not a throw.`,
+    `const fsDig = (body, path) => {`,
+    `  let val = body;`,
+    `  for (const part of String(path ?? '').split('.')) {`,
+    `    if (val === undefined || val === null) return undefined;`,
+    `    const m = part.match(/^(.+?)\\[(\\d+)\\]$/);`,
+    `    if (m) { val = val?.[m[1]]; val = Array.isArray(val) ? val[Number(m[2])] : undefined; }`,
+    `    else if (/^\\d+$/.test(part)) { val = Array.isArray(val) ? val[Number(part)] : undefined; }`,
+    `    else { val = val[part]; }`,
+    `  }`,
+    `  return val;`,
+    `};`,
+    `// rowsPath empty means the body itself, if it is an array — the same`,
+    `// rule the worker's rowsPath uses so a single call and a paginated one`,
+    `// shape their rows identically.`,
+    `const fsApiRows = (body, rowsPath) => {`,
+    `  const target = rowsPath ? fsDig(body, rowsPath) : body;`,
+    `  return Array.isArray(target) ? target : [];`,
+    `};`,
+    `const fsAddQueryParam = (url, key, value) => {`,
+    `  try { const u = new URL(url); u.searchParams.set(key, String(value)); return u.toString(); }`,
+    `  catch { return url + (url.includes('?') ? '&' : '?') + encodeURIComponent(key) + '=' + encodeURIComponent(String(value)); }`,
+    `};`,
+    `const fsParseRetryAfterMs = value => {`,
+    `  if (!value) return null;`,
+    `  const t = String(value).trim();`,
+    `  if (/^\\d+$/.test(t)) return Number(t) * 1000;`,
+    `  const at = Date.parse(t);`,
+    `  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());`,
+    `};`,
+    `const fsLinkHeaderNext = (value, baseUrl) => {`,
+    `  if (!value) return null;`,
+    `  for (const part of String(value).split(/,(?=\\s*<)/)) {`,
+    `    const u = part.match(/<([^>]+)>/), rel = part.match(/rel\\s*=\\s*"?([^",;]+)"?/i);`,
+    `    if (!u || !rel || rel[1].toLowerCase() !== 'next') continue;`,
+    `    try { return new URL(u[1], baseUrl).toString(); } catch { return u[1]; }`,
+    `  }`,
+    `  return null;`,
+    `};`,
+    `// 429/5xx get retried in place, honouring Retry-After when the server`,
+    `// names one — anything else falls back to the same exponential shape`,
+    `// the extension uses — and capped so a chatty server cannot stall the`,
+    `// script for an hour.`,
+    `const fsApiFetch = async (url, init) => {`,
+    `  const maxAttempts = 4, maxTotalWaitMs = 60000, fallbackBaseMs = 1000;`,
+    `  let attempt = 0, waitedMs = 0;`,
+    `  for (;;) {`,
+    `    const resp = await fetch(url, init);`,
+    `    attempt += 1;`,
+    `    const retryable = resp.status === 429 || (resp.status >= 500 && resp.status <= 599);`,
+    `    if (!retryable || attempt >= maxAttempts || waitedMs >= maxTotalWaitMs) return resp;`,
+    `    const headerWaitMs = fsParseRetryAfterMs(resp.headers.get('retry-after'));`,
+    `    const backoffMs = fallbackBaseMs * 2 ** (attempt - 1);`,
+    `    const waitMs = Math.max(0, Math.min(headerWaitMs ?? backoffMs, maxTotalWaitMs - waitedMs));`,
+    `    waitedMs += waitMs;`,
+    `    await sleep(waitMs);`,
+    `  }`,
+    `};`,
+    `const fsApiRequest = async (url, init, timeoutMs) => {`,
+    `  const controller = new AbortController();`,
+    `  const timer = setTimeout(() => controller.abort(), timeoutMs);`,
+    `  try { return await fsApiFetch(url, { ...init, signal: controller.signal }); }`,
+    `  finally { clearTimeout(timer); }`,
+    `};`,
     "",
     `(async () => {`,
     `  const browser = await chromium.launch({ proxy: PROXY });`,
@@ -877,6 +949,14 @@ function _formFillNode(config) {
   return lines;
 }
 
+/**
+ * One API step. `fsApiFetch` carries the 429/5xx retry (K-24) for every
+ * request it makes, paginated or not. Pagination (K-25) is only emitted when
+ * it can actually stop on its own — a cursor mode with nowhere to read the
+ * cursor from, or any pagination with no rowsPath to say what an empty page
+ * is, refuses rather than exporting a script that loops forever or never
+ * advances.
+ */
 function _apiNode(config) {
   const esc = (s) => String(s ?? "").replace(/'/g, "\\'");
   const method = String(config.method ?? "GET").toUpperCase();
@@ -884,29 +964,136 @@ function _apiNode(config) {
   const body = config.body ?? "";
   const timeout = Number(config.timeoutMs ?? 15000);
   const failOnHttp = config.failOnHttpError !== false;
+  const rowsPath = String(config.rowsPath ?? "").trim();
+  const pagination =
+    config.pagination && typeof config.pagination === "object"
+      ? config.pagination
+      : {};
+  const mode = String(pagination.mode ?? "none").toLowerCase();
+  const url = esc(config.url ?? "");
 
-  return [
-    `const apiController = new AbortController();`,
-    `const apiTimer = setTimeout(() => apiController.abort(), ${timeout});`,
+  if (mode !== "none" && !["cursor", "page", "link"].includes(mode)) {
+    return [
+      `// UNSUPPORTED: API pagination mode '${mode}' is not one this exporter knows.`,
+      `throw new Error("FlowScrape: API pagination mode '${esc(mode)}' is not exportable");`,
+      "",
+    ];
+  }
+  if (mode !== "none" && !rowsPath) {
+    return [
+      "// UNSUPPORTED: API pagination needs rowsPath — a dotted path to the",
+      "// array of records in each page's body — so the script knows what an",
+      "// empty page is.",
+      `throw new Error('FlowScrape: API pagination needs rowsPath');`,
+      "",
+    ];
+  }
+  if (mode === "cursor" && !String(pagination.cursorPath ?? "").trim()) {
+    return [
+      `// UNSUPPORTED: API pagination is set to 'cursor' but has no cursorPath.`,
+      `throw new Error('FlowScrape: API cursor pagination needs cursorPath');`,
+      "",
+    ];
+  }
+
+  const bodyExpr = `('${esc(body)}' ? fsEnv('${esc(body)}') : undefined)`;
+  const initExpr = `{ method: '${esc(method)}', headers: apiHeaders, body: ${bodyExpr} }`;
+
+  // Braced: two API steps in the same pipeline would otherwise both declare
+  // apiHeaders/apiResp/etc. in the same top-level scope, and the emitted
+  // script would not parse. The same reason IF_ELSE and ASSERT above brace
+  // their own bodies.
+  const lines = [
+    `{`,
     `let apiHeaders = {};`,
     `try { apiHeaders = JSON.parse(fsEnv('${esc(headers)}')); } catch { apiHeaders = {}; }`,
-    `const apiResp = await fetch('${esc(config.url ?? "")}', {`,
-    `  method: '${esc(method)}',`,
-    `  headers: apiHeaders,`,
-    `  body: '${esc(body)}' ? fsEnv('${esc(body)}') : undefined,`,
-    `  signal: apiController.signal,`,
-    `});`,
-    `clearTimeout(apiTimer);`,
-    failOnHttp
-      ? `if (!apiResp.ok) throw new Error('API failed: ' + apiResp.status + ' ' + apiResp.statusText);`
-      : `// failOnHttpError disabled`,
-    `const apiText = await apiResp.text();`,
-    `let apiBody = apiText;`,
-    `try { apiBody = JSON.parse(apiText); } catch {}`,
-    `const apiResult = { status: apiResp.status, ok: apiResp.ok, body: apiBody };`,
-    `console.log('API_RESULT', JSON.stringify(apiResult));`,
-    "",
   ];
+
+  if (mode === "none") {
+    lines.push(
+      `const apiResp = await fsApiRequest('${url}', ${initExpr}, ${timeout});`,
+      failOnHttp
+        ? `if (!apiResp.ok) throw new Error('API failed: ' + apiResp.status + ' ' + apiResp.statusText);`
+        : `// failOnHttpError disabled`,
+      `const apiText = await apiResp.text();`,
+      `let apiBody = apiText;`,
+      `try { apiBody = JSON.parse(apiText); } catch {}`,
+      `const apiRows = fsApiRows(apiBody, '${esc(rowsPath)}');`,
+      `const apiResult = { status: apiResp.status, ok: apiResp.ok, body: apiBody, rows: apiRows };`,
+      `console.log('API_RESULT', JSON.stringify(apiResult));`,
+      `}`,
+      "",
+    );
+    return lines;
+  }
+
+  const maxPages = paginationMaxPages(pagination);
+  const pageParam = esc(
+    String(pagination.pageParam || "page").trim() || "page",
+  );
+  const cursorParam = esc(
+    String(pagination.cursorParam || "cursor").trim() || "cursor",
+  );
+  const startPage = Number.isFinite(Number(pagination.startPage))
+    ? Number(pagination.startPage)
+    : 1;
+  const pageStep =
+    Number.isFinite(Number(pagination.pageStep)) &&
+    Number(pagination.pageStep) !== 0
+      ? Number(pagination.pageStep)
+      : 1;
+  const cursorPath = esc(String(pagination.cursorPath ?? "").trim());
+
+  lines.push(`const apiRows = [];`, `let apiNextUrl = '${url}';`);
+  if (mode === "page") {
+    lines.push(
+      `apiNextUrl = fsAddQueryParam(apiNextUrl, '${pageParam}', ${startPage});`,
+    );
+  }
+  lines.push(
+    `let apiResp, apiBody, apiPage = 0;`,
+    `for (; apiPage < ${maxPages}; apiPage++) {`,
+    `  apiResp = await fsApiRequest(apiNextUrl, ${initExpr}, ${timeout});`,
+  );
+  if (failOnHttp) {
+    lines.push(
+      `  if (apiPage === 0) { if (!apiResp.ok) throw new Error('API failed: ' + apiResp.status + ' ' + apiResp.statusText); }`,
+      `  else if (!apiResp.ok) break; // a later page failing keeps the rows already collected`,
+    );
+  }
+  lines.push(
+    `  const apiText = await apiResp.text();`,
+    `  apiBody = apiText;`,
+    `  try { apiBody = JSON.parse(apiText); } catch {}`,
+    `  const apiPageRows = fsApiRows(apiBody, '${esc(rowsPath)}');`,
+    `  apiRows.push(...apiPageRows);`,
+    `  if (apiPageRows.length === 0) break; // an empty page is the exit condition, not just the count`,
+  );
+  if (mode === "cursor") {
+    lines.push(
+      `  const apiCursor = fsDig(apiBody, '${cursorPath}');`,
+      `  if (apiCursor === undefined || apiCursor === null || apiCursor === '') break; // the source named no next cursor`,
+      `  apiNextUrl = fsAddQueryParam('${url}', '${cursorParam}', apiCursor);`,
+    );
+  } else if (mode === "page") {
+    lines.push(
+      `  apiNextUrl = fsAddQueryParam('${url}', '${pageParam}', ${startPage} + (apiPage + 1) * ${pageStep});`,
+    );
+  } else if (mode === "link") {
+    lines.push(
+      `  const apiNextLink = fsLinkHeaderNext(apiResp.headers.get('link'), apiResp.url);`,
+      `  if (!apiNextLink) break; // no rel="next" in the Link header`,
+      `  apiNextUrl = apiNextLink;`,
+    );
+  }
+  lines.push(
+    `}`,
+    `const apiResult = { status: apiResp.status, ok: true, body: apiBody, rows: apiRows, paginated: true, pages: apiPage + 1 };`,
+    `console.log('API_RESULT', JSON.stringify(apiResult));`,
+    `}`,
+    "",
+  );
+  return lines;
 }
 
 // === END node-emitter.js ===

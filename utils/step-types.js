@@ -291,6 +291,17 @@ export const STEP_TYPES = Object.freeze({
     cat: "Data",
     desc: "Call API endpoint",
     runsIn: "background",
+    // rowsPath picks the array of records out of the response body — dotted
+    // path, empty meaning "the body itself, if it is an array". It applies
+    // whether pagination is on or not, so a single call and a paginated one
+    // land rows the same way (K-25).
+    //
+    // pagination.mode picks how the next page is found: "cursor" reads
+    // cursorPath out of the body and sends it back as cursorParam on the next
+    // request; "page" increments pageParam by pageStep each request; "link"
+    // reads the RFC 8288 `Link` response header for `rel="next"`. maxPages is
+    // a safety cap, not the exit condition — the source saying it has no more
+    // pages is (K-25).
     def: {
       url: "https://api.example.com/resource",
       method: "GET",
@@ -301,6 +312,16 @@ export const STEP_TYPES = Object.freeze({
       storeAs: "api",
       failOnHttpError: true,
       exposeBodyAsExtracted: false,
+      rowsPath: "",
+      pagination: {
+        mode: "none",
+        cursorPath: "",
+        cursorParam: "cursor",
+        pageParam: "page",
+        startPage: 1,
+        pageStep: 1,
+        maxPages: 10,
+      },
     },
   },
   API_SNIFFER: {
@@ -483,6 +504,49 @@ export function retryDelayMs(config) {
   const n = Number(config?.retryDelayMs);
   if (!Number.isFinite(n) || n < 0) return RETRY_LIMITS.defaultDelayMs;
   return Math.min(n, RETRY_LIMITS.maxDelayMs);
+}
+
+/**
+ * Bounds on an API step's own retry against 429 and 5xx.
+ *
+ * This is separate from RETRY_LIMITS above: the generic step retry re-runs
+ * the whole step after any failure, on a delay the user picked. This one
+ * fires only on a rate-limit or server error, waits however long the server's
+ * `Retry-After` said to (when there was one), and exists precisely so a
+ * single API step does not just fail the moment a server asks it to slow
+ * down. The cap keeps a chatty `Retry-After` from stalling a run for an hour
+ * — a server is free to ask for one; honouring it is not the same as obeying
+ * it without limit.
+ */
+export const API_RETRY_LIMITS = Object.freeze({
+  maxAttempts: 4, // the first try, plus up to 3 more
+  maxTotalWaitMs: 60_000, // never accumulate more than a minute of waiting
+  fallbackBaseMs: 1000, // backoff base when the server names no Retry-After
+});
+
+/**
+ * Bounds on how many pages an API step's pagination will fetch.
+ *
+ * `maxPages` is a safety limit, not the exit condition — pagination is meant
+ * to stop because the source says to (no next cursor, no `rel="next"`, an
+ * empty page), and this cap only exists so a source that never says to stop
+ * cannot run forever.
+ */
+export const PAGINATION_LIMITS = Object.freeze({
+  maxPages: 500,
+  defaultMaxPages: 10,
+});
+
+/**
+ * How many pages an API step's pagination is allowed to fetch, 1 to
+ * PAGINATION_LIMITS.maxPages.
+ * @param {object} [pagination]
+ * @returns {number}
+ */
+export function paginationMaxPages(pagination) {
+  const n = Math.floor(Number(pagination?.maxPages));
+  if (!Number.isFinite(n) || n <= 0) return PAGINATION_LIMITS.defaultMaxPages;
+  return Math.min(n, PAGINATION_LIMITS.maxPages);
 }
 
 /**

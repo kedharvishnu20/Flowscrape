@@ -428,6 +428,22 @@ const KITCHEN_SINK = [
   }),
   step("PAGE_DATA", { source: "auto", type: "Product", flatten: true }),
   step("PAGE_DATA", { source: "jsonld", type: "", flatten: false }),
+  step("API", { url: "https://shop.test/api/items", rowsPath: "items" }),
+  step("API", {
+    url: "https://shop.test/api/items",
+    rowsPath: "items",
+    pagination: { mode: "cursor", cursorPath: "next_cursor" },
+  }),
+  step("API", {
+    url: "https://shop.test/api/items",
+    rowsPath: "items",
+    pagination: { mode: "page", pageParam: "page", startPage: 1 },
+  }),
+  step("API", {
+    url: "https://shop.test/api/items",
+    rowsPath: "items",
+    pagination: { mode: "link" },
+  }),
   step("SCREENSHOT", { quality: 90 }),
   step("DOWNLOAD_FILE", {
     selector: ".gallery img",
@@ -975,4 +991,61 @@ test("the pre-download template warning ignores the fields the script fills in",
     ]),
   );
   assert.equal(bad.length, 1, "everything else is still reported");
+});
+
+// ── API: pagination and retry (K-24, K-25) ────────────────────────────────
+
+test("an API step's rows and pagination are emitted in both languages", () => {
+  const { py, js } = emit([
+    step("API", {
+      url: "https://shop.test/api/items",
+      rowsPath: "items",
+      pagination: { mode: "cursor", cursorPath: "next_cursor" },
+    }),
+  ]);
+  assert.match(js, /fsApiRows/);
+  assert.match(js, /fsDig\(apiBody, 'next_cursor'\)/);
+  assert.match(js, /fsApiFetch/); // the 429/5xx retry
+  assert.match(py, /fs_api_rows/);
+  assert.match(py, /fs_dig\(api_body, "next_cursor"\)/);
+  assert.match(py, /respect_retry_after_header=True/);
+});
+
+test("cursor pagination with no cursorPath refuses in both languages", () => {
+  const { py, js } = emit([
+    step("API", {
+      url: "https://shop.test/api/items",
+      rowsPath: "items",
+      pagination: { mode: "cursor" },
+    }),
+  ]);
+  assert.match(js, /UNSUPPORTED/);
+  assert.match(js, /throw new Error/);
+  assert.match(py, /UNSUPPORTED/);
+  assert.match(py, /raise ValueError/);
+});
+
+test("pagination with no rowsPath refuses instead of exporting a script that cannot tell an empty page", () => {
+  const { py, js } = emit([
+    step("API", {
+      url: "https://shop.test/api/items",
+      pagination: { mode: "page" },
+    }),
+  ]);
+  assert.match(js, /UNSUPPORTED/);
+  assert.match(js, /rowsPath/);
+  assert.match(py, /UNSUPPORTED/);
+  assert.match(py, /rowsPath/);
+});
+
+test("an unknown API pagination mode refuses rather than doing nothing silently", () => {
+  const { py, js } = emit([
+    step("API", {
+      url: "https://shop.test/api/items",
+      rowsPath: "items",
+      pagination: { mode: "bogus" },
+    }),
+  ]);
+  assert.match(js, /UNSUPPORTED/);
+  assert.match(py, /UNSUPPORTED/);
 });

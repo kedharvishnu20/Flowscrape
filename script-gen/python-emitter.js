@@ -19,7 +19,11 @@ import {
   normalizeRegexFlags,
   normalizeRegexGroup,
 } from "../utils/value-transforms.js";
-import { retryCount, retryDelayMs } from "../utils/step-types.js";
+import {
+  retryCount,
+  retryDelayMs,
+  paginationMaxPages,
+} from "../utils/step-types.js";
 import { parseFilenameTemplate } from "./pipeline-compiler.js";
 
 const MODULE = "python-emitter";
@@ -51,6 +55,8 @@ export function emitPython(pipeline) {
     "import asyncio, os, re, json, csv, time, random, base64",
     "from playwright.async_api import async_playwright",
     "import requests",
+    "from requests.adapters import HTTPAdapter",
+    "from urllib3.util.retry import Retry",
     "",
     "",
     "def fs_env(s):",
@@ -160,6 +166,56 @@ export function emitPython(pipeline) {
     "def fs_file_name(url, index):",
     '    name = unquote(urlparse(url).path.rstrip("/").split("/")[-1]) if url else ""',
     '    return name or "file-{}".format(index)',
+    "# ── API step: pagination and retry (K-24, K-25) ────────────────",
+    "# A dotted path into a response body — mirrors the worker's _resolvePath,",
+    "# so a rowsPath or cursorPath configured in the panel means the same thing",
+    "# here. A miss anywhere along the path is None, not an exception.",
+    "def fs_dig(body, path):",
+    "    val = body",
+    "    for part in str(path or '').split('.'):",
+    "        if val is None:",
+    "            return None",
+    "        m = re.match(r'^(.+?)\\[(\\d+)\\]$', part)",
+    "        if m:",
+    "            val = val.get(m.group(1)) if isinstance(val, dict) else None",
+    "            val = val[int(m.group(2))] if isinstance(val, list) and int(m.group(2)) < len(val) else None",
+    "        elif part.isdigit():",
+    "            val = val[int(part)] if isinstance(val, list) and int(part) < len(val) else None",
+    "        else:",
+    "            val = val.get(part) if isinstance(val, dict) else None",
+    "    return val",
+    "",
+    "",
+    "# rowsPath empty means the body itself, if it is an array — the same rule",
+    "# the worker's rowsPath uses so a single call and a paginated one shape",
+    "# their rows identically.",
+    "def fs_api_rows(body, rows_path):",
+    "    target = fs_dig(body, rows_path) if rows_path else body",
+    "    return target if isinstance(target, list) else []",
+    "",
+    "",
+    "def fs_add_query_param(url, key, value):",
+    "    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode",
+    "    parts = urlsplit(url)",
+    "    q = dict(parse_qsl(parts.query))",
+    "    q[key] = str(value)",
+    "    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))",
+    "",
+    "",
+    "def fs_api_session():",
+    "    # 429/5xx get retried in place, honouring Retry-After when the server",
+    "    # names one — urllib3 parses both the seconds and the HTTP-date form —",
+    "    # and capped so a chatty server cannot stall the script for an hour.",
+    "    s = requests.Session()",
+    "    retry = Retry(",
+    "        total=3,",
+    "        backoff_factor=1,",
+    "        status_forcelist=[429, 500, 502, 503, 504],",
+    "        respect_retry_after_header=True,",
+    "    )",
+    "    s.mount('http://', HTTPAdapter(max_retries=retry))",
+    "    s.mount('https://', HTTPAdapter(max_retries=retry))",
+    "    return s",
     "",
     "# ── Config ────────────────────────────────────────────────────",
     `TARGET_ORIGIN = "${pipeline.targetOrigin ?? ""}"`,
@@ -987,6 +1043,14 @@ function _emitExport(config) {
   ];
 }
 
+/**
+ * One API step. `fs_api_session()` carries the 429/5xx retry (K-24) for every
+ * request it makes, paginated or not. Pagination (K-25) is only emitted when
+ * it can actually stop on its own — a cursor mode with nowhere to read the
+ * cursor from, or any pagination with no rowsPath to say what an empty page
+ * is, refuses rather than exporting a script that loops forever or never
+ * advances.
+ */
 function _emitApi(config) {
   const url = _escStr(config.url ?? "");
   const method = String(config.method ?? "GET").toUpperCase();
@@ -994,7 +1058,38 @@ function _emitApi(config) {
   const body = _escStr(config.body ?? "");
   const timeoutSec = (Number(config.timeoutMs ?? 15000) / 1000).toFixed(2);
   const failOnHttp = config.failOnHttpError !== false;
+  const rowsPath = String(config.rowsPath ?? "").trim();
+  const pagination =
+    config.pagination && typeof config.pagination === "object"
+      ? config.pagination
+      : {};
+  const mode = String(pagination.mode ?? "none").toLowerCase();
 
+  if (mode !== "none" && !["cursor", "page", "link"].includes(mode)) {
+    return [
+      `# UNSUPPORTED: API pagination mode "${mode}" is not one this exporter knows.`,
+      `raise ValueError("FlowScrape: API pagination mode '${_escStr(mode)}' is not exportable")`,
+      "",
+    ];
+  }
+  if (mode !== "none" && !rowsPath) {
+    return [
+      "# UNSUPPORTED: API pagination needs rowsPath — a dotted path to the",
+      "# array of records in each page's body — so the script knows what an",
+      "# empty page is.",
+      `raise ValueError("FlowScrape: API pagination needs rowsPath")`,
+      "",
+    ];
+  }
+  if (mode === "cursor" && !String(pagination.cursorPath ?? "").trim()) {
+    return [
+      '# UNSUPPORTED: API pagination is set to "cursor" but has no cursorPath.',
+      `raise ValueError("FlowScrape: API cursor pagination needs cursorPath")`,
+      "",
+    ];
+  }
+
+  const dataExpr = `fs_env("""${body}""") if """${body}""" else None`;
   const lines = [
     "# API",
     `api_headers = {}`,
@@ -1002,23 +1097,93 @@ function _emitApi(config) {
     `    api_headers = json.loads(fs_env("""${headers}""")) if """${headers}""".strip() else {}`,
     `except Exception:`,
     `    api_headers = {}`,
-    `api_resp = requests.request(`,
-    `    method="${method}",`,
-    `    url="${url}",`,
-    `    headers=api_headers,`,
-    `    data=fs_env("""${body}""") if """${body}""" else None,`,
-    `    timeout=${timeoutSec},`,
-    `)`,
+    `api_session = fs_api_session()`,
   ];
 
-  if (failOnHttp) lines.push("api_resp.raise_for_status()");
+  if (mode === "none") {
+    lines.push(
+      `api_resp = api_session.request(method="${method}", url="${url}", headers=api_headers, data=${dataExpr}, timeout=${timeoutSec})`,
+    );
+    if (failOnHttp) lines.push("api_resp.raise_for_status()");
+    lines.push(
+      "try:",
+      "    api_body = api_resp.json()",
+      "except Exception:",
+      "    api_body = api_resp.text",
+      `api_rows = fs_api_rows(api_body, "${_escStr(rowsPath)}")` +
+        (rowsPath ? "" : "  # no rowsPath configured"),
+      'api_result = {"ok": api_resp.ok, "status": api_resp.status_code, "body": api_body, "rows": api_rows}',
+      'print("API_RESULT", json.dumps(api_result))',
+      "",
+    );
+    return lines;
+  }
 
+  const maxPages = paginationMaxPages(pagination);
+  const pageParam =
+    _escStr(String(pagination.pageParam || "page").trim()) || "page";
+  const cursorParam =
+    _escStr(String(pagination.cursorParam || "cursor").trim()) || "cursor";
+  const startPage = Number.isFinite(Number(pagination.startPage))
+    ? Number(pagination.startPage)
+    : 1;
+  const cursorPath = _escStr(String(pagination.cursorPath ?? "").trim());
+
+  lines.push(`api_rows = []`, `api_next_url = "${url}"`);
+  if (mode === "page") {
+    lines.push(
+      `api_next_url = fs_add_query_param(api_next_url, "${pageParam}", ${startPage})`,
+    );
+  }
   lines.push(
-    "try:",
-    "    api_body = api_resp.json()",
-    "except Exception:",
-    "    api_body = api_resp.text",
-    'api_result = {"ok": api_resp.ok, "status": api_resp.status_code, "body": api_body}',
+    `for _api_page in range(${maxPages}):`,
+    `    api_resp = api_session.request(method="${method}", url=api_next_url, headers=api_headers, data=${dataExpr}, timeout=${timeoutSec})`,
+  );
+  if (failOnHttp) {
+    lines.push(
+      "    if _api_page == 0:",
+      "        api_resp.raise_for_status()",
+      "    elif not api_resp.ok:",
+      "        break  # a later page failing keeps the rows already collected",
+    );
+  }
+  lines.push(
+    "    try:",
+    "        api_body = api_resp.json()",
+    "    except Exception:",
+    "        api_body = api_resp.text",
+    `    api_page_rows = fs_api_rows(api_body, "${_escStr(rowsPath)}")`,
+    "    api_rows.extend(api_page_rows)",
+    "    if not api_page_rows:",
+    "        break  # an empty page is the exit condition, not just the count",
+  );
+  if (mode === "cursor") {
+    lines.push(
+      `    api_cursor = fs_dig(api_body, "${cursorPath}")`,
+      "    if not api_cursor:",
+      "        break  # the source named no next cursor",
+      `    api_next_url = fs_add_query_param("${url}", "${cursorParam}", api_cursor)`,
+    );
+  } else if (mode === "page") {
+    const pageStep =
+      Number.isFinite(Number(pagination.pageStep)) &&
+      Number(pagination.pageStep) !== 0
+        ? Number(pagination.pageStep)
+        : 1;
+    lines.push(
+      `    api_next_url = fs_add_query_param("${url}", "${pageParam}", ${startPage} + (_api_page + 1) * ${pageStep})`,
+    );
+  } else if (mode === "link") {
+    lines.push(
+      "    api_next_link = api_resp.links.get('next', {}).get('url')",
+      "    if not api_next_link:",
+      '        break  # no rel="next" in the Link header',
+      "    api_next_url = api_next_link",
+    );
+  }
+  lines.push(
+    "",
+    'api_result = {"ok": True, "status": api_resp.status_code, "body": api_body, "rows": api_rows, "paginated": True, "pages": _api_page + 1}',
     'print("API_RESULT", json.dumps(api_result))',
     "",
   );

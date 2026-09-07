@@ -395,9 +395,12 @@ export function checkCaptchaGates(flags) {
 
 // ── Captcha dispatcher ────────────────────────────────────────────────────────
 //
-// NOT REACHABLE. solveCaptcha is exposed through the captcha:solve message and
-// nothing sends it; content/captcha-detector.js, which would find a captcha to
-// solve, is not loaded at all. See docs/ISSUE_AUDIT.md A-06.
+// NOT REACHABLE, and no longer for the reason this comment used to give.
+// Detection is live — content/captcha-check.js finds a challenge and
+// SOLVE_CAPTCHA acts on it — but it answers through the free tier and, failing
+// that, your own vision model. This paid-provider dispatcher is exposed through
+// the captcha:solve message and nothing sends it. See docs/ISSUE_AUDIT.md A-06
+// and K-14/K-17.
 
 /**
  * Dispatch a captcha solve request to the configured provider.

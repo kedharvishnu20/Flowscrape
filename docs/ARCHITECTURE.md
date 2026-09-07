@@ -184,16 +184,20 @@ papered over.
 
 ---
 
-## 10. Three modules are kept unreachable on purpose
+## 10. One module is kept unreachable on purpose
 
-`form-filler.js`, `field-auto-mapper.js` and `captcha-detector.js` work, and
-nothing calls them [A-05, A-06, A-07].
+`field-auto-mapper.js` works, and nothing calls it [A-07].
 
-Since they are unreachable, deleting and keeping them behave identically today.
-Enabling them would add a class of capability nobody asked for; deleting them
-forecloses a decision that is not mine. So each carries a header saying plainly
-that nothing calls it, with the finding that explains why — and their own
-defects are still fixed as defects [B-19, B-33, B-34].
+This section used to name three, and two of them have since been wired:
+`form-filler.js` runs behind FORM_FILL, and `captcha-detector.js` was replaced
+by the live `captcha-check.js` [K-02]. The A-05 citation was wrong as well —
+that finding is the proxy pool, which now runs during a scrape.
+
+Since it is unreachable, deleting and keeping it behave identically today.
+Enabling it would add a class of capability nobody asked for; deleting it
+forecloses a decision that is not mine. So it carries a header saying plainly
+that nothing calls it, with the finding that explains why — and its own defects
+are still fixed as defects [B-33, B-34].
 
 Everything else the audit called dead has since been deleted or wired up. The
 table is in the audit's status section.

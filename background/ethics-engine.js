@@ -26,6 +26,14 @@ const MAX_FORM_ROWS_DEFAULT = 500;
 const MAX_FORM_ROWS_CONFIRMED = 5000;
 const MIN_INTER_ROW_DELAY_MS = 800;
 const MAX_REQUESTS_BEFORE_WARN = 100;
+
+/**
+ * Solves per hour past which gate 4 speaks up.
+ *
+ * A handful of challenges over a long run is a person getting through a login;
+ * fifty an hour is a machine doing what the challenge exists to prevent.
+ */
+const CAPTCHA_SOLVES_BEFORE_WARN = 50;
 const ROBOTS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 // ── Block/warn error classes ──────────────────────────────────────────────────
@@ -178,32 +186,115 @@ function _gate3_rateLimit(pipelineSteps, timingConfig) {
   );
 }
 
-function _gate4_captcha(pipelineSteps, captchaConfig) {
+/**
+ * Gate 4: warn when a run would answer challenges in bulk.
+ *
+ * It used to measure FORM_FILL. Not the number of captchas, not even the
+ * number of captcha steps: the delay between rows of the *first* FORM_FILL
+ * step, if the pipeline happened to have one. A pipeline with no FORM_FILL
+ * fell back to the 1200ms default and "estimated" 3000 solves an hour with no
+ * captcha step anywhere in it; a pipeline that solved a hundred captchas
+ * inside a loop and filled no forms was measured against a number that had
+ * nothing to do with it.
+ *
+ * What it counts now is SOLVE_CAPTCHA steps, multiplied through the loops
+ * containing them — the same walk gate 3 uses for requests — paced by the
+ * run's own delay. A run with no SOLVE_CAPTCHA solves nothing, however
+ * enabled the feature is, and does not warn.
+ *
+ * @param {object[]} pipelineSteps
+ * @param {object} captchaConfig
+ * @param {object} timingConfig
+ * @returns {EthicsWarn|null}
+ */
+function _gate4_captcha(pipelineSteps, captchaConfig, timingConfig) {
   if (!captchaConfig?.enabled) return null;
-  const formSteps = _flattenSteps(pipelineSteps).filter(
-    (s) => s.type === "FORM_FILL",
+
+  const solves = _countType(pipelineSteps, "SOLVE_CAPTCHA");
+  if (solves === 0) return null;
+
+  const minDelay = Number(timingConfig?.min) || 1200;
+  // Two bounds, and the smaller one is the honest answer: you cannot solve
+  // more than the pipeline asks for, and you cannot solve them faster than the
+  // run's own pacing allows.
+  const perHour = Math.min(solves, Math.round(3600000 / minDelay));
+  if (perHour <= CAPTCHA_SOLVES_BEFORE_WARN) return null;
+
+  return new EthicsWarn(
+    "HighCaptchaVolume",
+    `This pipeline asks for about ${solves} captcha solves, up to ~${perHour}/hr. ` +
+      "Answering challenges in bulk is what a site puts them there to stop.",
   );
-  const minDelay = formSteps[0]?.config?.interRowDelay?.min ?? 1200;
-  const solveRatePerHr = Math.round(3600000 / minDelay);
-  if (solveRatePerHr > 50) {
-    return new EthicsWarn(
-      "HighCaptchaVolume",
-      `Estimated captcha solves: ~${solveRatePerHr}/hr (> 50 threshold)`,
-    );
-  }
-  return null;
 }
 
-function _gate5_proxyGeo(proxyEntry, declaredRegion) {
-  // Simplified region comparison — actual Haversine would require geo data
-  if (!proxyEntry?.country || !declaredRegion) return null;
-  if (proxyEntry.country.toUpperCase() !== declaredRegion.toUpperCase()) {
-    return new EthicsWarn(
-      "ProxyGeoMismatch",
-      `Proxy country (${proxyEntry.country}) ≠ declared region (${declaredRegion})`,
-    );
+/**
+ * Gate 5: warn when the proxy pool cannot honour the region you asked for.
+ *
+ * The old version compared "the proxy entry" against "the declared region",
+ * and no caller ever passed either — so the gate could not fire, in any
+ * pipeline, ever. A gate with no inputs is not a lenient gate; it is a
+ * decoration that makes the list look longer.
+ *
+ * The question it can actually answer, at preflight, from data that exists:
+ * you set the pool to pick exits in a country, and no proxy in the pool claims
+ * to be there — so the run will quietly use whatever is alive instead, which
+ * is the opposite of what geo rotation was turned on for.
+ *
+ * @param {string[]} poolCountries - country codes of the live pool
+ * @param {string} declaredRegion - the region the user asked to exit through
+ * @returns {EthicsWarn|null}
+ */
+function _gate5_proxyGeo(poolCountries, declaredRegion) {
+  const want = String(declaredRegion ?? "")
+    .trim()
+    .toUpperCase();
+  if (!want) return null;
+  const have = (Array.isArray(poolCountries) ? poolCountries : [])
+    .map((c) =>
+      String(c ?? "")
+        .trim()
+        .toUpperCase(),
+    )
+    .filter(Boolean);
+  if (have.includes(want)) return null;
+  return new EthicsWarn(
+    "ProxyGeoMismatch",
+    have.length
+      ? `No proxy in the pool is in ${want} — the pool lists ${[...new Set(have)].join(", ")}. ` +
+          "The run will use whichever proxy is alive, not one in that region."
+      : `No proxy in the pool says which country it is in, so ${want} cannot be honoured. ` +
+          "Import the pool with a country column to make geo rotation mean something.",
+  );
+}
+
+/**
+ * How many steps of one type a run will execute, loops included.
+ *
+ * @param {object[]} steps
+ * @param {string} type
+ * @param {number} multiplier
+ * @returns {number}
+ */
+function _countType(steps, type, multiplier = 1) {
+  let total = 0;
+  for (const step of Array.isArray(steps) ? steps : []) {
+    if (step.type === type) total += multiplier;
+    if (step.type === "LOOP") {
+      const max = Number(step.config?.max);
+      const iterations = Number.isFinite(max) && max > 0 ? max : 10;
+      total += _countType(step.children, type, multiplier * iterations);
+      continue;
+    }
+    if (step.type === "IF_ELSE") {
+      total += Math.max(
+        _countType(step.ifBranch, type, multiplier),
+        _countType(step.elseBranch, type, multiplier),
+      );
+      continue;
+    }
+    total += _countType(step.children, type, multiplier);
   }
-  return null;
+  return total;
 }
 
 /**
@@ -392,8 +483,8 @@ function _checkFormFillHardConstraints(config, rowCount, confirmed) {
  * @param {string}   opts.targetOrigin   - Declared pipeline origin
  * @param {string}   [opts.targetPath='/'] - Path for robots.txt check
  * @param {object}   [opts.timing]       - Timing configuration
- * @param {object}   [opts.proxy]        - Current proxy entry
- * @param {string}   [opts.region]       - Declared geo region
+ * @param {string[]} [opts.proxyCountries] - country codes in the live proxy pool
+ * @param {string}   [opts.region]       - the region the pool was asked to exit through
  * @param {object}   [opts.captcha]      - Captcha config
  * @param {number}   [opts.tabId]        - Active tab for Gate 7
  * @param {boolean}  [opts.confirmed]    - User explicitly confirmed row count
@@ -406,7 +497,7 @@ export async function runEthicsGates(opts = {}) {
     targetOrigin = "",
     targetPath = "/",
     timing = {},
-    proxy = null,
+    proxyCountries = [],
     region = null,
     captcha = {},
     tabId = null,
@@ -429,11 +520,11 @@ export async function runEthicsGates(opts = {}) {
   if (w3) warnings.push(w3);
 
   // Gate 4: Captcha volume
-  const w4 = _gate4_captcha(steps, captcha);
+  const w4 = _gate4_captcha(steps, captcha, timing);
   if (w4) warnings.push(w4);
 
   // Gate 5: Proxy geo
-  const w5 = _gate5_proxyGeo(proxy, region);
+  const w5 = _gate5_proxyGeo(proxyCountries, region);
   if (w5) warnings.push(w5);
 
   // Gate 6: cross-origin reporting. Enforcement of *unauthored* origins happens

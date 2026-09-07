@@ -76,6 +76,9 @@ import {
   addToPool,
   savePool,
   setRotationMode,
+  setTargetCountry,
+  getTargetCountry,
+  poolCountries,
 } from "./proxy-manager.js";
 import { acquire, backoff, resetRetry } from "./rate-limiter.js";
 import {
@@ -1045,6 +1048,11 @@ function _gateArgs(payload, tabId) {
     confirmed: payload.confirmed ?? false,
     rowCount: payload.rowCount ?? 0,
     bypassRobots: payload.bypassRobots ?? false,
+    // Gate 5's two inputs. Asked for only when the run will actually use the
+    // pool: warning about proxy geography for a run going direct would be the
+    // gate crying wolf, which is what makes people stop reading them.
+    proxyCountries: payload.useProxy ? poolCountries() : [],
+    region: payload.useProxy ? getTargetCountry() : "",
   };
 }
 
@@ -4370,7 +4378,10 @@ const STORAGE_PROXY_HELD_KEY = "fs_proxy_held_v1";
  */
 async function _startRunProxy(runState) {
   if (!runState?.useProxy) return;
-  const entry = selectProxy({ domain: _hostOf(runState.targetOrigin) });
+  const entry = selectProxy({
+    domain: _hostOf(runState.targetOrigin),
+    targetCountry: getTargetCountry(),
+  });
   if (!entry) {
     _broadcastLog(
       "warn-log",
@@ -5319,6 +5330,9 @@ _registerHandler("proxy:update", async (payload) => {
   const entries = parseProxyText(payload.text);
   addToPool(entries);
   if (payload.mode) setRotationMode(payload.mode);
+  // Sent even when empty, so clearing the box clears the preference rather
+  // than leaving geo mode chasing a country the user has stopped asking for.
+  if (payload.region !== undefined) setTargetCountry(payload.region);
   await savePool();
   return { ok: true, count: entries.length };
 });

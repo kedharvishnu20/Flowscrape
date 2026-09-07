@@ -72,10 +72,12 @@ code the way the rest of the docs did.
 | D-03, D-04, D-05, D-06, D-08      | `c7ccc95`     | `exporters/row-formatters.js` replaces four implementations                          |
 | H-01…H-07, H-10, F-05, G-04, I-05 | _docs commit_ | README rewritten from the code; LICENSE added; duplicate README removed              |
 
-**Not fixed by decision:** A-05 and A-07 (proxy rotation, FORM_FILL). A-06 was
-a third until K-02 closed it — the detector half is live, the solver half is
-still deliberately unwired. Both remaining ones are unreachable, so they behave
-identically whether removed or kept. Enabling them adds a class of capability that was never asked
+**Not fixed by decision:** A-07 (FORM_FILL's auto-mapper). It was three: A-06
+closed when K-02 made the detector half live, and A-05 closed when the proxy
+pool was wired into a run — the paragraph naming both as open outlived them
+both, which is the kind of stale claim this file exists to prevent. The
+remaining one is unreachable, so it behaves identically whether removed or
+kept. Enabling them adds a class of capability that was never asked
 for; deleting them forecloses that. Each module now states plainly that nothing
 calls it, and B-19 — the one dangerous latent bug among them — is fixed. Their
 own defects are still fixed as defects: B-33 (captcha poll recursion) and B-34

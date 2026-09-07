@@ -828,10 +828,15 @@ function bindGlobalControls() {
     ?.addEventListener("click", async () => {
       const text = document.getElementById("config-proxy-text").value.trim();
       const mode = document.getElementById("config-proxy-mode").value;
+      const region = (
+        document.getElementById("config-proxy-region")?.value ?? ""
+      )
+        .trim()
+        .toUpperCase();
       if (!text) return logToMonitor("warn-log", "Paste proxy list first.");
       const res = await chrome.runtime.sendMessage({
         type: "proxy:update",
-        payload: { text, mode },
+        payload: { text, mode, region },
       });
       logToMonitor(
         res?.ok ? "info-log" : "error-log",

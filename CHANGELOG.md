@@ -19,6 +19,29 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Fixed — two gates that were not gates
+
+- **Gate 4 measured the wrong thing** (FS-15). It estimated captcha volume from
+  the row delay of the first FORM_FILL step, if the pipeline happened to have
+  one. A pipeline with no FORM_FILL fell back to a default and warned about
+  3000 solves an hour with no captcha step anywhere in it; a pipeline solving a
+  hundred captchas inside a loop was measured against a number that had nothing
+  to do with it. It now counts SOLVE_CAPTCHA steps through their loops, paced by
+  the run's own delay, bounded by both.
+- **Gate 5 could not fire** (FS-14). It compared "the proxy entry" against "the
+  declared region" and no caller passed either, in any pipeline, ever. It now
+  answers a question it can: you set the pool to exit through a country, and no
+  live proxy in it claims to be there — so the run will quietly use whatever is
+  alive instead. That also made geo rotation real: `selectProxy`'s geo mode read
+  a `targetCountry` nobody passed and behaved exactly like random, and the mode
+  was missing from the panel's dropdown besides.
+- **Tor's ports are read as SOCKS** (FS-17). Only 1080 was inferred, so a proxy
+  on 9050 or 9150 was treated as HTTP: it connected, then failed every request,
+  with nothing saying why.
+- **Stale "unreachable" claims removed** (FS-16). The architecture notes named
+  three modules nobody calls; two had since been wired, and one of the three
+  finding numbers cited was the proxy pool, which now runs during a scrape.
+
 ### Fixed — the exported script now does what the pipeline did
 
 Six differences between running a pipeline and running its script, all found by

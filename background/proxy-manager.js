@@ -32,6 +32,7 @@ const MODULE = "proxy-manager";
 // ── Constants ────────────────────────────────────────────────────────────────
 const STORAGE_KEY_POOL = "fs_proxy_pool"; // local: pool metadata (no creds)
 const STORAGE_KEY_CREDS = "fs_proxy_creds"; // session: user/pass per host:port
+const STORAGE_KEY_REGION = "fs_proxy_region"; // local: the country geo mode wants
 const PROXY_HEALTH_TIMEOUT_MS = 5000;
 const HEALTH_CHECK_URL = "https://httpbin.org/ip";
 
@@ -65,12 +66,27 @@ let _rotationMode = "round-robin"; // 'round-robin' | 'random' | 'sticky' | 'geo
 // ── Parser helpers ────────────────────────────────────────────────────────────
 
 /**
+ * The ports that mean SOCKS often enough to guess from.
+ *
+ * 1080 is the registered one and 1081 the usual second instance; 9050 and 9150
+ * are Tor's daemon and Tor Browser's bundled client, which between them are
+ * most of the SOCKS proxies anyone pastes into a tool like this. Guessing
+ * `http` for those produced a proxy that connected and then failed every
+ * request, with nothing saying why.
+ *
+ * Deliberately short. This is a guess for a line that did not say, and a long
+ * list of maybes would start guessing wrong for HTTP proxies on unusual ports —
+ * write `socks5://host:port` and nothing is inferred at all.
+ */
+const SOCKS_PORTS = new Set([1080, 1081, 9050, 9150]);
+
+/**
  * Infer protocol from port when not specified.
  * @param {number} port
  * @returns {'socks5'|'http'}
  */
 function _inferProtocol(port) {
-  return port === 1080 ? "socks5" : "http";
+  return SOCKS_PORTS.has(port) ? "socks5" : "http";
 }
 
 /**
@@ -387,6 +403,10 @@ export async function loadPool() {
     }));
 
     _credMap = new Map(Object.entries(sessionCreds));
+    const regionItems = await chrome.storage.local.get([STORAGE_KEY_REGION]);
+    _targetCountry = String(
+      regionItems?.[STORAGE_KEY_REGION] ?? "",
+    ).toUpperCase();
     logger.info(MODULE, "pool-loaded", { count: _pool.length });
   } catch (err) {
     logger.error(MODULE, "pool-load-fail", { error: err.message });
@@ -405,7 +425,10 @@ export async function savePool() {
   const credObj = Object.fromEntries(_credMap.entries());
 
   try {
-    await chrome.storage.local.set({ [STORAGE_KEY_POOL]: meta });
+    await chrome.storage.local.set({
+      [STORAGE_KEY_POOL]: meta,
+      [STORAGE_KEY_REGION]: _targetCountry,
+    });
     await chrome.storage.session.set({ [STORAGE_KEY_CREDS]: credObj });
     logger.info(MODULE, "pool-saved", { count: meta.length });
   } catch (err) {
@@ -469,6 +492,44 @@ export function getRotationMode() {
   return _rotationMode;
 }
 
+/**
+ * The country geo rotation should exit through, as an ISO-3166-1 alpha-2 code.
+ *
+ * Held here because two things need it and neither should own it: `selectProxy`
+ * in geo mode, and the preflight gate that warns when no proxy in the pool
+ * claims to be there. Before this, geo mode read a `targetCountry` nobody
+ * passed and quietly behaved like random.
+ */
+let _targetCountry = "";
+
+/** @param {string} code - ISO-3166-1 alpha-2, or "" for no preference. */
+export function setTargetCountry(code) {
+  _targetCountry = String(code ?? "")
+    .trim()
+    .toUpperCase();
+  logger.info(MODULE, "target-country-set", { country: _targetCountry });
+}
+
+/** @returns {string} */
+export function getTargetCountry() {
+  return _targetCountry;
+}
+
+/**
+ * The countries the live pool claims, for the preflight gate.
+ *
+ * Only the alive ones: a dead proxy in the right country does not make the
+ * region reachable, and warning as though it did would be the same kind of
+ * comfort the old gate gave.
+ *
+ * @returns {string[]}
+ */
+export function poolCountries() {
+  return _pool
+    .filter((p) => p.alive !== false && p.country)
+    .map((p) => p.country);
+}
+
 // ── Proxy selection ───────────────────────────────────────────────────────────
 
 /**
@@ -518,7 +579,9 @@ export function selectProxy(context = {}) {
       return _attachCreds(entry);
     }
     case "geo": {
-      const country = (context.targetCountry ?? "").toUpperCase();
+      const country = String(
+        context.targetCountry ?? _targetCountry ?? "",
+      ).toUpperCase();
       const geoMatch = alive.filter(
         (p) => p.country?.toUpperCase() === country,
       );

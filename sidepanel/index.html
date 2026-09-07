@@ -2435,7 +2435,26 @@
                 <option value="round-robin">Round Robin</option>
                 <option value="random">Random</option>
                 <option value="sticky">Sticky per domain</option>
+                <option value="geo">By country</option>
               </select>
+              <label>Country for "By country" (optional)</label>
+              <input
+                id="config-proxy-region"
+                type="text"
+                maxlength="2"
+                placeholder="GB"
+              />
+              <div
+                style="
+                  font-size: 11px;
+                  color: var(--text-dim);
+                  line-height: 1.5;
+                  margin-top: 4px;
+                "
+              >
+                A two-letter country code. Only proxies imported with a country
+                column can honour it; before a run you are told if none can.
+              </div>
               <label>Paste Proxies (IP:Port:User:Pass)</label>
               <textarea
                 id="config-proxy-text"

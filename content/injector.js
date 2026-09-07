@@ -668,6 +668,15 @@
         }
         return read(config);
       }
+      case "SESSION_STORAGE": {
+        // session-storage.js is injected on demand and publishes the reader on
+        // the shared isolated world, the same way page-data.js does.
+        const run = globalThis.__fsSessionStorage;
+        if (typeof run !== "function") {
+          throw new Error("Session storage reader is not loaded in this page.");
+        }
+        return run(config);
+      }
       case "DOWNLOAD_COLLECT": {
         // The page says which URLs it can see; the worker fetches them. The
         // split is what lets DOWNLOAD_FILE work inside a LOOP for nothing —

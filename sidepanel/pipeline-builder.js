@@ -2651,6 +2651,59 @@ function _configFields(step) {
     return html;
   }
 
+  // ── SESSION ──
+  if (step.type === "SESSION") {
+    const mode = c.mode || "save";
+    html += `<div style="background:rgba(59,130,246,0.10);border:1px solid rgba(59,130,246,0.35);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+      <div style="font-weight:600;font-size:13px;margin-bottom:4px;">Log in once, scrape later</div>
+      <div style="font-size:11px;color:var(--text-dim);line-height:1.5;">
+        Log in by hand in the tab, run a <b>Save</b> step once, and every later
+        run can start with <b>Restore</b> instead of logging in again.<br><br>
+        For the session cookie itself to be saved, turn on the
+        <b>Cookies</b> permission in Settings → Permissions. Without it only
+        cookies the page can read are saved, and a restored session is usually
+        a logged-out one. See <code>docs/SESSIONS_AND_HEADERS.md</code>.
+      </div>
+    </div>`;
+
+    html += `<label>What to do</label>
+    <select id="cfg-${step.id}-mode" data-id="${step.id}" data-key="mode" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="save"    ${mode === "save" ? "selected" : ""}>Save this tab's session</option>
+      <option value="restore" ${mode === "restore" ? "selected" : ""}>Restore a saved session</option>
+      <option value="clear"   ${mode === "clear" ? "selected" : ""}>Forget a saved session</option>
+    </select>`;
+
+    html += field(step, "name", "Called", "text", c.name || "default");
+    html += hint(
+      mode === "save"
+        ? "Saving again under the same name replaces what was there."
+        : "The name you saved it under. A session only restores onto the site it was saved from.",
+    );
+
+    if (mode !== "clear") {
+      html += toggle(step, "includeCookies", "Cookies");
+      html += toggle(step, "includeStorage", "Local and session storage");
+      html += hint(
+        "Many sites keep the login token in localStorage rather than a " +
+          "cookie, so leaving both on is the safe choice.",
+      );
+    }
+
+    if (mode === "restore") {
+      html += hint(
+        "Restoring writes the session into the browser; the site only sees it " +
+          "on the next request, so put a Navigate or a Reload after this step.",
+      );
+    }
+
+    html += toggle(
+      step,
+      "optional",
+      "Optional — keep going if this step fails",
+    );
+    return html;
+  }
+
   // ── PAGE_DATA ──
   if (step.type === "PAGE_DATA") {
     html += `<div style="background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.35);border-radius:8px;padding:10px 12px;margin-bottom:12px;">

@@ -254,6 +254,10 @@ test("the unexportable types are the ones that need the extension", () => {
     // SOLVE_CAPTCHA's gates are the step: an emitted script carries neither
     // the run's authorisation nor the domain attestation, so exporting it
     // would be exporting the act with the consent taken out.
+    // A saved session lives encrypted inside the extension, and a shared
+    // pipeline must not carry someone's cookies out with it. Playwright's own
+    // storageState is the right tool on that side.
+    "SESSION",
     "SOLVE_CAPTCHA",
     "UPLOAD_ACTIVITY",
   ]);

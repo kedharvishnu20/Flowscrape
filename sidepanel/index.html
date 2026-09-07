@@ -122,6 +122,10 @@
         /* ASSERT guards a run the way a branch steers one, so it borrows the
            branch's violet rather than adding a hue to the three families. */
         --step-ASSERT: var(--step-IF_ELSE);
+        /* SESSION belongs to the flow family: it sets a run up rather than
+           acting on the page, and it is deeper than the branches because it is
+           the one step that carries a secret. */
+        --step-SESSION: #6f63c9;
         /* SOLVE_CAPTCHA is the one step that asks something of the user before
            it will act, so it is the one that does not blend into its family. */
         --step-SOLVE_CAPTCHA: #6b5fbd;

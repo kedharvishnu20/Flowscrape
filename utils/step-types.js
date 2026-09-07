@@ -217,6 +217,27 @@ export const STEP_TYPES = Object.freeze({
     },
   },
 
+  SESSION: {
+    icon: "🔐",
+    cat: "Flow",
+    desc: "Save or restore a logged-in session",
+    // The worker owns chrome.cookies; the page owns localStorage. The step
+    // runs here and asks the page for its half, the same split DOWNLOAD_FILE
+    // uses.
+    runsIn: "background",
+    def: {
+      mode: "save",
+      name: "default",
+      includeCookies: true,
+      includeStorage: true,
+    },
+    // A saved session lives encrypted inside the extension, and a standalone
+    // script has no way to reach it — nor should a shared pipeline carry
+    // someone's cookies out with it. Playwright's own storageState is the
+    // right tool on that side; see docs/SESSIONS_AND_HEADERS.md.
+    exportable: false,
+  },
+
   // ── Data ──────────────────────────────────────────────────────────────────
   EXTRACT: {
     icon: "📤",
@@ -417,6 +438,14 @@ export const STEP_TYPES = Object.freeze({
     desc: "Read the URLs a DOWNLOAD_FILE selector matches",
     runsIn: "page",
     def: { selector: "", attr: "auto" },
+    internal: true,
+  },
+  SESSION_STORAGE: {
+    icon: "🗄️",
+    cat: "Data",
+    desc: "Read or write the page's own storage, for SESSION",
+    runsIn: "page",
+    def: { mode: "dump" },
     internal: true,
   },
   PAGINATE_PROBE: {

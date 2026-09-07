@@ -50,6 +50,12 @@ import {
   permissionStatus,
 } from "./optional-permissions.js";
 import { initSessionKey } from "./api-key-manager.js";
+import {
+  saveSession,
+  loadSession,
+  deleteSession,
+  listSessions,
+} from "./session-store.js";
 import { setApiKey } from "./api-key-manager.js";
 import {
   loadPool,
@@ -569,6 +575,7 @@ const ON_DEMAND_FILES = Object.freeze({
   PAGE_DATA: "content/page-data.js",
   PAGE_JSON: "content/page-json.js",
   AUTO_EXTRACT: "content/smart-extractor.js",
+  SESSION_STORAGE: "content/session-storage.js",
 });
 
 /**
@@ -2210,6 +2217,275 @@ function _downloadableScheme(url) {
  * @param {object} ctx
  * @returns {Promise<object>} the summary, also left on ctx.downloads
  */
+/**
+ * Read every cookie an origin has, including the HttpOnly ones.
+ *
+ * Only reachable with the `cookies` permission; the caller has already checked
+ * for it. Both the URL and the bare domain are asked for, because a cookie set
+ * on `.example.com` is not returned by a `getAll({url})` on a subdomain path
+ * in every Chrome version, and a missing session cookie is the one failure
+ * this feature cannot afford.
+ *
+ * @param {string} url
+ * @returns {Promise<object[]>}
+ */
+async function _readCookiesFor(url) {
+  const parsed = new URL(url);
+  const seen = new Map();
+  const add = (list) => {
+    for (const c of list || []) {
+      seen.set(`${c.domain}|${c.path}|${c.name}`, c);
+    }
+  };
+  add(await chrome.cookies.getAll({ url }));
+  add(await chrome.cookies.getAll({ domain: parsed.hostname }));
+  return [...seen.values()];
+}
+
+/**
+ * Put cookies back, one by one, reporting how many stuck.
+ *
+ * `chrome.cookies.set` refuses a cookie whose domain does not match the URL it
+ * is given, so each one is written against a URL rebuilt from its own domain
+ * and path rather than against the tab's address.
+ *
+ * @param {object[]} cookies
+ * @returns {Promise<{written: number, refused: string[]}>}
+ */
+async function _writeCookies(cookies) {
+  let written = 0;
+  const refused = [];
+  for (const c of cookies) {
+    const host = String(c.domain || "").replace(/^\./, "");
+    if (!host) continue;
+    const scheme = c.secure ? "https" : "http";
+    const details = {
+      url: `${scheme}://${host}${c.path || "/"}`,
+      name: c.name,
+      value: c.value,
+      path: c.path || "/",
+      secure: !!c.secure,
+      httpOnly: !!c.httpOnly,
+      sameSite: c.sameSite === "unspecified" ? undefined : c.sameSite,
+    };
+    // A host-only cookie must not be given a domain, or Chrome widens it to
+    // the whole registrable domain, which is a different cookie.
+    if (String(c.domain || "").startsWith(".")) details.domain = c.domain;
+    if (!c.session && c.expirationDate)
+      details.expirationDate = c.expirationDate;
+    try {
+      const set = await chrome.cookies.set(details);
+      if (set) written++;
+      else refused.push(c.name);
+    } catch (err) {
+      logger.warn(MODULE, "cookie-set-fail", {
+        name: c.name,
+        error: err.message,
+      });
+      refused.push(c.name);
+    }
+  }
+  return { written, refused };
+}
+
+/**
+ * SESSION — save, restore, or forget a logged-in session.
+ *
+ * The session lives in two places the extension has to reach separately: the
+ * cookie jar, which only the worker can read in full, and the page's own
+ * localStorage/sessionStorage, which only the page can see. Both halves are
+ * gathered here so a restore puts back what a save took.
+ *
+ * Without the `cookies` permission the step still works, and says exactly what
+ * it lost: `document.cookie` cannot see an HttpOnly cookie, which is what a
+ * session cookie usually is, so a session saved that way often restores as a
+ * logged-out one. Telling the user that at save time is the whole point —
+ * finding out at restore time means a run that silently scrapes the login
+ * page.
+ *
+ * @param {object} step
+ * @param {number} tabId
+ * @param {string} runId
+ */
+async function _executeSession(step, tabId, runId) {
+  const config = step.config || {};
+  const mode = String(config.mode || "save").trim();
+  const name = String(config.name || "default").trim() || "default";
+  const wantCookies = config.includeCookies !== false;
+  const wantStorage = config.includeStorage !== false;
+
+  if (mode === "clear") {
+    const existed = await deleteSession(name);
+    _broadcastLog(
+      existed ? "info-log" : "warn-log",
+      existed
+        ? `SESSION: forgot the saved session "${name}".`
+        : `SESSION: there was no saved session called "${name}".`,
+      runId,
+    );
+    return;
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  const url = tab?.url || "";
+  let origin;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    throw new Error(
+      "SESSION needs a page open on a real site; this tab has no address it can use.",
+    );
+  }
+
+  const canReadCookies = await hasPermission("cookies");
+
+  // The page's half. Asked for even when only cookies are wanted, because the
+  // reply also confirms which origin actually answered.
+  const pageResp = await _sendToPage(tabId, {
+    type: "SESSION_STORAGE",
+    config: {
+      mode: mode === "restore" ? "restore" : "dump",
+      includeStorage: wantStorage,
+      // Cookies come from the worker when it may read them; asking the page as
+      // well would only add the partial copy back on top of the full one.
+      includeCookies: !canReadCookies && wantCookies,
+      data: undefined,
+    },
+  });
+
+  if (mode === "save") {
+    if (!pageResp?.ok) {
+      throw new Error(pageResp?.error || "SESSION could not read the page.");
+    }
+    const page = pageResp.result || {};
+    let cookies = [];
+    let cookieSource = "none";
+    if (wantCookies) {
+      if (canReadCookies) {
+        cookies = await _readCookiesFor(url);
+        cookieSource = "chrome.cookies";
+      } else {
+        cookies = page.cookies || [];
+        cookieSource = "document.cookie";
+      }
+    }
+
+    const meta = await saveSession(name, {
+      origin,
+      url,
+      cookies,
+      cookieSource,
+      localStorage: page.localStorage || {},
+      sessionStorage: page.sessionStorage || {},
+    });
+
+    for (const w of page.warnings || [])
+      _broadcastLog("warn-log", `SESSION: ${w}`, runId);
+    _broadcastLog(
+      "info-log",
+      `SESSION: saved "${name}" for ${origin} — ${meta.cookieCount} cookie(s), ` +
+        `${meta.localCount} localStorage and ${meta.sessionCount} sessionStorage entries.`,
+      runId,
+    );
+    if (!canReadCookies && wantCookies) {
+      _broadcastLog(
+        "warn-log",
+        `SESSION: ${permissionRefusal("cookies")}`,
+        runId,
+      );
+    }
+    return;
+  }
+
+  if (mode !== "restore") {
+    throw new Error(`SESSION does not know the mode "${mode}".`);
+  }
+
+  const saved = await loadSession(name);
+  if (!saved) {
+    const known = (await listSessions()).map((s) => s.name);
+    throw new Error(
+      `There is no saved session called "${name}".` +
+        (known.length ? ` Saved: ${known.join(", ")}.` : " Save one first."),
+    );
+  }
+  if (saved.origin && saved.origin !== origin) {
+    // Refused rather than tried: writing one site's cookies while another is
+    // open is how a session ends up somewhere it was never meant to go.
+    throw new Error(
+      `The session "${name}" was saved on ${saved.origin}, and this tab is on ` +
+        `${origin}. Open ${saved.origin} first, or save a session for this site.`,
+    );
+  }
+
+  let cookiesWritten = 0;
+  const refused = [];
+  if (wantCookies && (saved.cookies || []).length) {
+    if (canReadCookies) {
+      const res = await _writeCookies(saved.cookies);
+      cookiesWritten = res.written;
+      refused.push(...res.refused);
+    } else {
+      // The page can write the ones it could have read. HttpOnly cookies are
+      // skipped there, which is exactly the gap the permission closes.
+      const back = await _sendToPage(tabId, {
+        type: "SESSION_STORAGE",
+        config: {
+          mode: "restore",
+          includeStorage: false,
+          includeCookies: true,
+          data: { cookies: saved.cookies },
+        },
+      });
+      cookiesWritten = back?.result?.cookiesWritten ?? 0;
+      _broadcastLog(
+        "warn-log",
+        `SESSION: ${permissionRefusal("cookies")}`,
+        runId,
+      );
+    }
+  }
+
+  let localWritten = 0;
+  let sessionWritten = 0;
+  if (wantStorage) {
+    const back = await _sendToPage(tabId, {
+      type: "SESSION_STORAGE",
+      config: {
+        mode: "restore",
+        includeStorage: true,
+        includeCookies: false,
+        data: {
+          localStorage: saved.localStorage || {},
+          sessionStorage: saved.sessionStorage || {},
+        },
+      },
+    });
+    if (!back?.ok)
+      throw new Error(back?.error || "SESSION could not write to the page.");
+    localWritten = back.result?.localWritten ?? 0;
+    sessionWritten = back.result?.sessionWritten ?? 0;
+    for (const w of back.result?.warnings || []) {
+      _broadcastLog("warn-log", `SESSION: ${w}`, runId);
+    }
+  }
+
+  if (refused.length) {
+    _broadcastLog(
+      "warn-log",
+      `SESSION: the browser refused ${refused.length} cookie(s): ${refused.slice(0, 5).join(", ")}.`,
+      runId,
+    );
+  }
+  _broadcastLog(
+    "info-log",
+    `SESSION: restored "${name}" — ${cookiesWritten} cookie(s), ` +
+      `${localWritten} localStorage and ${sessionWritten} sessionStorage entries. ` +
+      `Reload the page for the site to see them.`,
+    runId,
+  );
+}
+
 async function _executeDownloadFile(step, tabId, runId, ctx = {}) {
   const config = step.config || {};
   const authored = step.__fsRawConfig || config;
@@ -3542,6 +3818,10 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       return;
     }
 
+    case "SESSION":
+      await _executeSession(step, tabId, runId);
+      return;
+
     case "DOWNLOAD_FILE":
       await _executeDownloadFile(step, tabId, runId, ctx);
       return;
@@ -4661,6 +4941,13 @@ _registerHandler(MSG.STEP_EXECUTE, async (payload, sender) => {
   if (type === "PAGINATE") {
     // The same helper the run uses, rather than a second copy that drifts.
     return _executePaginate(targetTabId, resolvedStep.config);
+  }
+
+  if (type === "SESSION") {
+    // Worth testing for real rather than refusing: saving a session is a thing
+    // you do once, by hand, right after logging in — which is exactly a
+    // single-step test and not a run.
+    return _executeSession(resolvedStep, targetTabId, null);
   }
 
   if (type === "DOWNLOAD_FILE") {

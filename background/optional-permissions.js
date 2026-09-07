@@ -46,7 +46,8 @@ export const OPTIONAL_PERMISSIONS = Object.freeze({
   declarativeNetRequestWithHostAccess: {
     label: "Request headers",
     forWhat: "sending a user-agent or language header of your choosing",
-    without: "the browser's own headers are sent, which SET_HEADERS cannot change",
+    without:
+      "the browser's own headers are sent, which SET_HEADERS cannot change",
   },
 });
 

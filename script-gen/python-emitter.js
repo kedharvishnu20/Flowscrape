@@ -26,7 +26,19 @@ import {
 } from "../utils/step-types.js";
 import { parseFilenameTemplate } from "./pipeline-compiler.js";
 
+import { EXTRACT_VALUE_JS } from "./extract-runtime.js";
+
 const MODULE = "python-emitter";
+
+/** Mirrors exporters/row-formatters.js — the same six formats, same extensions. */
+const FORMAT_EXT = Object.freeze({
+  csv: "csv",
+  json: "json",
+  jsonl: "jsonl",
+  tsv: "tsv",
+  xml: "xml",
+  markdown: "md",
+});
 
 /**
  * @typedef {Object} PipelineAST
@@ -52,7 +64,7 @@ export function emitPython(pipeline) {
     `# Pipeline: ${_escStr(pipeline.name ?? "Untitled")}`,
     `# Generated: ${new Date().toISOString()}`,
     "",
-    "import asyncio, os, re, json, csv, time, random, base64",
+    "import asyncio, os, re, sys, io, json, csv, time, random, base64",
     "from playwright.async_api import async_playwright",
     "import requests",
     "from requests.adapters import HTTPAdapter",
@@ -79,10 +91,22 @@ export function emitPython(pipeline) {
     "",
     "",
     "def fs_number(t):",
-    '    m = re.search(r"-?\\d[\\d.,\\s]*\\d|-?\\d", str(t or ""))',
+    '    raw = str(t or "")',
+    "    # Scientific notation first, and only where it is unambiguous. Found in",
+    "    # a real scrape: scrapethissite.com reports Antarctica's area as",
+    '    # "1.4E7", where the general pattern below stopped at the E and turned',
+    "    # fourteen million into 1.4.",
+    '    sci = re.search(r"-?\\d+(?:[.,]\\d+)?[eE][+-]?\\d+", raw)',
+    "    if sci:",
+    "        try:",
+    '            n = float(sci.group(0).replace(",", "."))',
+    "            return int(n) if n.is_integer() else n",
+    "        except ValueError:",
+    "            pass",
+    '    m = re.search(r"-?\\d[\\d.,\\u00a0\\u202f\\s]*\\d|-?\\d", raw)',
     "    if not m:",
     "        return None",
-    '    b = re.sub(r"\\s", "", m.group(0))',
+    '    b = re.sub(r"[\\u00a0\\u202f\\s]", "", m.group(0))',
     '    c, d = b.rfind(","), b.rfind(".")',
     "    if c > -1 and d > -1:",
     '        dec, th = (",", ".") if c > d else (".", ",")',
@@ -142,12 +166,108 @@ export function emitPython(pipeline) {
     "        return None",
     "",
     "",
+    "# Every row this run extracts, in order, so an EXPORT step has something",
+    "# to write. EXTRACT still prints each row as it goes — that is what the",
+    "# MCP runner reads off stdout — but a printed row is not a file.",
+    "fs_rows = []",
+    "",
+    "",
+    "# What an element says, mirroring content/injector.js exactly: an <img>",
+    "# answers with its src, a bare <a> with its href, a checkbox only when",
+    "# checked. inner_text() for all of it — which is what this used to emit —",
+    "# is the empty string for a grid of images, on every row. The rule lives",
+    "# in one place, as JavaScript, and both emitted scripts send the same text",
+    "# into the page.",
+    `FS_READ_JS = """${EXTRACT_VALUE_JS}"""`,
+    "",
+    "",
+    "async def fs_read_el(el, f):",
+    "    return await el.evaluate(FS_READ_JS, f)",
+    "",
+    "",
+    "# Mirrors exporters/row-formatters.js. Columns are the union of every",
+    "# row's keys in first-seen order: the first row's keys alone would silently",
+    "# drop any column it happens not to have, which for scraped data is the",
+    "# common case rather than an edge one.",
+    "def fs_cell(v):",
+    "    if v is None:",
+    '        return ""',
+    "    if isinstance(v, bool):",
+    '        return "true" if v else "false"',
+    "    if isinstance(v, (dict, list)):",
+    '        return json.dumps(v, separators=(",", ":"))',
+    "    return str(v)",
+    "",
+    "",
+    "def fs_headers(rows):",
+    "    out, seen = [], set()",
+    "    for r in rows:",
+    "        for k in (r or {}).keys():",
+    "            if k not in seen:",
+    "                seen.add(k)",
+    "                out.append(k)",
+    "    return out",
+    "",
+    "",
+    "def fs_format_rows(rows, fmt):",
+    "    safe = rows or []",
+    '    if fmt == "json":',
+    "        return json.dumps(safe, indent=2)",
+    '    if fmt == "jsonl":',
+    "        # separators, or Python spaces its JSON where JavaScript does not",
+    "        # and the same rows come out as different bytes.",
+    '        return "".join(json.dumps(r, separators=(",", ":")) + "\\n" for r in safe)',
+    "    if not safe:",
+    '        return ""',
+    "    h = fs_headers(safe)",
+    '    if fmt == "csv":',
+    "        buf = io.StringIO()",
+    '        w = csv.writer(buf, lineterminator="\\r\\n")',
+    "        w.writerow(h)",
+    "        for r in safe:",
+    "            w.writerow([fs_cell((r or {}).get(k)) for k in h])",
+    "        return buf.getvalue()",
+    '    if fmt == "tsv":',
+    '        clean = lambda v: re.sub(r"[\\t\\r\\n]", " ", fs_cell(v))',
+    '        out = ["\\t".join(clean(k) for k in h)]',
+    '        out += ["\\t".join(clean((r or {}).get(k)) for k in h) for r in safe]',
+    '        return "\\n".join(out) + "\\n"',
+    '    if fmt == "xml":',
+    "        def esc(v):",
+    "            t = fs_cell(v)",
+    '            for a, b in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), (chr(34), "&quot;"), ("\'", "&apos;")):',
+    "                t = t.replace(a, b)",
+    "            return t",
+    "        def tag(n):",
+    '            c = re.sub(r"[^A-Za-z0-9_.-]", "_", str(n))',
+    '            return c if re.match(r"^[A-Za-z_]", c) else "_" + c',
+    '        out = [\'<?xml version="1.0" encoding="UTF-8"?>\', "<rows>"]',
+    "        for r in safe:",
+    '            out.append("  <row>")',
+    "            for k in h:",
+    '                out.append("    <{0}>{1}</{0}>".format(tag(k), esc((r or {}).get(k))))',
+    '            out.append("  </row>")',
+    '        out.append("</rows>")',
+    '        return "\\n".join(out) + "\\n"',
+    '    if fmt == "markdown":',
+    '        md = lambda v: re.sub(r"\\r?\\n", " ", fs_cell(v).replace("|", "\\\\|"))',
+    '        out = ["| " + " | ".join(md(k) for k in h) + " |",',
+    '               "| " + " | ".join("---" for _ in h) + " |"]',
+    '        out += ["| " + " | ".join(md((r or {}).get(k)) for k in h) + " |" for r in safe]',
+    '        return "\\n".join(out) + "\\n"',
+    '    raise ValueError("Unsupported export format: " + str(fmt))',
+    "",
+    "",
     '# What an IF_ELSE branch reads before it decides. None means "no such',
     '# element", which every condition treats as not-matching rather than as an',
     "# empty string — the two are different, and conflating them puts every",
     "# missing row into the wrong branch.",
+    "# text_content, not inner_text: ASSERT and IF_ELSE compare what the",
+    "# extension's _stepAssert and _stepIfElse read, and both read textContent.",
+    "# inner_text drops anything CSS has hidden, so an assertion could pass in",
+    "# the panel and fail in the script for a reason neither would explain.",
     "async def fs_text(loc):",
-    "    return fs_trim(await loc.first.inner_text()) if await loc.count() > 0 else None",
+    "    return fs_trim(await loc.first.text_content()) if await loc.count() > 0 else None",
     "",
     "",
     "async def fs_attr(loc, a):",
@@ -585,8 +705,12 @@ function _emitStepBody(step) {
         lines.push(
           `elements = await ${_pyLoc(_escStr(_sel(config.selector)))}.all()`,
         );
+        // 0 means "every one", as the panel says and as _executeLoop does;
+        // elements[:0] is the empty list, so the loop ran zero times instead.
         lines.push(
-          `for i, ${elVar} in enumerate(elements[:${config.max ?? 10}]):`,
+          (config.max ?? 10) > 0
+            ? `for i, ${elVar} in enumerate(elements[:${config.max ?? 10}]):`
+            : `for i, ${elVar} in enumerate(elements):`,
         );
       } else if (config.type === "paginate-links" && config.selector) {
         // The page's links are the bound, as they are in the run: a numbered
@@ -922,23 +1046,26 @@ function _transformPy(expr, field) {
   return out;
 }
 
+/**
+ * EXTRACT, with the same row assembly the extension does.
+ *
+ * The Node emitter's twin, and the same bug: this read `.first` for every
+ * field and printed one object, so a pipeline that extracted a grid of thirty
+ * products exported a script that returned one.
+ *
+ * The rules are `_stepExtract`'s: a field matching exactly one element is a
+ * page-level value repeated on every row; a field matching n > 1 is
+ * positional, and rows past n get None; a field matching nothing is None
+ * throughout.
+ */
 function _emitExtract(config) {
+  const fieldList = config.fields ?? config.schema ?? [];
+  if (fieldList.length === 0) return ["# EXTRACT: no fields defined", ""];
+
   const lines = ["# EXTRACT"];
-  const fields = config.fields ?? config.schema ?? [];
-  if (fields.length === 0) return ["# EXTRACT: no fields defined", ""];
-  lines.push("extracted = {}");
-  for (const field of fields) {
+  const fields = [];
+  for (const field of fieldList) {
     const { name, selector, attribute, countSelector } = field;
-    // "count" reads a value the page shows as repetition — four filled stars
-    // is the rating 4. Playwright's locator count is the same question the
-    // in-page reader asks with querySelectorAll, so the script and the run
-    // return the same number rather than the script quietly omitting a column.
-    const read =
-      field.type === "count"
-        ? `str(await page.locator("${_escStr(_sel(selector))}").first.locator("${_escStr(_sel(countSelector ?? ""))}").count())`
-        : attribute
-          ? `await ${_pyVerb(_escStr(_sel(selector)), `get_attribute("${_escStr(_sel(selector))}", "${attribute}")`, `get_attribute("${attribute}")`)}`
-          : `await ${_pyVerb(_escStr(_sel(selector)), `inner_text("${_escStr(_sel(selector))}")`, "inner_text()")}`;
     if (field.type === "count" && !countSelector) {
       lines.push(
         `# INVALID: field "${name}" is set to Count but names nothing to count.`,
@@ -946,7 +1073,22 @@ function _emitExtract(config) {
       );
       continue;
     }
-    const expr = _transformPy(read, field);
+    if (field.type === "attribute" && !attribute) {
+      // The extension throws for this rather than falling through to the text:
+      // a successful-looking extraction of the wrong thing is the worst
+      // outcome. Refused here, before the file is written.
+      lines.push(
+        `# INVALID: field "${name}" is set to Attr but has no attribute name.`,
+        `raise ValueError("FlowScrape field '${name}': Attr needs an attribute name")`,
+      );
+      continue;
+    }
+    const spec = JSON.stringify({
+      type: field.type ?? "text",
+      attribute: attribute ?? "",
+      countSelector: countSelector ?? "",
+    });
+    const expr = _transformPy(`await fs_read_el(_el, ${spec})`, field);
     if (expr === null) {
       lines.push(
         `# INVALID: field "${name}" has a pattern this script cannot carry.`,
@@ -954,9 +1096,33 @@ function _emitExtract(config) {
       );
       continue;
     }
-    lines.push(`extracted["${name}"] = ${expr}`);
+    fields.push({ name, selector, expr });
   }
-  lines.push("print(json.dumps(extracted))", "");
+
+  if (!fields.length) {
+    lines.push("");
+    return lines;
+  }
+
+  lines.push("_cols = {}");
+  for (const f of fields) {
+    lines.push(
+      `_cols["${f.name}"] = [`,
+      `    ${f.expr}`,
+      `    for _el in await ${_pyLoc(_escStr(_sel(f.selector)))}.all()`,
+      `]`,
+    );
+  }
+  lines.push(
+    `_n = max([1] + [len(_v) for _v in _cols.values()])`,
+    `for _i in range(_n):`,
+    `    row = {}`,
+    `    for _k, _v in _cols.items():`,
+    `        row[_k] = _v[0] if len(_v) == 1 else (_v[_i] if _i < len(_v) else None)`,
+    `    fs_rows.append(row)`,
+    `    print(json.dumps(row))`,
+    "",
+  );
   return lines;
 }
 
@@ -1094,10 +1260,22 @@ function _emitDownload(config) {
 }
 
 function _emitExport(config) {
+  // It used to emit three comments, one of which said "write to file here" —
+  // a script that runs, exits 0, and leaves nothing behind.
+  const fmt = String(config.format ?? "csv");
+  if (!Object.prototype.hasOwnProperty.call(FORMAT_EXT, fmt)) {
+    return [
+      `# UNSUPPORTED: export format "${fmt}".`,
+      `raise ValueError("FlowScrape: unknown export format '${fmt}'")`,
+      "",
+    ];
+  }
   return [
-    `# EXPORT → ${config.format ?? "csv"}`,
-    "# (Results were collected into list during FORM_FILL / EXTRACT steps)",
-    "# Write to file here",
+    `# EXPORT → ${fmt}`,
+    `_out = os.environ.get("FS_OUT_FILE", "export.${FORMAT_EXT[fmt]}")`,
+    `with open(_out, "w", encoding="utf-8", newline="") as _fh:`,
+    `    _fh.write(fs_format_rows(fs_rows, "${fmt}"))`,
+    `print("FlowScrape: wrote {} row(s) to {}".format(len(fs_rows), _out), file=sys.stderr)`,
     "",
   ];
 }

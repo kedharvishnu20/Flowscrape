@@ -19,6 +19,46 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Fixed — the exported script now does what the pipeline did
+
+Six differences between running a pipeline and running its script, all found by
+using the tool rather than by reading it. The tests for these do not check how
+the generated code is spelled: they lift the helpers out of the generated file,
+run them, and compare against the extension's own modules — the only comparison
+that catches a re-implementation drifting from its original.
+
+- **A bulk EXTRACT exported as one row** (FS-06). Every field was read with
+  `.first()`, so a pipeline that collected a grid of thirty products exported a
+  script that returned one and said nothing about the other twenty-nine. Both
+  emitters now assemble rows the way `_stepExtract` does: one match is a
+  page-level value repeated on every row, n matches are positional, and a short
+  field gets null rather than a repeat of its first match.
+- **An element is read the way the extension reads it** (FS-06, same fix). An
+  `<img>` answers with its `src` and a bare `<a>` with its `href`; the scripts
+  used `innerText()` for everything, which for a grid of images is the empty
+  string on every row. Those rules now live in one file as JavaScript, and both
+  emitted scripts send the same text into the page.
+- **EXPORT wrote no file** (FS-07). It emitted `// implement write here` — a
+  script that runs, exits 0, and leaves nothing on disk. All six formats are now
+  emitted in both languages, byte-for-byte identical to what the extension
+  writes. Writing that test found a seventh difference: Python spaced its JSONL
+  where JavaScript did not.
+- **`1.4E7` became 1.4** (FS-09). The extension reads scientific notation —
+  scrapethissite.com reports Antarctica's area that way — and the emitted
+  `fsNumber` stopped at the `E`. A wrong number that looks plausible in a column
+  of areas is the worst kind. Non-breaking and narrow spaces between thousands
+  are handled too.
+- **A LOOP with max 0 ran zero times** (FS-10). The panel says 0 means every
+  one, and `_executeLoop` agrees; `Math.min(length, 0)` and `elements[:0]` did
+  not.
+- **Base64 that is not text came back mangled** (FS-11). `Buffer.toString('utf8')`
+  replaces bad bytes with U+FFFD and hands back a string where the in-page
+  decoder returns null.
+- **ASSERT compared the wrong text** (FS-12). `_stepAssert` and `_stepIfElse`
+  both read `textContent`; the scripts read `innerText`, which drops whatever
+  CSS has hidden. An assertion could pass in the panel and fail in the script,
+  with neither able to say why.
+
 ### Added — logging in, and the headers a site will accept
 
 Two capabilities that needed a Chrome permission each, and so are declared

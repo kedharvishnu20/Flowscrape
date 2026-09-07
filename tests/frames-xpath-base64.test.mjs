@@ -186,7 +186,10 @@ test("both emitters carry the base64 transform", async () => {
   const node = await read("script-gen/node-emitter.js");
   assert.match(py, /name === "base64"/);
   assert.match(py, /def fs_b64/);
-  assert.match(py, /import asyncio, os, re, json, csv, time, random, base64/);
+  assert.match(
+    py,
+    /import asyncio, os, re, sys, io, json, csv, time, random, base64/,
+  );
   assert.match(node, /name === "base64"/);
   assert.match(node, /const fsB64 =/);
 });

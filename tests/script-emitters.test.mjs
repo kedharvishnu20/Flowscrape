@@ -378,7 +378,11 @@ test("a field with no transform is emitted with no wrapper", () => {
   const { js } = emit([
     step("EXTRACT", { fields: [{ name: "name", selector: ".n" }] }),
   ]);
-  assert.match(js, /extracted\['name'\] = await page\.innerText\('\.n'\);/);
+  // One column per field, read element by element: a grid of thirty products
+  // exports as thirty rows, not as the first one.
+  assert.match(js, /_cols\['name'\] = await Promise\.all\(/);
+  assert.match(js, /await page\.locator\('\.n'\)\.all\(\)/);
+  assert.match(js, /\(await fsReadEl\(_el, \{"type":"text"[^)]*\)\)\)/);
 });
 
 // ── the generated scripts are valid programs ─────────────────────────────────
@@ -521,14 +525,14 @@ test("a user's regex pattern reaches the script intact", () => {
   // Read the emitted pattern back out and check what it actually matches,
   // rather than checking how it is spelled.
   const jsPattern = js.match(
-    /fsRegex\(await page\.innerText\('\.s'\), '(.*)'\)/,
+    /fsRegex\(await fsReadEl\(_el, \{[^}]*\}\), '(.*)'\)/,
   )?.[1];
   assert.ok(jsPattern, `no fsRegex call emitted:\n${js}`);
   const jsSource = new Function(`return '${jsPattern}'`)();
   assert.equal("SKU: ABC-1".match(new RegExp(jsSource))?.[1], "ABC-1");
 
   const pyPattern = py.match(
-    /fs_regex\(await page\.inner_text\("\.s"\), r"(.*)"\)/,
+    /fs_regex\(await fs_read_el\(_el, \{[^}]*\}\), r"(.*)"\)/,
   )?.[1];
   assert.ok(pyPattern, `no fs_regex call emitted:\n${py}`);
   // r"" is raw: what is between the quotes is the pattern, verbatim.
@@ -756,10 +760,10 @@ test("a capture group and flags reach both scripts, and only the shared flags do
     }),
   ]);
 
-  assert.match(js, /fsRegex\(await page\.innerText\('\.s'\), '.*', 'i', 2\)/);
+  assert.match(js, /fsRegex\(await fsReadEl\(_el, \{[^}]*\}\), '.*', 'i', 2\)/);
   assert.match(
     py,
-    /fs_regex\(await page\.inner_text\("\.s"\), r".*", "i", 2\)/,
+    /fs_regex\(await fs_read_el\(_el, \{[^}]*\}\), r".*", "i", 2\)/,
   );
 });
 
@@ -779,8 +783,14 @@ test("a regex field with neither group nor flags emits the plain two-argument ca
     }),
   ]);
 
-  assert.match(js, /fsRegex\(await page\.innerText\('\.s'\), '\(\\\\d\+\)'\)/);
-  assert.match(py, /fs_regex\(await page\.inner_text\("\.s"\), r"\(\\d\+\)"\)/);
+  assert.match(
+    js,
+    /fsRegex\(await fsReadEl\(_el, \{[^}]*\}\), '\(\\\\d\+\)'\)/,
+  );
+  assert.match(
+    py,
+    /fs_regex\(await fs_read_el\(_el, \{[^}]*\}\), r"\(\\d\+\)"\)/,
+  );
 });
 
 // ── ASSERT and per-step retry in an exported script (K-12, K-13) ────────────

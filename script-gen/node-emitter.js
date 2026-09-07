@@ -16,8 +16,19 @@ import {
   retryDelayMs,
   paginationMaxPages,
 } from "../utils/step-types.js";
+import { EXTRACT_VALUE_JS } from "./extract-runtime.js";
 import { parseFilenameTemplate } from "./pipeline-compiler.js";
 const MODULE = "node-emitter";
+
+/** Mirrors exporters/row-formatters.js — the same six formats, same extensions. */
+const FORMAT_EXT = Object.freeze({
+  csv: "csv",
+  json: "json",
+  jsonl: "jsonl",
+  tsv: "tsv",
+  xml: "xml",
+  markdown: "md",
+});
 
 export function emitNode(pipeline) {
   logger.info(MODULE, "emit-start", { name: pipeline.name });
@@ -49,9 +60,16 @@ export function emitNode(pipeline) {
     `// cleans values as it extracts them; a script that skipped this would run,`,
     `// produce a file, and fill the number columns with currency symbols.`,
     `const fsNumber = t => {`,
-    `  const m = String(t ?? '').match(/-?\\d[\\d.,\\s]*\\d|-?\\d/);`,
+    `  const raw = String(t ?? '');`,
+    `  // Scientific notation first, and only where it is unambiguous. Found in`,
+    `  // a real scrape — scrapethissite.com reports Antarctica's area as`,
+    `  // "1.4E7" — where the general pattern below stopped at the E and turned`,
+    `  // fourteen million into 1.4.`,
+    `  const sci = raw.match(/-?\\d+(?:[.,]\\d+)?[eE][+-]?\\d+/);`,
+    `  if (sci) { const n = Number(sci[0].replace(',', '.')); if (Number.isFinite(n)) return n; }`,
+    `  const m = raw.match(/-?\\d[\\d.,\\u00a0\\u202f\\s]*\\d|-?\\d/);`,
     `  if (!m) return null;`,
-    `  let b = m[0].replace(/\\s/g, '');`,
+    `  let b = m[0].replace(/[\\u00a0\\u202f\\s]/g, '');`,
     `  const c = b.lastIndexOf(','), d = b.lastIndexOf('.');`,
     `  if (c > -1 && d > -1) {`,
     `    const dec = c > d ? ',' : '.', th = dec === ',' ? '.' : ',';`,
@@ -85,14 +103,21 @@ export function emitNode(pipeline) {
     `const fsB64 = v => {`,
     `  const raw = String(v ?? '').trim().replace(/-/g, '+').replace(/_/g, '/');`,
     `  if (raw.length < 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) return null;`,
-    `  try { return Buffer.from(raw, 'base64').toString('utf8'); } catch { return null; }`,
+    `  // fatal: true, like the in-page decoder. Buffer.toString('utf8') would`,
+    `  // replace bad bytes with U+FFFD and hand back a mangled string, which is`,
+    `  // a plausible wrong answer where null is an honest empty cell.`,
+    `  try { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(raw, 'base64')); } catch { return null; }`,
     `};`,
     "",
     `// What an IF_ELSE branch reads before it decides. null means "no such`,
     `// element", which every condition treats as not-matching rather than as`,
     `// an empty string — the two are different, and conflating them puts every`,
     `// missing row into the wrong branch.`,
-    `const fsText = async loc => (await loc.count()) > 0 ? fsTrim(await loc.first().innerText()) : null;`,
+    `// textContent, not innerText: ASSERT and IF_ELSE compare what the`,
+    `// extension's _stepAssert and _stepIfElse read, and both read textContent.`,
+    `// innerText drops anything CSS has hidden, so an assertion could pass in`,
+    `// the panel and fail in the script for a reason neither would explain.`,
+    `const fsText = async loc => (await loc.count()) > 0 ? fsTrim(await loc.first().evaluate(n => n.textContent)) : null;`,
     `const fsAttr = async (loc, a) => (await loc.count()) > 0 ? await loc.first().getAttribute(a) : null;`,
     "",
     `// An allowlist, mirroring the extension: a filename built from page`,
@@ -101,6 +126,58 @@ export function emitNode(pipeline) {
     `const fsSafeSeg = v => String(v ?? '')`,
     `  .replace(/[^\\p{L}\\p{N} ._()\\[\\]{}@#&+,;'!~=%-]/gu, '_')`,
     `  .replace(/^[.\\s]+/, '').replace(/[.\\s]+$/, '').slice(0, 100);`,
+    "",
+    `// Every row this run extracts, in order, so an EXPORT step has something`,
+    `// to write. EXTRACT still prints each row as it goes — that is what the`,
+    `// MCP runner reads off stdout — but a printed row is not a file.`,
+    `const fsRows = [];`,
+    "",
+    `// What an element says, mirroring content/injector.js exactly: an <img>`,
+    `// answers with its src, a bare <a> with its href, a checkbox only when`,
+    `// checked. innerText() for all of it — which is what this used to emit —`,
+    `// is the empty string for a grid of images, on every row.`,
+    `const fsReadEl = (el, f) => el.evaluate(${EXTRACT_VALUE_JS}, f);`,
+    "",
+    `// Mirrors exporters/row-formatters.js. Columns are the union of every`,
+    `// row's keys in first-seen order: Object.keys(rows[0]) would silently drop`,
+    `// any column the first row happens not to have, which for scraped data is`,
+    `// the common case rather than an edge one.`,
+    `const fsCell = v => v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));`,
+    `const fsHeaders = rows => { const out = [], seen = new Set();`,
+    `  for (const r of rows) for (const k of Object.keys(r ?? {})) if (!seen.has(k)) { seen.add(k); out.push(k); }`,
+    `  return out; };`,
+    `const fsFormatRows = (rows, fmt) => {`,
+    `  const safe = Array.isArray(rows) ? rows : [];`,
+    `  if (fmt === 'json') return JSON.stringify(safe, null, 2);`,
+    `  if (fmt === 'jsonl') return safe.map(r => JSON.stringify(r)).join('\\n') + (safe.length ? '\\n' : '');`,
+    `  if (!safe.length) return '';`,
+    `  const h = fsHeaders(safe);`,
+    `  if (fmt === 'csv') {`,
+    `    const q = v => { const t = fsCell(v); return /[",\\r\\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };`,
+    `    return [h.map(q).join(',')].concat(safe.map(r => h.map(k => q(r?.[k])).join(','))).join('\\r\\n') + '\\r\\n';`,
+    `  }`,
+    `  if (fmt === 'tsv') {`,
+    `    const c = v => fsCell(v).replace(/[\\t\\r\\n]/g, ' ');`,
+    `    return [h.map(c).join('\\t')].concat(safe.map(r => h.map(k => c(r?.[k])).join('\\t'))).join('\\n') + '\\n';`,
+    `  }`,
+    `  if (fmt === 'xml') {`,
+    `    const esc = v => fsCell(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);`,
+    `    const tag = n => { const c = String(n).replace(/[^A-Za-z0-9_.-]/g, '_'); return /^[A-Za-z_]/.test(c) ? c : '_' + c; };`,
+    `    const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<rows>'];`,
+    `    for (const r of safe) { out.push('  <row>');`,
+    `      for (const k of h) out.push('    <' + tag(k) + '>' + esc(r?.[k]) + '</' + tag(k) + '>');`,
+    `      out.push('  </row>'); }`,
+    `    out.push('</rows>');`,
+    `    return out.join('\\n') + '\\n';`,
+    `  }`,
+    `  if (fmt === 'markdown') {`,
+    `    const m = v => fsCell(v).replace(/\\|/g, '\\\\|').replace(/\\r?\\n/g, ' ');`,
+    `    return ['| ' + h.map(m).join(' | ') + ' |', '| ' + h.map(() => '---').join(' | ') + ' |']`,
+    `      .concat(safe.map(r => '| ' + h.map(k => m(r?.[k])).join(' | ') + ' |')).join('\\n') + '\\n';`,
+    `  }`,
+    `  throw new Error('Unsupported export format: ' + fmt);`,
+    `};`,
+    `const FS_EXT = { csv: 'csv', json: 'json', jsonl: 'jsonl', tsv: 'tsv', xml: 'xml', markdown: 'md' };`,
     "",
     `const sleep = ms => new Promise(r => setTimeout(r, ms));`,
     `const jitter = (min, max) => min + Math.random() * (max - min);`,
@@ -404,11 +481,28 @@ function _emitNodeStepBody(step) {
       return _extractNode(config);
     case "FORM_FILL":
       return _formFillNode(config);
-    case "EXPORT":
+    case "EXPORT": {
+      // It used to emit a comment saying "implement write here", which is a
+      // script that runs, exits 0, and leaves no file — the failure this whole
+      // project keeps finding: something that looks finished and is not.
+      const fmt = String(config.format ?? "csv");
+      if (!Object.prototype.hasOwnProperty.call(FORMAT_EXT, fmt)) {
+        return [
+          `// UNSUPPORTED: export format '${fmt}'.`,
+          `throw new Error("FlowScrape: unknown export format '${fmt}'");`,
+          "",
+        ];
+      }
       return [
-        `// EXPORT → ${config.format ?? "csv"} (implement write here)`,
+        `// EXPORT → ${fmt}`,
+        `{`,
+        `  const _out = process.env.FS_OUT_FILE ?? 'export.${FORMAT_EXT[fmt]}';`,
+        `  fs.writeFileSync(_out, fsFormatRows(fsRows, '${fmt}'), 'utf8');`,
+        `  console.error(\`FlowScrape: wrote \${fsRows.length} row(s) to \${_out}\`);`,
+        `}`,
         "",
       ];
+    }
     case "SCROLL": {
       // config.amount is what the UI writes; `value` was read here, so every
       // exported scroll used the hardcoded default.
@@ -526,8 +620,12 @@ function _emitNodeStepBody(step) {
         lines.push(
           `const elements = await ${_loc(esc(_sel(config.selector)))}.all();`,
         );
+        // 0 means "every one", as the panel says and as _executeLoop does;
+        // Math.min against 0 ran the loop zero times instead.
         lines.push(
-          `for (let i = 0; i < Math.min(elements.length, ${config.max ?? 10}); i++) {`,
+          (config.max ?? 10) > 0
+            ? `for (let i = 0; i < Math.min(elements.length, ${config.max ?? 10}); i++) {`
+            : `for (let i = 0; i < elements.length; i++) {`,
         );
         lines.push(`  const ${elVar} = elements[i];`);
       } else if (config.type === "paginate-links" && config.selector) {
@@ -969,8 +1067,24 @@ function _sel(selector) {
     .join(" >> ");
 }
 
+/**
+ * EXTRACT, with the same row assembly the extension does.
+ *
+ * This used to read `.first()` for every field and print one object, so a
+ * pipeline that extracted a grid of thirty products exported a script that
+ * returned one — the single most consequential difference between running a
+ * pipeline and running its script.
+ *
+ * The rules are `_stepExtract`'s, and worth stating because they are not
+ * obvious: a field matching exactly one element is a page-level value and is
+ * repeated on every row; a field matching n > 1 is positional and rows past n
+ * get null; a field matching nothing is null throughout. Padding a short field
+ * with its first match — which an earlier version of the extension did — puts
+ * data on rows it was never read from, and it looks completely real.
+ */
 function _extractNode(config) {
-  const lines = ["const extracted = {};"];
+  const fields = [];
+  const lines = [];
   for (const field of config.fields ?? []) {
     const { name, selector, attribute, countSelector } = field;
     if (field.type === "count" && !countSelector) {
@@ -980,15 +1094,23 @@ function _extractNode(config) {
       );
       continue;
     }
-    // See the Python emitter: a "count" field is a value the page renders as
-    // repetition, and both scripts must count the same thing the run does.
-    const read =
-      field.type === "count"
-        ? `String(await ${_loc(_sel(selector))}.first().locator('${_sel(countSelector ?? "")}').count())`
-        : attribute
-          ? `await ${_verb(_sel(selector), `getAttribute('${_sel(selector)}', '${attribute}')`, `getAttribute('${attribute}')`)}`
-          : `await ${_verb(_sel(selector), `innerText('${_sel(selector)}')`, "innerText()")}`;
-    const expr = _transformNode(read, field);
+    if (field.type === "attribute" && !attribute) {
+      // The extension throws for this at run time rather than falling through
+      // to the text, because a successful-looking extraction of the wrong
+      // thing is the worst outcome. Refused here, before the file is written.
+      lines.push(
+        `// INVALID: field '${name}' is set to Attr but has no attribute name.`,
+        `throw new Error("FlowScrape field '${name}': Attr needs an attribute name");`,
+      );
+      continue;
+    }
+    // Only what the reader looks at, so the generated line stays readable.
+    const spec = JSON.stringify({
+      type: field.type ?? "text",
+      attribute: attribute ?? "",
+      countSelector: countSelector ?? "",
+    });
+    const expr = _transformNode(`await fsReadEl(_el, ${spec})`, field);
     if (expr === null) {
       lines.push(
         `// INVALID: field '${name}' has a pattern JavaScript will not accept.`,
@@ -996,9 +1118,36 @@ function _extractNode(config) {
       );
       continue;
     }
-    lines.push(`extracted['${name}'] = ${expr};`);
+    fields.push({ name, selector, expr });
   }
-  lines.push(`console.log(JSON.stringify(extracted));`, "");
+
+  if (!fields.length) {
+    lines.push("");
+    return lines;
+  }
+
+  lines.push("{", "  const _cols = {};");
+  for (const f of fields) {
+    lines.push(
+      `  _cols['${f.name}'] = await Promise.all(`,
+      `    (await ${_loc(_sel(f.selector))}.all()).map(async _el => (${f.expr})),`,
+      `  );`,
+    );
+  }
+  lines.push(
+    `  const _n = Math.max(1, ...Object.values(_cols).map(v => v.length));`,
+    `  for (let _i = 0; _i < _n; _i++) {`,
+    `    const row = {};`,
+    `    for (const [_k, _v] of Object.entries(_cols)) {`,
+    `      // ?? not ||: "0", "" and false are real extracted values.`,
+    `      row[_k] = (_v.length === 1 ? _v[0] : (_i < _v.length ? _v[_i] : null)) ?? null;`,
+    `    }`,
+    `    fsRows.push(row);`,
+    `    console.log(JSON.stringify(row));`,
+    `  }`,
+    "}",
+    "",
+  );
   return lines;
 }
 

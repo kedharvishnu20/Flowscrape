@@ -137,6 +137,16 @@ given once on the step's own card. Without either it refuses and says which is
 missing; on a `not-solvable` type it refuses rather than trying; where no local
 solver applies it pauses exactly as K-02 left it.
 
+Past what is free, `SOLVE_CAPTCHA` will ask a model **you** configured
+(K-22) — your key, or your own machine through a local OpenAI-compatible
+endpoint, which costs nothing and sends nothing off it. Only image captchas,
+only after the local solver has declined, and only with both gates given. The
+image is drawn off the rendered `<img>` through a canvas rather than re-fetched,
+because a captcha endpoint issues a new challenge per request and the fetched
+one is not the picture the page is asking about. A widget captcha is refused
+rather than photographed: its token comes from a solving service, so sending it
+to a vision model spends money to be told nothing.
+
 **Still open:** the paid tier. `solveCaptcha` still lives in
 `background/api-key-manager.js` behind the `captcha:solve` message, which
 nothing sends, and the panel still stores a 2Captcha key nothing spends. That is

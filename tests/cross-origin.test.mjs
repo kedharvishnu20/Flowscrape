@@ -241,5 +241,34 @@ test("there is one dispatch chain, so one place to enforce", () => {
     /async function _dispatchStep\([\s\S]*?\n\}\n/,
   )[0];
   const calls = dispatch.match(/_assertOriginAllowed\(/g) ?? [];
-  assert.equal(calls.length, 2, "navigation and API, checked once each");
+  assert.equal(calls.length, 1, "API, checked once");
+});
+
+test("every navigation the run makes goes through the gate", () => {
+  // NAVIGATE used to call the gate inline, and the test above counted that
+  // call. Two pagination modes now navigate as well — a loop that computes its
+  // own URLs is exactly where an ungated navigation would be easiest to miss —
+  // so the gate moved into the one helper all three use. What matters is no
+  // longer how many call sites there are, but that none of them can skip it.
+  const nav = swSrc.match(/async function _navigateTo\([\s\S]*?\n\}\n/)[0];
+  assert.match(
+    nav,
+    /_assertOriginAllowed\(/,
+    "the shared navigation helper does not check the origin",
+  );
+
+  // The run path must reach chrome.tabs.update only through that helper. The
+  // single-step Test path (the STEP_EXECUTE handler) has its own call and is
+  // deliberately excluded: a test has no run state, so there is no declared
+  // origin to enforce against and the gate would no-op there anyway.
+  const runPath = swSrc.slice(
+    0,
+    swSrc.indexOf("_registerHandler(MSG.STEP_EXECUTE"),
+  );
+  const updates = runPath.match(/chrome\.tabs\.update\([^)]*url/g) ?? [];
+  assert.equal(
+    updates.length,
+    1,
+    `a navigation in the run path bypasses _navigateTo: ${updates.join(" | ")}`,
+  );
 });

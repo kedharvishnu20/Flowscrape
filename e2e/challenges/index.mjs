@@ -211,9 +211,61 @@ export const CHALLENGES = [
     // Real-page mode is marked todo rather than fixed: driving numbered
     // pagination is a real pagination-by-URL mode the step does not have,
     // which is feature work, not a small fix.
-    realPageGap:
-      "real page has no next-link affordance — only numbered ?pageno= links, " +
-      "which LOOP paginate cannot drive (see the comment above)",
+    // The real page's five numbered links, saved beside it (see
+    // mirror-challenges.mjs). Each page holds different books, so serving page
+    // 1 for all five would let a broken pagination mode look like a working
+    // one.
+    savedRoutes: {
+      // Page 1 is the saved main page under the link's own URL, so clicking
+      // "1" lands somewhere real rather than on a 404.
+      "/pagination?pageno=1": "pagination.html",
+      ...Object.fromEntries(
+        [2, 3, 4, 5].map((n) => [
+          `/pagination?pageno=${n}`,
+          `pagination/page-${n}.html`,
+        ]),
+      ),
+    },
+    // Against the real markup the run drives the numbered links (K-20); the
+    // reconstruction below still exercises the click-Next mode, so both are
+    // covered.
+    realPagePipeline: [
+      {
+        type: "LOOP",
+        config: {
+          type: "paginate-links",
+          selector: ".pagination a, nav a[href*='pageno=']",
+          max: 0,
+          settleMs: 300,
+        },
+        children: [
+          {
+            type: "EXTRACT",
+            config: { fields: [{ name: "t", selector: "td:nth-of-type(1)" }] },
+          },
+        ],
+      },
+    ],
+    realPageCheck(rows) {
+      // Ten books a page, five pages. Counting distinct titles would be the
+      // obvious way to prove no page was scraped twice and would be wrong: the
+      // site's own catalogue repeats three titles across its fifty books, so
+      // 46 distinct is the correct answer, not evidence of a bug. Each page's
+      // opening title is the honest marker instead.
+      if (rows.length !== 50) {
+        return `wanted 50 books across five pages, got ${rows.length}`;
+      }
+      const firsts = [
+        "This is Going to Hurt",
+        "Gut",
+        "How Not To Die",
+        "The Checklist Manifesto",
+        "The Dialectical Behavior Therapy Skills Workbook",
+      ];
+      const missing = firsts.filter((t) => !rows.some((r) => r.t === t));
+      if (missing.length) return `pages never visited: ${missing.join(", ")}`;
+      return null;
+    },
     pipeline: [
       {
         type: "LOOP",

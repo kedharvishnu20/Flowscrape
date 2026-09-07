@@ -166,7 +166,20 @@ export const STEP_TYPES = Object.freeze({
     desc: "Loop / repeat",
     runsIn: "background",
     container: "children",
-    def: { type: "elements", selector: "", max: 10, onFail: "skip" },
+    // `type` picks the mode: elements, count, paginate (click a Next control),
+    // paginate-links (walk a set of numbered page links) or paginate-url
+    // (fill a page number into a URL template). The last two exist because a
+    // numbered paginator has no Next control to click and nothing that ever
+    // goes dead — the links simply stop existing.
+    def: {
+      type: "elements",
+      selector: "",
+      max: 10,
+      onFail: "skip",
+      urlTemplate: "",
+      startPage: 1,
+      pageStep: 1,
+    },
   },
   PAGINATE: {
     icon: "📄",

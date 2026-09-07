@@ -877,7 +877,16 @@
   }
 
   async function _stepClick(
-    { selector, retries = 3, all = false, fallbackToLoopItem = false },
+    {
+      selector,
+      retries = 3,
+      all = false,
+      fallbackToLoopItem = false,
+      // Which match to click, when position is the point rather than
+      // "whichever looks most clickable". A numbered paginator needs page 3 to
+      // be the third link, not the one _pickBestClickMatch likes best.
+      index = null,
+    },
     context = {},
   ) {
     let els = [];
@@ -888,7 +897,11 @@
     // Try up to `retries` times with waits in between
     for (let i = 0; i < retries; i++) {
       const matches = _queryScoped(selector, context, true);
-      els = all ? matches : [_pickBestClickMatch(matches)].filter(Boolean);
+      els = all
+        ? matches
+        : Number.isInteger(index)
+          ? [matches[index]].filter(Boolean)
+          : [_pickBestClickMatch(matches)].filter(Boolean);
       if (!selector && scopedRoot) els = [scopedRoot];
       if (els.length) break;
       await _sleep(600); // Increased wait time

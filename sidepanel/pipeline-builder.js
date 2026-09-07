@@ -1700,6 +1700,8 @@ function _configFields(step) {
       <option value="elements" ${ltype === "elements" ? "selected" : ""}>Loop through Elements (auto-count)</option>
       <option value="count"    ${ltype === "count" ? "selected" : ""}>Fixed Count (N times)</option>
       <option value="paginate" ${ltype === "paginate" ? "selected" : ""}>Paginate (click Next)</option>
+      <option value="paginate-links" ${ltype === "paginate-links" ? "selected" : ""}>Paginate (numbered page links)</option>
+      <option value="paginate-url" ${ltype === "paginate-url" ? "selected" : ""}>Paginate (URL pattern)</option>
     </select>`;
     if (ltype === "elements") {
       html += `<div style="background:rgba(99,102,241,0.08);border:1px solid var(--step-LOOP,#6366F1);border-radius:4px;padding:6px 10px;font-size:11px;color:var(--step-LOOP,#6366F1);margin-bottom:8px;">
@@ -1722,6 +1724,66 @@ function _configFields(step) {
         "Repeat N times (at least 1)",
         "number",
         c.max > 0 ? c.max : 10,
+      );
+    } else if (ltype === "paginate-links") {
+      html += `<div class="step-note">
+        <div class="step-note-title">Walk a row of page numbers</div>
+        <p class="prose">For a paginator that shows 1 2 3 4 5 rather than a Next button. Pick the links themselves — all of them, not one — and the body below runs once per link. There is nothing to detect the end with here, so the number of links is the number of pages.</p>
+      </div>`;
+      html += selectorRow(step, "selector", "The page-number links");
+      html += field(
+        step,
+        "max",
+        "Max pages (0 = every link found)",
+        "number",
+        c.max ?? 0,
+      );
+      html += field(
+        step,
+        "settleMs",
+        "Wait after each page loads (ms)",
+        "number",
+        c.settleMs ?? 1500,
+      );
+    } else if (ltype === "paginate-url") {
+      html += `<div class="step-note">
+        <div class="step-note-title">Fill the page number into a URL</div>
+        <p class="prose">When the address bar carries the page — <code>?page=2</code>, <code>/page/2</code>. No selector needed, and unlike the other modes this one can start at page 40 without walking there first.</p>
+      </div>`;
+      html += field(
+        step,
+        "urlTemplate",
+        "URL with {page} where the number goes",
+        "text",
+        c.urlTemplate ?? "",
+      );
+      html += field(
+        step,
+        "startPage",
+        "First page",
+        "number",
+        c.startPage ?? 1,
+      );
+      html += field(
+        step,
+        "pageStep",
+        "Count by (1, or 10 for offset-style URLs)",
+        "number",
+        c.pageStep ?? 1,
+      );
+      html += field(
+        step,
+        "max",
+        "How many pages (at least 1)",
+        "number",
+        c.max > 0 ? c.max : 5,
+      );
+      html += field(
+        step,
+        "settleMs",
+        "Wait after each page loads (ms)",
+        "number",
+        c.settleMs ?? 1500,
       );
     } else {
       // paginate

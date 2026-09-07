@@ -64,10 +64,16 @@ const TARGETS = [
     id: "pagination",
     url: `${BASE}/web-scraping-practice/beginner/pagination`,
     file: "pagination.html",
-    // Mirrored for the record even though the fixture marks this a known
-    // extension gap (see realPageGap in index.mjs) — the real page uses
-    // numbered ?pageno= links with no "next" affordance at all, which the
-    // LOOP paginate step cannot drive.
+    // All five pages, not just the first. The real paginator is five numbered
+    // ?pageno= links and each page holds different books, so mirroring only
+    // page 1 and serving it for every page would have "passed" while scraping
+    // the same four rows five times — the exact failure the LOOP paginate mode
+    // used to have (B-22), reproduced in the test harness instead of caught by
+    // it.
+    subresources: [2, 3, 4, 5].map((n) => ({
+      url: `${BASE}/web-scraping-practice/beginner/pagination?pageno=${n}`,
+      file: `pagination/page-${n}.html`,
+    })),
   },
   {
     id: "iframe",

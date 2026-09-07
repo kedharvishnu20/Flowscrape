@@ -781,3 +781,67 @@ test("the emitted retry count is clamped the way the run clamps it", () => {
   assert.match(py, /for _attempt in range\(6\):/);
   assert.match(py, /await asyncio\.sleep\(30\)/);
 });
+
+// ── K-20: the two paginators that are not a Next button ─────────────────────
+
+test("a numbered paginator is exported, not silently flattened", () => {
+  // The emitters branch on the loop's mode, and an unknown mode falls through
+  // to a plain `for` — which runs the body N times against page one and looks
+  // like a working script. That is exactly what paginate mode itself used to
+  // do before it was emitted.
+  const { py, js } = emit([
+    {
+      ...step("LOOP", {
+        type: "paginate-links",
+        selector: ".pagination a",
+        max: 0,
+      }),
+      children: [step("EXTRACT", { fields: [] })],
+    },
+  ]);
+
+  assert.match(js, /getAttribute\('href'\)/);
+  assert.match(js, /page\.goto\(new URL\(_hrefs\[i\], page\.url\(\)\)\.href\)/);
+  assert.match(py, /get_attribute\("href"\)/);
+  assert.match(py, /urljoin\(page\.url, _href\)/);
+});
+
+test("a URL-pattern paginator computes each page number", () => {
+  const { py, js } = emit([
+    {
+      ...step("LOOP", {
+        type: "paginate-url",
+        urlTemplate: "https://shop.test/list?offset={page}",
+        startPage: 0,
+        pageStep: 25,
+        max: 3,
+      }),
+      children: [step("EXTRACT", { fields: [] })],
+    },
+  ]);
+
+  assert.match(js, /for \(let i = 0; i < 3; i\+\+\)/);
+  assert.match(js, /0 \+ i \* 25/);
+  assert.match(py, /for i in range\(3\)/);
+  assert.match(py, /0 \+ i \* 25/);
+});
+
+test("a URL-pattern loop with no {page} refuses instead of exporting a lie", () => {
+  // Without the placeholder every iteration opens the same URL, so the script
+  // would run, produce a file, and have scraped one page N times.
+  const { py, js } = emit([
+    {
+      ...step("LOOP", {
+        type: "paginate-url",
+        urlTemplate: "https://shop.test/list",
+        max: 3,
+      }),
+      children: [step("EXTRACT", { fields: [] })],
+    },
+  ]);
+
+  assert.match(js, /UNSUPPORTED/);
+  assert.match(js, /throw new Error/);
+  assert.match(py, /UNSUPPORTED/);
+  assert.match(py, /raise ValueError/);
+});

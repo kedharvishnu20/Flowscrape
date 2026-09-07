@@ -431,6 +431,44 @@ function _emitStepBody(step) {
           `elements = await page.locator("${_escStr(_sel(config.selector))}").all()`,
         );
         lines.push(`for i, el in enumerate(elements[:${config.max ?? 10}]):`);
+      } else if (config.type === "paginate-links" && config.selector) {
+        // The page's links are the bound, as they are in the run: a numbered
+        // paginator has nothing that goes dead to probe, so "how many pages"
+        // is "how many links".
+        lines.push(
+          `_pages = await page.locator("${_escStr(_sel(config.selector))}").all()`,
+          `_hrefs = [await a.get_attribute("href") for a in _pages]`,
+          `${config.max > 0 ? `_hrefs = _hrefs[:${config.max}]` : "# every link the page offers"}`,
+          `for i, _href in enumerate(_hrefs):`,
+          `    if i > 0 and _href:`,
+          `        await page.goto(urljoin(page.url, _href))`,
+          `        await page.wait_for_load_state("networkidle")`,
+        );
+      } else if (config.type === "paginate-url") {
+        const tpl = String(config.urlTemplate ?? "");
+        if (!tpl.includes("{page}")) {
+          lines.push(
+            `# UNSUPPORTED: this LOOP is set to "URL pattern" but its template`,
+            `# has no {page} in it, so every iteration would open the same page.`,
+            `raise ValueError("FlowScrape: LOOP url template has no {page}")`,
+            "",
+          );
+          return lines;
+        }
+        const start = Number.isFinite(Number(config.startPage))
+          ? Number(config.startPage)
+          : 1;
+        const stride =
+          Number.isFinite(Number(config.pageStep)) && Number(config.pageStep)
+            ? Number(config.pageStep)
+            : 1;
+        const n = config.max > 0 ? Number(config.max) : 5;
+        lines.push(
+          `for i in range(${n}):`,
+          `    _url = "${_escStr(tpl)}".replace("{page}", str(${start} + i * ${stride}))`,
+          `    await page.goto(_url)`,
+          `    await page.wait_for_load_state("networkidle")`,
+        );
       } else {
         lines.push(`for i in range(${config.max ?? 10}):`);
       }

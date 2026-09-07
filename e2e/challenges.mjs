@@ -73,7 +73,10 @@ async function serve(challenge) {
   const api = challenge.apiRoutes ?? {};
   const posts = challenge.postRoutes ?? {};
   const server = http.createServer((req, res) => {
-    const path = req.url.split("?")[0];
+    // Full URL first, then the path alone. A paginator whose pages differ only
+    // by `?pageno=` needs the query to select the route; everything else is
+    // keyed by path and is unaffected by looking one step earlier.
+    const path = html[req.url] !== undefined ? req.url : req.url.split("?")[0];
     if (path === "/robots.txt") {
       res.writeHead(200, { "Content-Type": "text/plain" });
       return res.end("User-agent: *\nDisallow:\n");
@@ -203,6 +206,23 @@ for (let challenge of CHALLENGES.filter((c) => !only || c.id === only)) {
       if (challenge.realPageGap) {
         t.todo(challenge.realPageGap);
         return;
+      }
+
+      // A real page whose markup needs a different pipeline than the
+      // reconstruction — not because the tool is weaker against it, but
+      // because the page is genuinely built differently. The real paginator is
+      // numbered links where the reconstruction has a Next button, so the two
+      // exercise two different LOOP modes and both are worth keeping.
+      if (challenge.realPagePipeline) {
+        challenge = {
+          ...challenge,
+          pipeline: challenge.realPagePipeline,
+          // The real data is the site's own, so what counts as right differs
+          // from the reconstruction's fixed twenty rows.
+          ...(challenge.realPageCheck
+            ? { check: challenge.realPageCheck }
+            : {}),
+        };
       }
     }
 

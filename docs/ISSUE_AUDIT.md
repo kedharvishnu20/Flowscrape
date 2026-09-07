@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 179 findings — 23 blocker · 50 high · 77 medium · 29 low. The
+**Totals:** 180 findings — 23 blocker · 51 high · 77 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 19       |
+| K · Capability review           | 20       |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 177 of 179 findings fixed; A-05 and A-07 left by
+**Still open: nothing.** 178 of 180 findings fixed; A-05 and A-07 left by
 decision, as set out above. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2329,3 +2329,48 @@ shuffled. Rank, cut, then restore document order.
 | ------ | ----------------------------------- |
 | before | price, author, stars, price 2, name |
 | after  | name, author, stars, price          |
+
+### K-20 · HIGH · A paginator without a Next button could not be driven at all
+
+The real pagination challenge shows `1 2 3 4 5` and no next affordance of any
+kind. `LOOP` had one pagination mode and it clicks a single repeating control,
+asking the page whether that control has gone dead — disabled, `aria-disabled`,
+a dead class, an `<a>` with no `href`, hidden.
+
+None of that generalises, and reusing it would have been wrong rather than
+economical: a numbered paginator's links never go dead. Past the last page they
+stop existing. Exhaustion has to come from counting the links, not from probing
+one of them.
+
+Two modes now, because the shape comes in two forms:
+
+| mode             | for                                      | bound                    |
+| ---------------- | ---------------------------------------- | ------------------------ |
+| `paginate-links` | a row of page numbers, JavaScript or not | how many links there are |
+| `paginate-url`   | the page number lives in the URL         | a template plus a count  |
+
+`paginate-links` prefers each link's `href` over clicking it, because sites
+routinely render the _current_ page as a `<span>` rather than an `<a>`, which
+shifts every index after it; it falls back to clicking the i-th match when
+there is no href, which is the only thing that can work for a JavaScript
+paginator. `paginate-url` navigates on every iteration including the first —
+the tab may be sitting on some other page, and scraping that one as if it were
+page 1 is the failure that avoids. It is also the only mode that can start at
+page 40 instead of walking there.
+
+Both are emitted by both script generators; a URL template with no `{page}` in
+it is refused at export rather than emitted as a loop that opens one page N
+times.
+
+Two smaller things came out of it. The origin gate moved into a single
+`_navigateTo` helper, because a loop that computes its own URLs is exactly
+where an ungated navigation would be easiest to miss — the test now asserts
+that no navigation in the run path bypasses it, rather than counting call
+sites. And the challenge server keys routes by full URL before falling back to
+the path, without which five pages that differ only by `?pageno=` all resolved
+to the same route.
+
+|        | real pagination challenge     |
+| ------ | ----------------------------- |
+| before | 10 rows, page one, five times |
+| after  | 50 rows, five distinct pages  |

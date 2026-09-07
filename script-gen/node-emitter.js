@@ -356,6 +356,45 @@ function _emitNodeStepBody(step) {
           `for (let i = 0; i < Math.min(elements.length, ${config.max ?? 10}); i++) {`,
         );
         lines.push(`  const el = elements[i];`);
+      } else if (config.type === "paginate-links" && config.selector) {
+        // The page's links are the bound, as they are in the run: a numbered
+        // paginator has nothing that goes dead to probe, so "how many pages"
+        // is "how many links".
+        lines.push(
+          `const _pages = await page.locator('${esc(_sel(config.selector))}').all();`,
+          `const _hrefs = (await Promise.all(_pages.map((a) => a.getAttribute('href'))))`,
+          `  ${config.max > 0 ? `.slice(0, ${config.max})` : "// every link the page offers"};`,
+          `for (let i = 0; i < _hrefs.length; i++) {`,
+          `  if (i > 0 && _hrefs[i]) {`,
+          `    await page.goto(new URL(_hrefs[i], page.url()).href);`,
+          `    await page.waitForLoadState('networkidle');`,
+          `  }`,
+        );
+      } else if (config.type === "paginate-url") {
+        const tpl = String(config.urlTemplate ?? "");
+        if (!tpl.includes("{page}")) {
+          lines.push(
+            `// UNSUPPORTED: this LOOP is set to "URL pattern" but its template`,
+            `// has no {page} in it, so every iteration would open the same page.`,
+            `throw new Error('FlowScrape: LOOP url template has no {page}');`,
+            "",
+          );
+          return lines;
+        }
+        const start = Number.isFinite(Number(config.startPage))
+          ? Number(config.startPage)
+          : 1;
+        const stride =
+          Number.isFinite(Number(config.pageStep)) && Number(config.pageStep)
+            ? Number(config.pageStep)
+            : 1;
+        const n = config.max > 0 ? Number(config.max) : 5;
+        lines.push(
+          `for (let i = 0; i < ${n}; i++) {`,
+          `  const _url = '${esc(tpl)}'.split('{page}').join(String(${start} + i * ${stride}));`,
+          `  await page.goto(_url);`,
+          `  await page.waitForLoadState('networkidle');`,
+        );
       } else {
         lines.push(`for (let i = 0; i < ${config.max ?? 10}; i++) {`);
       }

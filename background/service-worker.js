@@ -2206,7 +2206,58 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
   let iters;
   let elementsData = null;
 
-  if (ltype === "elements" && selector) {
+  if (ltype === "paginate-links" && selector) {
+    // The page's own page-number links are the bound, the same way the element
+    // list is in "elements" mode: five links means five pages, and there is
+    // nothing to probe for "is there another one" because a numbered paginator
+    // never disables anything — the links simply stop existing.
+    let found = null;
+    try {
+      const r = await _sendToPage(tabId, {
+        type: "QUERY_ELEMENTS",
+        config: { selector },
+      });
+      if (r?.ok && Array.isArray(r.result)) found = r.result;
+    } catch (e) {
+      _broadcastLog(
+        "warn-log",
+        `Loop: page-link query failed: ${e.message}`,
+        runId,
+      );
+      return;
+    }
+    if (!found || found.length === 0) {
+      _broadcastLog(
+        "warn-log",
+        `Loop: no page links matched "${selector}" — skipping.`,
+        runId,
+      );
+      return;
+    }
+    elementsData = found;
+    iters = limit > 0 ? Math.min(found.length, limit) : found.length;
+    _broadcastLog(
+      "info-log",
+      `Loop: ${found.length} page links for "${selector}"`,
+      runId,
+    );
+  } else if (ltype === "paginate-url") {
+    // Nothing to count here — the template says where the pages are and `max`
+    // says how many. That is the whole appeal of this mode: it can start at
+    // page 40 instead of walking to it.
+    if (!String(step.config.urlTemplate || "").includes("{page}")) {
+      throw new Error(
+        'Loop in "paginate-url" mode needs a URL template containing {page}, ' +
+          `for example https://example.com/list?page={page} (got "${step.config.urlTemplate ?? ""}").`,
+      );
+    }
+    if (!Number.isFinite(limit) || limit < 1) {
+      throw new Error(
+        `Loop in "paginate-url" mode needs a page count of at least 1 (got ${max}).`,
+      );
+    }
+    iters = limit;
+  } else if (ltype === "elements" && selector) {
     let found = null;
     try {
       // Pre-collect ALL element data upfront so templates can use {{item.href}}, {{item.text}} etc.
@@ -2294,6 +2345,72 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
       },
       item,
     };
+
+    // A numbered paginator: go to the i-th page link. The first iteration is
+    // the page already open, so only later ones navigate.
+    if (ltype === "paginate-links" && i > 0) {
+      const link = elementsData?.[i];
+      const href = String(link?.href || "").trim();
+      try {
+        if (href) {
+          // Preferred when the link has one: an href is stable, and it does not
+          // depend on the new page rendering its paginator the same way. Sites
+          // commonly render the *current* page as a <span> rather than an <a>,
+          // which shifts every index after it.
+          await _navigateTo(tabId, href, runState, runId, {
+            timeoutMs: step.config.timeoutMs,
+            what: "Loop (page link)",
+          });
+        } else {
+          // No href — a JavaScript paginator. Click the i-th match on the page
+          // as it is now, which is the only thing that can work there.
+          const clicked = await _sendToPage(tabId, {
+            type: "CLICK",
+            config: { selector, index: i },
+          });
+          if (!clicked?.ok) throw new Error(clicked?.error || "click failed");
+        }
+      } catch (e) {
+        _broadcastLog(
+          "warn-log",
+          `Loop: could not open page ${i + 1} — ${e.message}`,
+          runId,
+        );
+        break;
+      }
+      const settle = Number(step.config.settleMs);
+      if (Number.isFinite(settle) && settle > 0) await _sleep(settle);
+    }
+
+    // A URL template: compute this iteration's page and go there. Every
+    // iteration navigates, including the first — the tab may be sitting on a
+    // different page than the template's start, and silently scraping that one
+    // twice is the bug this avoids.
+    if (ltype === "paginate-url") {
+      const start = Number(step.config.startPage);
+      const stride = Number(step.config.pageStep);
+      const n =
+        (Number.isFinite(start) ? start : 1) +
+        i * (Number.isFinite(stride) && stride !== 0 ? stride : 1);
+      try {
+        await _navigateTo(
+          tabId,
+          _pageUrl(step.config.urlTemplate, n),
+          runState,
+          runId,
+          { timeoutMs: step.config.timeoutMs, what: "Loop (page URL)" },
+        );
+      } catch (e) {
+        _broadcastLog(
+          "warn-log",
+          `Loop: could not open page ${n} — ${e.message}`,
+          runId,
+        );
+        break;
+      }
+      const settle = Number(step.config.settleMs);
+      if (Number.isFinite(settle) && settle > 0) await _sleep(settle);
+    }
 
     if (ltype === "paginate" && i > 0 && selector) {
       // PAGINATE, not CLICK. A click past the last page matches nothing and
@@ -2473,6 +2590,45 @@ async function _waitForTabLoad(tabId, timeoutMs = NAV_TIMEOUT_MS) {
  *
  * @returns {Promise<{paginated: boolean, exhausted: boolean, reason: string}>}
  */
+/**
+ * Send the tab to a URL and wait for it to land.
+ *
+ * Shared by NAVIGATE and by the two URL-driven pagination modes, so the origin
+ * check, the wait and the "still loading" warning cannot drift apart between
+ * them — the origin check especially: a loop that computes its own URLs is
+ * exactly where an unchecked navigation would be easiest to miss.
+ */
+async function _navigateTo(tabId, url, runState, runId, opts = {}) {
+  const { wait = true, timeoutMs, what = "NAVIGATE" } = opts;
+  _assertOriginAllowed(url, runState, what);
+  await chrome.tabs.update(tabId, { url });
+  if (!wait) {
+    // The caller asked not to wait; still give the navigation a beat to
+    // commit, or the next step runs against the page being replaced.
+    await _sleep(400);
+    return;
+  }
+  const ms = Number(timeoutMs) || NAV_TIMEOUT_MS;
+  const loaded = await _waitForTabLoad(tabId, ms);
+  if (!loaded) {
+    _broadcastLog(
+      "warn-log",
+      `${what}: the page was still loading after ${Math.round(ms / 1000)}s — continuing anyway.`,
+      runId,
+    );
+  }
+}
+
+/**
+ * The URL for page `n` of a `paginate-url` loop.
+ *
+ * The template carries `{page}` where the number goes. Anything else is left
+ * alone, so a URL that already has query parameters needs no escaping.
+ */
+function _pageUrl(template, n) {
+  return String(template).replaceAll("{page}", String(n));
+}
+
 async function _executePaginate(tabId, config = {}) {
   const selector = String(config.selector || "").trim();
   if (!selector) throw new Error("Paginate: no Next selector configured.");
@@ -2545,23 +2701,11 @@ async function _dispatchStep(step, tabId, runId, ctx) {
   switch (step.type) {
     case "WEBSITE":
     case "NAVIGATE": {
-      _assertOriginAllowed(step.config.url, runState, step.type);
-      await chrome.tabs.update(tabId, { url: step.config.url });
-      if (step.config.wait === false) {
-        // The user asked not to wait; still give the navigation a beat to
-        // commit, or the next step runs against the page being replaced.
-        await _sleep(400);
-        return;
-      }
-      const timeoutMs = Number(step.config.timeoutMs) || NAV_TIMEOUT_MS;
-      const loaded = await _waitForTabLoad(tabId, timeoutMs);
-      if (!loaded) {
-        _broadcastLog(
-          "warn-log",
-          `${step.type}: the page was still loading after ${Math.round(timeoutMs / 1000)}s — continuing anyway.`,
-          runId,
-        );
-      }
+      await _navigateTo(tabId, step.config.url, runState, runId, {
+        wait: step.config.wait !== false,
+        timeoutMs: step.config.timeoutMs,
+        what: step.type,
+      });
       return;
     }
 

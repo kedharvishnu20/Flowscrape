@@ -7,17 +7,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="index, follow">
     
-    <meta name="keywords" content="randomized,css,class-name,frontend-security">
+    <meta name="keywords" content="pagination,http-request,html-parsing,xpath">
     
     
-    <meta name="description" content="Scrape pages where the CSS class name changes with each request, while ensuring data extraction consistency.">
+    <meta name="description" content="Scrape data spread across multiple pages by following page numbers or next-page links.">
     
-    <link rel="canonical" href="/web-scraping-practice/beginner/random">
+    <link rel="canonical" href="/web-scraping-practice/beginner/pagination">
     <link rel="stylesheet" href="/static/css/style.v5.min.css">
     
     <script defer src="/static/js/htmx2.0.7.min.js"></script>
     <script defer src="/static/js/site.v5.min.js"></script>
-    <title>Scraping Randomized CSS Class Name Content | TryScrapeMe | Web Scraping Practice Website with Tutorials & Challenges
+    <title>Pagination Data Collection | TryScrapeMe | Web Scraping Practice Website with Tutorials & Challenges
     </title>
     
     
@@ -48,7 +48,7 @@
           </nav>
       </div>
     </header>
-<section class="min-h-[90vh] flex flex-col items-center justify-center">
+<section class="min-h-[90vh] flex flex-col items-center">
     <div class="max-w-[65rem] w-[65rem] py-8">
 <div class="max-w-3xl mx-auto mb-12">
     
@@ -56,7 +56,7 @@
         
         <div class="px-8 py-6 border-b border-gray-100">
             <div class="flex justify-between items-start gap-4">
-                <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Scraping Randomized CSS Class Name Content</h1>
+                <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Pagination Data Collection</h1>
 
                 <button class="challenge-action flex-shrink-0 mt-2"
                         popovertarget="challenge-help"
@@ -75,7 +75,7 @@
             </div>
             
             <div class="text-sm leading-7 text-gray-600">
-                Scrape pages where the CSS class name changes with each request, while ensuring data extraction consistency.
+                Scrape data spread across multiple pages by following page numbers or next-page links.
             </div>
             
             <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
@@ -88,7 +88,7 @@
                 
                 <div class="flex items-center gap-2">
                     <span class="text-gray-500">Tags:</span>
-                    <span class="text-gray-600">randomized · css · class-name · frontend-security</span>
+                    <span class="text-gray-600">pagination · http-request · html-parsing · xpath</span>
                 </div>
                 
             </div>
@@ -97,10 +97,10 @@
         <div class="px-8 py-6 bg-white border-t border-gray-100">
             <div class="flex items-center justify-end">
                 <div class="flex items-center gap-8">
-                    <a href="/guide/random" class="text-gray-600 hover:text-gray-900">
+                    <a href="/guide/pagination" class="text-gray-600 hover:text-gray-900">
                         Verify Solution
                     </a>
-                    <a href="/guide/random" class="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-950">
+                    <a href="/guide/pagination" class="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-950">
                         View Engineering Walkthrough
                     </a>
                 </div>
@@ -135,83 +135,81 @@
         </li>
     </ul>
     <div class="pt-6 border-t border-gray-100 flex items-center justify-center">
-        <a href="/guide/random">
+        <a href="/guide/pagination">
            View Engineering Walkthrough →
         </a>
     </div>
 </div>
-
-        <div class="IPoVVh">
-            <h2>The How Not To Die Cookbook</h2>
-            <div>Michael Greger</div>
-            <div class="DerQvx">24.08</div>
-        </div>
-        
-        <div class="IPoVVh">
-            <h2>Pilates Anatomy</h2>
-            <div>Rael Isacowitz</div>
-            <div class="DerQvx">17.1</div>
-        </div>
-        
-        <div class="IPoVVh">
-            <h2>Quiet the Mind</h2>
-            <div>Matthew Johnstone</div>
-            <div class="DerQvx">7.71</div>
-        </div>
-        
-        <div class="IPoVVh">
-            <h2>Your Body, Your Yoga</h2>
-            <div>Bernie Clark</div>
-            <div class="DerQvx">20.3</div>
-        </div>
-        
-        <div class="IPoVVh">
-            <h2>Medical Interviews - a Comprehensive Guide to Ct, St and Registrar Interview Skills</h2>
-            <div>Olivier Picard</div>
-            <div class="DerQvx">39.28</div>
-        </div>
-        
-        <div class="IPoVVh">
-            <h2>Radical Remission</h2>
-            <div>Kelly A. Turner</div>
-            <div class="DerQvx">13.3</div>
-        </div>
-        
-        <div class="IPoVVh">
-            <h2>The Immortal Life of Henrietta Lacks</h2>
-            <div>Rebecca Skloot</div>
-            <div class="DerQvx">13.82</div>
-        </div>
-        
-        <div class="IPoVVh">
-            <h2>The Crystal Bible Volume 2</h2>
-            <div>Judy Hall</div>
-            <div class="DerQvx">13.76</div>
-        </div>
-        
-        <div class="IPoVVh">
-            <h2>Start Where You Are</h2>
-            <div>Meera Lee Patel</div>
-            <div class="DerQvx">10.51</div>
-        </div>
-        
-        <div class="IPoVVh">
-            <h2>Birth Skills</h2>
-            <div>Juju Sundin</div>
-            <div class="DerQvx">26.59</div>
-        </div>
-        
+<table>
+           	<thead>
+                <tr>
+                    <th>name</th>
+                    <th>author</th>
+                    <th>stars</th>
+                    <th>price</th>
+                </tr>
+           	</thead>
+           	<tbody><tr>
+                    <td>The Dialectical Behavior Therapy Skills Workbook</td>
+                    <td>Matthew McKay</td>
+                    <td>4</td>
+                    <td>15.49</td>
+                </tr><tr>
+                    <td>The Reality Slap</td>
+                    <td>Russ Harris</td>
+                    <td>4</td>
+                    <td>7.82</td>
+                </tr><tr>
+                    <td>The Boy Who Was Raised as a Dog, 3rd Edition</td>
+                    <td>Bruce D. Perry</td>
+                    <td>4.5</td>
+                    <td>13.64</td>
+                </tr><tr>
+                    <td>Strength Training Anatomy</td>
+                    <td>Frederic Delavier</td>
+                    <td>4.5</td>
+                    <td>13.83</td>
+                </tr><tr>
+                    <td>The Brain That Changes Itself</td>
+                    <td>Norman Doidge</td>
+                    <td>4</td>
+                    <td>15.22</td>
+                </tr><tr>
+                    <td>Lost Ocean</td>
+                    <td>Johanna Basford</td>
+                    <td>4.5</td>
+                    <td>12.39</td>
+                </tr><tr>
+                    <td>Mating in Captivity</td>
+                    <td>Esther Perel</td>
+                    <td>4</td>
+                    <td>12.37</td>
+                </tr><tr>
+                    <td>This is Going to Hurt</td>
+                    <td>Adam Kay</td>
+                    <td>4.5</td>
+                    <td>12.81</td>
+                </tr><tr>
+                    <td>You Are the Placebo</td>
+                    <td>Joe Dispenza</td>
+                    <td>4.5</td>
+                    <td>14.4</td>
+                </tr><tr>
+                    <td>Radical Acceptance</td>
+                    <td>Tara Brach</td>
+                    <td>4</td>
+                    <td>13.88</td>
+                </tr></tbody>
+        </table>
     </div>
+    <ul class="pagination">
+       	<li><a href="/pagination?pageno=1">1</a></li>
+       	<li><a href="/pagination?pageno=2">2</a></li>
+       	<li><a href="/pagination?pageno=3">3</a></li>
+       	<li><a href="/pagination?pageno=4">4</a></li>
+       	<li><a href="/pagination?pageno=5">5</a></li>
+    </ul>
 </section>
-<style>
-    .IPoVVh{
-        margin: 1rem;
-    }
-    .DerQvx{
-        font-size: 1.25rem;
-        font-weight: 400;
-    }
-</style>
 <footer class="flex flex-wrap items-center justify-center gap-6 text-sm py-4 border-t border-t-gray-200">
         <span class="text-gray-600">© TryScrapeMe</span>
         <a class="text-slate-600 hover:text-indigo-600" href="/about">About</a>

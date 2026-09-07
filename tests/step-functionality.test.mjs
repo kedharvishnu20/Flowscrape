@@ -458,3 +458,155 @@ test("a page step re-injects after the page it was running on went away", async 
   );
   await endRun(runId);
 });
+
+// ── K-20: paginators that have no Next control ───────────────────────────────
+//
+// Found by running the real pagination challenge: it shows 1 2 3 4 5 and no
+// next affordance at all. `_executePaginate` clicks one repeating control and
+// asks whether it has gone dead — disabled, aria-disabled, href-less, hidden.
+// None of that generalises here. A numbered paginator's links never go dead;
+// past the last page they simply do not exist, so the bound has to come from
+// counting the links rather than from probing one of them.
+
+test("a numbered paginator runs once per page link", async () => {
+  reset();
+  const { runId, runState } = startRun();
+  setTabStatuses(["complete"]);
+
+  onContentMessage((payload) => {
+    if (payload.type === "QUERY_ELEMENTS") {
+      return {
+        ok: true,
+        result: [1, 2, 3].map((n) => ({
+          index: n,
+          text: String(n),
+          href: `https://shop.test/list?pageno=${n}`,
+        })),
+      };
+    }
+    if (payload.type === "EXTRACT") return { ok: true, result: [{ n: 1 }] };
+    return { ok: true, result: {} };
+  });
+
+  await _executeStepList(
+    [
+      step(
+        "LOOP",
+        { type: "paginate-links", selector: ".pagination a", max: 0 },
+        { children: [step("EXTRACT", { fields: [] })] },
+      ),
+    ],
+    1,
+    runId,
+    ctx(),
+  );
+
+  assert.equal(
+    runState.results.length,
+    3,
+    `scraped ${runState.results.length} pages; the page offered 3 links`,
+  );
+  // The first iteration is the page already open, so only pages 2 and 3 are
+  // navigated to — going to page 1 again would scrape it twice.
+  assert.deepEqual(
+    calls.tabUpdates.map((u) => u.url),
+    ["https://shop.test/list?pageno=2", "https://shop.test/list?pageno=3"],
+  );
+  await endRun(runId);
+});
+
+test("a URL template visits each page in turn, including the first", async () => {
+  reset();
+  const { runId, runState } = startRun();
+  setTabStatuses(["complete"]);
+  onContentMessage(() => ({ ok: true, result: [{ n: 1 }] }));
+
+  await _executeStepList(
+    [
+      step(
+        "LOOP",
+        {
+          type: "paginate-url",
+          urlTemplate: "https://shop.test/list?page={page}",
+          startPage: 2,
+          pageStep: 1,
+          max: 3,
+        },
+        { children: [step("EXTRACT", { fields: [] })] },
+      ),
+    ],
+    1,
+    runId,
+    ctx(),
+  );
+
+  // Every iteration navigates here, the first included: the tab may be sitting
+  // on some other page, and scraping that one as if it were page 2 is the
+  // failure this avoids.
+  assert.deepEqual(
+    calls.tabUpdates.map((u) => u.url),
+    [
+      "https://shop.test/list?page=2",
+      "https://shop.test/list?page=3",
+      "https://shop.test/list?page=4",
+    ],
+  );
+  assert.equal(runState.results.length, 3);
+  await endRun(runId);
+});
+
+test("a URL template that forgot {page} says so instead of scraping one page N times", async () => {
+  reset();
+  const { runId } = startRun();
+  await assert.rejects(
+    () =>
+      _dispatchStep(
+        step("LOOP", {
+          type: "paginate-url",
+          urlTemplate: "https://shop.test/list?page=2",
+          max: 3,
+        }),
+        1,
+        runId,
+        ctx(),
+      ),
+    /\{page\}/,
+  );
+  await endRun(runId);
+});
+
+test("an offset-style paginator counts by its own stride", async () => {
+  reset();
+  const { runId } = startRun();
+  setTabStatuses(["complete"]);
+  onContentMessage(() => ({ ok: true, result: [] }));
+
+  await _executeStepList(
+    [
+      step(
+        "LOOP",
+        {
+          type: "paginate-url",
+          urlTemplate: "https://shop.test/list?offset={page}",
+          startPage: 0,
+          pageStep: 25,
+          max: 3,
+        },
+        { children: [] },
+      ),
+    ],
+    1,
+    runId,
+    ctx(),
+  );
+
+  assert.deepEqual(
+    calls.tabUpdates.map((u) => u.url),
+    [
+      "https://shop.test/list?offset=0",
+      "https://shop.test/list?offset=25",
+      "https://shop.test/list?offset=50",
+    ],
+  );
+  await endRun(runId);
+});

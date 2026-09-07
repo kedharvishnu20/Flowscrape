@@ -8,3 +8,4 @@ mcp/package-lock.json
 # scripts/mirror-challenges.mjs) — reformatting them would stop them being
 # what they claim to be.
 e2e/challenges/pages/
+.fs-mcp-runs/

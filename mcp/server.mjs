@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
+import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -501,6 +502,196 @@ server.tool(
       unresolvedTemplates: templates,
       secrets,
       code: emitNode(ast),
+    });
+  },
+);
+
+/**
+ * Where a run's script and its output go.
+ *
+ * Under the repo rather than the system temp directory, for one reason that
+ * matters more than tidiness: the emitted script does `import { chromium } from
+ * "playwright"`, and Node resolves that from the script's own location. A file
+ * in /tmp resolves nothing.
+ */
+const RUN_DIR = path.join(ROOT, ".fs-mcp-runs");
+
+/**
+ * A browser for the emitted script to drive, when the environment has not
+ * named one.
+ *
+ * Headless Playwright reaches for a separate "headless shell" build by default,
+ * so a machine carrying full Chromium but not that variant fails at launch with
+ * a message about installing browsers. Looking for what is actually there costs
+ * one directory read and saves that entirely; finding nothing is fine, because
+ * the script's own default then applies and the failure is reported with the
+ * install command.
+ */
+async function _findBrowser() {
+  if (process.env.FS_BROWSER_PATH) return process.env.FS_BROWSER_PATH;
+  const base = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!base) return null;
+  let entries = [];
+  try {
+    entries = await fs.readdir(base);
+  } catch {
+    return null;
+  }
+  for (const dir of entries.filter((d) => d.startsWith("chromium-")).sort()) {
+    for (const rel of [
+      "chrome-linux/chrome",
+      "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+      "chrome-win/chrome.exe",
+    ]) {
+      const candidate = path.join(base, dir, rel);
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {
+        // Try the next layout.
+      }
+    }
+  }
+  return null;
+}
+
+/** One JSON object per line is what the emitted script prints per row. */
+function _rowsFromStdout(stdout) {
+  const rows = [];
+  const noise = [];
+  for (const line of String(stdout).split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    if (text.startsWith("{") || text.startsWith("[")) {
+      try {
+        rows.push(JSON.parse(text));
+        continue;
+      } catch {
+        // Not a row after all — a log line that happens to start with a brace.
+      }
+    }
+    noise.push(text);
+  }
+  return { rows, noise };
+}
+
+server.tool(
+  "pipeline_run",
+  "Run a pipeline and return the rows it scraped. Requires playwright to be installed.",
+  {
+    recipeJson: z.string().optional(),
+    recipe: z.any().optional(),
+    timeoutMs: z.number().int().min(1000).max(600000).optional(),
+    keepScript: z.boolean().optional(),
+  },
+  async ({ recipeJson, recipe, timeoutMs = 120000, keepScript = false }) => {
+    const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
+    const { ast, errors } = compilePipeline(input);
+    if (!ast) return textResult({ ok: false, errors });
+
+    // Refused before anything launches, not discovered halfway through. A step
+    // with no standalone equivalent emits a throw, so running first would burn
+    // a browser launch to arrive at a message we already have.
+    const unexportable = findUnexportableSteps(ast);
+    if (unexportable.length) {
+      return textResult({
+        ok: false,
+        reason: "this pipeline contains steps a standalone script cannot run",
+        unexportable,
+        hint:
+          "Those steps are extension-only — the sniffer needs the browser's " +
+          "own network hooks, and answering a challenge needs a person. Run " +
+          "the pipeline in the extension, or take those steps out.",
+      });
+    }
+    const unresolved = findUnresolvedTemplates(ast);
+    if (unresolved.length) {
+      return textResult({
+        ok: false,
+        reason: "this pipeline has templates nothing will fill in at run time",
+        unresolvedTemplates: unresolved,
+      });
+    }
+
+    // The script *is* the runner. There is no second step engine here on
+    // purpose: a pipeline executed by its own emitted script cannot silently
+    // mean something different from the script the user exports, and the one
+    // definition of what a step does stays in one place. It also means this
+    // tool inherits the emitters' limits exactly, which is the honest bargain.
+    const secrets = redactSecrets(ast);
+    const code = emitNode(ast);
+    await fs.mkdir(RUN_DIR, { recursive: true });
+    const scriptPath = path.join(
+      RUN_DIR,
+      `run_${randomUUID().slice(0, 8)}.mjs`,
+    );
+    await fs.writeFile(scriptPath, code, "utf8");
+
+    const browserPath = await _findBrowser();
+    const started = Date.now();
+    let out;
+    try {
+      out = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [scriptPath], {
+          cwd: ROOT,
+          env: browserPath
+            ? { ...process.env, FS_BROWSER_PATH: browserPath }
+            : process.env,
+        });
+        let stdout = "";
+        let stderr = "";
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(
+            new Error(
+              `the run passed ${Math.round(timeoutMs / 1000)}s and was stopped`,
+            ),
+          );
+        }, timeoutMs);
+        child.stdout.on("data", (d) => (stdout += d));
+        child.stderr.on("data", (d) => (stderr += d));
+        child.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          resolve({ code, stdout, stderr });
+        });
+      });
+    } catch (err) {
+      if (!keepScript) await fs.rm(scriptPath, { force: true });
+      return textResult({ ok: false, error: err.message });
+    }
+
+    if (!keepScript) await fs.rm(scriptPath, { force: true });
+    const { rows, noise } = _rowsFromStdout(out.stdout);
+    const missingPlaywright = /Cannot find package 'playwright'/.test(
+      out.stderr,
+    );
+
+    return textResult({
+      ok: out.code === 0,
+      rowCount: rows.length,
+      rows,
+      elapsedMs: Date.now() - started,
+      exitCode: out.code,
+      // Kept apart from the rows so a log line can never be mistaken for data.
+      log: noise.slice(0, 40),
+      stderr: String(out.stderr).slice(0, 4000),
+      ...(missingPlaywright
+        ? {
+            hint:
+              "The generated script needs Playwright. Install it in this " +
+              "repository (`npm install playwright && npx playwright install " +
+              "chromium`) and run this again.",
+          }
+        : {}),
+      // Named, never valued: a credential moved into an environment marker is
+      // still a credential (C-03, B-16).
+      secretsMovedToEnv: secrets,
+      ...(browserPath ? { browser: browserPath } : {}),
+      ...(keepScript ? { scriptPath } : {}),
     });
   },
 );

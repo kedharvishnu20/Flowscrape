@@ -164,3 +164,65 @@ test("both MCP emit tools redact credentials, like the extension does", () => {
     );
   }
 });
+
+// ── G-06: the MCP server can run a pipeline, not only write one ──────────────
+//
+// Eighteen tools and none of them scraped: an agent could author a pipeline,
+// validate it, emit a script for it, and never execute one. The gap the
+// capability review called "MCP cannot scrape".
+//
+// What makes the fix defensible is what it does *not* add. There is no second
+// step engine in the MCP process — `pipeline_run` runs the pipeline's own
+// emitted script, so the thing that executes and the thing a user exports are
+// the same artefact, and this tool inherits the emitters' limits exactly
+// rather than quietly having its own.
+
+test("pipeline_run executes the emitted script, not a second engine", () => {
+  const run = src.slice(src.indexOf('"pipeline_run"'));
+  const body = run.slice(0, run.indexOf("server.tool("));
+  assert.match(
+    body,
+    /emitNode\(ast\)/,
+    "it does not emit the pipeline's script",
+  );
+  assert.match(body, /spawn\(/, "it never runs anything");
+  // The tell for a second engine would be the runner reaching into the step
+  // vocabulary itself.
+  assert.ok(
+    !/STEP_TYPES|_dispatchStep|_executeSteps/.test(body),
+    "the MCP process has grown its own step engine",
+  );
+});
+
+test("a pipeline it cannot run is refused before a browser is launched", () => {
+  // A sniffer step needs the browser's own network hooks and a captcha needs a
+  // person; both already emit a throw. Discovering that halfway through costs a
+  // browser launch to arrive at a message we had before we started.
+  const run = src.slice(src.indexOf('"pipeline_run"'));
+  const body = run.slice(0, run.indexOf("server.tool("));
+  const refusal = body.indexOf("findUnexportableSteps");
+  const launch = body.indexOf("spawn(");
+  assert.ok(refusal > 0, "it never checks what it cannot run");
+  assert.ok(
+    refusal < launch,
+    "the check happens after the run has already started",
+  );
+  assert.match(body, /findUnresolvedTemplates/);
+});
+
+test("a run reports its rows apart from its log lines", () => {
+  // The emitted script prints rows as JSON to stdout, and prints other things
+  // there too. A log line that happens to start with a brace must not arrive
+  // as data.
+  const fn = src.match(/function _rowsFromStdout\([\s\S]*?\n\}/)[0];
+  assert.match(fn, /JSON\.parse/);
+  assert.match(fn, /catch/, "a brace that is not JSON would throw");
+  assert.match(fn, /noise/, "log lines are not kept apart from rows");
+});
+
+test("credentials are named, never valued, in a run's result", () => {
+  const run = src.slice(src.indexOf('"pipeline_run"'));
+  const body = run.slice(0, run.indexOf("server.tool("));
+  assert.match(body, /redactSecrets\(ast\)/);
+  assert.match(body, /secretsMovedToEnv/);
+});

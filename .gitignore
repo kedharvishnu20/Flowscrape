@@ -6,3 +6,6 @@ test-results/
 
 # Scratch git worktrees the agent harness creates
 .claude/worktrees/
+
+# Scratch scripts the MCP runner writes and removes.
+.fs-mcp-runs/

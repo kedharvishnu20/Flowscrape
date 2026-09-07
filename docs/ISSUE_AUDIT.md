@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 190 findings — 24 blocker · 55 high · 82 medium · 29 low. The
+**Totals:** 191 findings — 24 blocker · 56 high · 82 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -17,7 +17,7 @@ gaps found by reading every step type against its implementation.
 | D · Data integrity & edge cases | 14       |
 | E · UI / UX                     | 20       |
 | F · Dead code & wiring gaps     | 10       |
-| G · MCP integration             | 9        |
+| G · MCP integration             | 10       |
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 189 of 190 findings fixed; A-07 (a phantom `FORM_FILL`
+**Still open: nothing.** 190 of 191 findings fixed; A-07 (a phantom `FORM_FILL`
 step type) is the one left by decision. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -777,6 +777,45 @@ _Verified as fine:_ `@modelcontextprotocol/sdk@1.30.0` does export `server/expre
 ---
 
 # H. Documentation
+
+### G-10 · HIGH · The MCP server could write a scrape but never run one
+
+Eighteen tools: compile, validate, save, load, serialize, emit Python, emit
+Node, scan for PII, check robots. An agent could author a pipeline, prove it
+sound, generate a script for it — and had no way to execute one. The capability
+review called it "MCP cannot scrape", and it was the last of its five headline
+findings still open.
+
+`pipeline_run` closes it. What matters is what it does **not** add: there is no
+second step engine in the MCP process. It emits the pipeline's own script — the
+same artefact `pipeline_emit_node` hands a user — writes it, runs it, and reads
+the rows back from its stdout. So the thing that executes and the thing you
+export are one artefact, they cannot drift, and this tool inherits the
+emitters' limits exactly rather than quietly having its own.
+
+That last part is the honest bargain, and it is enforced rather than hoped for:
+a pipeline containing a step no standalone script can run — the sniffer needs
+the browser's own network hooks, answering a challenge needs a person — is
+refused **before** a browser is launched, naming the steps, because discovering
+it halfway costs a launch to arrive at a message we already had. The same goes
+for a template nothing will fill in.
+
+Two smaller things came out of building it.
+
+**The emitted scripts could not launch on this machine, or on any like it.**
+Headless Playwright reaches for a separate "headless shell" build, so a
+computer carrying full Chromium but not that variant fails at launch with a
+message about installing browsers. Both emitters now honour `FS_BROWSER_PATH`,
+and the runner fills it in from what is actually installed. That is a fix to
+every exported script, not only to this tool.
+
+**Rows are kept apart from log lines.** The script prints rows as JSON on
+stdout and prints other things there too; a log line that happens to begin with
+a brace must never arrive as data.
+
+Proved by running it: a test launches a real browser against a real page and
+checks the rows, and skips loudly when no browser is installed rather than
+passing because it never ran.
 
 ### H-01 · HIGH · `README.md` and `docs/repo-readme.md` are near-duplicate files that have already drifted
 

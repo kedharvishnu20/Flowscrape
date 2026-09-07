@@ -4,7 +4,7 @@
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
 **Method:** full read of all 18,632 lines of source + docs, ES-module syntax check of every `.js`/`.mjs` (all parse cleanly), DOM-id cross-reference between `index.html` and `pipeline-builder.js`, import-graph analysis, npm-registry verification of the MCP SDK surface.
 
-**Totals:** 189 findings — 24 blocker · 54 high · 82 medium · 29 low. The
+**Totals:** 190 findings — 24 blocker · 55 high · 82 medium · 29 low. The
 original audit recorded 126; four blockers were found while fixing them (A-10 …
 A-13, three of the four in a real browser) and section J adds five capability
 gaps found by reading every step type against its implementation.
@@ -21,7 +21,7 @@ gaps found by reading every step type against its implementation.
 | H · Documentation               | 12       |
 | I · Project hygiene             | 6        |
 | J · Capability gaps             | 30       |
-| K · Capability review           | 28       |
+| K · Capability review           | 29       |
 
 ---
 
@@ -141,7 +141,7 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 188 of 189 findings fixed; A-07 (a phantom `FORM_FILL`
+**Still open: nothing.** 189 of 190 findings fixed; A-07 (a phantom `FORM_FILL`
 step type) is the one left by decision. A-06 was a third — the dead captcha detector — and
 is now closed by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
@@ -2735,3 +2735,39 @@ Two details that would otherwise have turned an optimisation into a bug:
 | ------ | ------------------------------------------ |
 | before | 201 KB, always                             |
 | after  | 119 KB, plus one specialist when asked for |
+
+### K-28 · HIGH · An exported loop searched the whole page, every iteration
+
+Found while building `DOWNLOAD_FILE` (K-23) and left for its own finding,
+because it is not about downloads.
+
+At run time a selector inside an `elements` LOOP resolves against that
+iteration's element: `_queryScoped` in `content/injector.js` takes the loop's
+current record as its root. The emitted script did not. Every step in a loop
+body was emitted as `page.locator(...)`, which searches the whole document.
+
+So a pipeline that says "for each product card, extract the title" exported as
+a script that extracts **every** title on the page, once per card; "for each
+card, download the image" downloaded every image on the page, per card. The run
+was right and the script it exported was wrong, and the script ran, produced a
+file, and said nothing. That is the failure this codebase is written against,
+in the one place a user cannot check it against the tool.
+
+The emitters now carry a scope. At the top level a step is emitted with
+Playwright's page shortcut — `page.click('.x')` — because an exported script
+should read like one a person wrote. Inside an `elements` loop the shortcut
+cannot express "within this element", so the locator form is used there and
+only there: `el.locator('.x').click()`. A loop nested in a loop binds its own
+name (`el_child`) rather than shadowing.
+
+**Which loops scope, and which do not.** Only `elements` mode has an element to
+scope to. `count` has none, and the three pagination modes iterate pages rather
+than records — their bodies stay page-level, which is correct rather than an
+omission, and there is a test that pins it so this change cannot quietly take
+it away.
+
+The test that matters asserts the _relationship_, not the presence of a
+substring: no `page.locator(` may appear inside the loop body at all, and the
+queries there must hang off the bound element. A test looking only for
+`.locator(` would have passed on the broken version, since `page.locator(`
+contains it.

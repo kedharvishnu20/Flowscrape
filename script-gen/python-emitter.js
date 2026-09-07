@@ -324,6 +324,42 @@ function _conditionPy(condition, config) {
  * script that does something else, which is the objection to any silent
  * difference between the two.
  */
+/**
+ * What a selector resolves against, right here in the emitted script.
+ *
+ * The twin of the same idea in node-emitter.js, and for the same reason: at run
+ * time a selector inside an `elements` LOOP resolves against that iteration's
+ * element, and the emitted script used to search the whole page instead — so
+ * "for each card, extract the title" exported as a script that extracts every
+ * title on the page, once per card (K-28).
+ *
+ * Only `elements` mode has an element to scope to. `count` has none, and the
+ * pagination modes iterate pages rather than records.
+ */
+let _pyScope = "page";
+
+/** The scoped locator for a selector. */
+const _pyLoc = (sel) => `${_pyScope}.locator("${sel}")`;
+
+/**
+ * A verb, spelled the way a reader of the script would write it: Playwright's
+ * page shortcut at the top level, the locator form only where "within this
+ * element" has to be said.
+ */
+const _pyVerb = (sel, pageForm, scopedForm) =>
+  _pyScope === "page" ? `page.${pageForm}` : `${_pyLoc(sel)}.${scopedForm}`;
+
+/** Emit `fn()` with selectors resolving against `name` instead of the page. */
+function _pyWithin(name, fn) {
+  const outer = _pyScope;
+  _pyScope = name;
+  try {
+    return fn();
+  } finally {
+    _pyScope = outer;
+  }
+}
+
 function _emitStep(step) {
   const body = _emitStepBody(step);
   const tries = retryCount(step.config);
@@ -394,7 +430,7 @@ function _emitStepBody(step) {
     case "CLICK":
       return [
         `# CLICK: ${config.selector ?? ""}`,
-        `await page.click("${_escStr(_sel(config.selector ?? ""))}")`,
+        `await ${_pyVerb(_escStr(_sel(config.selector ?? "")), `click("${_escStr(_sel(config.selector ?? ""))}")`, "click()")}`,
         `await page.wait_for_load_state("networkidle")`,
         "",
       ];
@@ -402,13 +438,17 @@ function _emitStepBody(step) {
       const timeout = Number(config.timeout) || 15000;
       if (config.mode === "selector-visible") {
         return [
-          `await page.wait_for_selector("${_escStr(_sel(config.selector ?? ""))}", state="visible", timeout=${timeout})`,
+          _pyScope === "page"
+            ? `await page.wait_for_selector("${_escStr(_sel(config.selector ?? ""))}", state="visible", timeout=${timeout})`
+            : `await ${_pyLoc(_escStr(_sel(config.selector ?? "")))}.first.wait_for(state="visible", timeout=${timeout})`,
           "",
         ];
       }
       if (config.mode === "selector-gone") {
         return [
-          `await page.wait_for_selector("${_escStr(_sel(config.selector ?? ""))}", state="hidden", timeout=${timeout})`,
+          _pyScope === "page"
+            ? `await page.wait_for_selector("${_escStr(_sel(config.selector ?? ""))}", state="hidden", timeout=${timeout})`
+            : `await ${_pyLoc(_escStr(_sel(config.selector ?? "")))}.first.wait_for(state="hidden", timeout=${timeout})`,
           "",
         ];
       }
@@ -439,14 +479,14 @@ function _emitStepBody(step) {
       const container = config.container ? _escStr(_sel(config.container)) : "";
       if (config.mode === "selector" && config.selector) {
         return [
-          `await page.locator("${_escStr(_sel(config.selector))}").scroll_into_view_if_needed()`,
+          `await ${_pyLoc(_escStr(_sel(config.selector)))}.scroll_into_view_if_needed()`,
           "",
         ];
       }
       if (config.mode === "percent") {
         if (container) {
           return [
-            `await page.locator("${container}").evaluate("(el, pct) => el.scrollTo(0, el.scrollHeight * pct)", ${Number(amount) / 100})`,
+            `await ${_pyLoc(container)}.evaluate("(el, pct) => el.scrollTo(0, el.scrollHeight * pct)", ${Number(amount) / 100})`,
             `await asyncio.sleep(0.5)`,
             "",
           ];
@@ -463,7 +503,7 @@ function _emitStepBody(step) {
         if (container) {
           return [
             `# Scroll the container until it stops growing, or ${maxScrolls} scrolls.`,
-            `_container = page.locator("${container}")`,
+            `_container = ${_pyLoc(container)}`,
             `_last_height = 0`,
             `for _ in range(${maxScrolls}):`,
             `    await _container.evaluate("el => el.scrollTo(0, el.scrollHeight)")`,
@@ -490,7 +530,7 @@ function _emitStepBody(step) {
       }
       if (container) {
         return [
-          `await page.locator("${container}").evaluate("(el, amt) => el.scrollBy(0, amt)", ${Number(amount)})`,
+          `await ${_pyLoc(container)}.evaluate("(el, amt) => el.scrollBy(0, amt)", ${Number(amount)})`,
           `await asyncio.sleep(0.5)`,
           "",
         ];
@@ -517,7 +557,7 @@ function _emitStepBody(step) {
       }
       return [
         `# ASSERT: ${assertion} - ${sel}`,
-        `_loc = page.locator("${sel}")`,
+        `_loc = ${_pyLoc(sel)}`,
         `_count = await _loc.count()`,
         `_text = await fs_text(_loc)`,
         `if not (${test}):`,
@@ -528,14 +568,19 @@ function _emitStepBody(step) {
       ];
     }
     case "LOOP": {
+      // Named by nesting depth rather than always `el`, so a loop inside a loop
+      // reads as two different elements instead of rebinding one name.
+      const elVar = _pyScope === "page" ? "el" : `${_pyScope}_child`;
       const lines = [
         `# LOOP: ${config.type || "count"} (max: ${config.max ?? 10})`,
       ];
       if (config.type === "elements" && config.selector) {
         lines.push(
-          `elements = await page.locator("${_escStr(_sel(config.selector))}").all()`,
+          `elements = await ${_pyLoc(_escStr(_sel(config.selector)))}.all()`,
         );
-        lines.push(`for i, el in enumerate(elements[:${config.max ?? 10}]):`);
+        lines.push(
+          `for i, ${elVar} in enumerate(elements[:${config.max ?? 10}]):`,
+        );
       } else if (config.type === "paginate-links" && config.selector) {
         // The page's links are the bound, as they are in the run: a numbered
         // paginator has nothing that goes dead to probe, so "how many pages"
@@ -591,8 +636,11 @@ function _emitStepBody(step) {
           `        await page.wait_for_load_state("networkidle")`,
         );
       }
+      const bodyScope =
+        config.type === "elements" && config.selector ? elVar : null;
       for (const child of step.children ?? []) {
-        lines.push(..._emitStep(child).map((l) => "    " + l));
+        const emit = () => _emitStep(child).map((l) => "    " + l);
+        lines.push(...(bodyScope ? _pyWithin(bodyScope, emit) : emit()));
       }
       if (!step.children || step.children.length === 0) lines.push("    pass");
       lines.push("");
@@ -616,7 +664,7 @@ function _emitStepBody(step) {
         return lines;
       }
       lines.push(
-        `_loc = page.locator("${_escStr(_sel(config.selector ?? ""))}")`,
+        `_loc = ${_pyLoc(_escStr(_sel(config.selector ?? "")))}`,
         `if ${test}:`,
       );
       for (const child of step.ifBranch ?? []) {
@@ -639,14 +687,14 @@ function _emitStepBody(step) {
     case "HOVER":
       return [
         `# HOVER: ${config.selector ?? ""}`,
-        `await page.hover("${_escStr(_sel(config.selector ?? ""))}")`,
+        `await ${_pyVerb(_escStr(_sel(config.selector ?? "")), `hover("${_escStr(_sel(config.selector ?? ""))}")`, "hover()")}`,
         "",
       ];
 
     case "SELECT":
       return [
         `# SELECT: ${config.selector ?? ""}`,
-        `await page.select_option("${_escStr(_sel(config.selector ?? ""))}", "${_escStr(config.value ?? "")}")`,
+        `await ${_pyVerb(_escStr(_sel(config.selector ?? "")), `select_option("${_escStr(_sel(config.selector ?? ""))}", "${_escStr(config.value ?? "")}")`, `select_option("${_escStr(config.value ?? "")}")`)}`,
         "",
       ];
 
@@ -778,7 +826,9 @@ function _emitStepBody(step) {
     case "DRAG_DROP":
       return [
         `# DRAG_DROP: ${config.source ?? ""} -> ${config.target ?? ""}`,
-        `await page.drag_and_drop("${_escStr(_sel(config.source ?? ""))}", "${_escStr(_sel(config.target ?? ""))}")`,
+        _pyScope === "page"
+          ? `await page.drag_and_drop("${_escStr(_sel(config.source ?? ""))}", "${_escStr(_sel(config.target ?? ""))}")`
+          : `await ${_pyLoc(_escStr(_sel(config.source ?? "")))}.drag_to(${_pyLoc(_escStr(_sel(config.target ?? "")))})`,
         "",
       ];
 
@@ -814,11 +864,13 @@ function _emitFill(config) {
   for (const field of fields) {
     if (!field?.selector) continue;
     lines.push(
-      `await page.fill("${_escStr(_sel(field.selector))}", fs_env("${_escStr(field.value ?? "")}"))`,
+      `await ${_pyVerb(_escStr(_sel(field.selector)), `fill("${_escStr(_sel(field.selector))}", fs_env("${_escStr(field.value ?? "")}"))`, `fill(fs_env("${_escStr(field.value ?? "")}"))`)}`,
     );
   }
   if (config.submitSelector) {
-    lines.push(`await page.click("${_escStr(_sel(config.submitSelector))}")`);
+    lines.push(
+      `await ${_pyVerb(_escStr(_sel(config.submitSelector)), `click("${_escStr(_sel(config.submitSelector))}")`, "click()")}`,
+    );
     lines.push(`await page.wait_for_load_state("networkidle")`);
   }
   lines.push("");
@@ -878,8 +930,8 @@ function _emitExtract(config) {
       field.type === "count"
         ? `str(await page.locator("${_escStr(_sel(selector))}").first.locator("${_escStr(_sel(countSelector ?? ""))}").count())`
         : attribute
-          ? `await page.get_attribute("${_escStr(_sel(selector))}", "${attribute}")`
-          : `await page.inner_text("${_escStr(_sel(selector))}")`;
+          ? `await ${_pyVerb(_escStr(_sel(selector)), `get_attribute("${_escStr(_sel(selector))}", "${attribute}")`, `get_attribute("${attribute}")`)}`
+          : `await ${_pyVerb(_escStr(_sel(selector)), `inner_text("${_escStr(_sel(selector))}")`, "inner_text()")}`;
     if (field.type === "count" && !countSelector) {
       lines.push(
         `# INVALID: field "${name}" is set to Count but names nothing to count.`,

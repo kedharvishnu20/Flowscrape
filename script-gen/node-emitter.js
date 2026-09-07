@@ -246,6 +246,48 @@ function _conditionNode(condition, config, esc) {
  * script that does something else, which is the objection to any silent
  * difference between the two.
  */
+/**
+ * What a selector resolves against, right here in the emitted script.
+ *
+ * At run time a selector inside an `elements` LOOP is resolved against that
+ * iteration's element — `_queryScoped` in content/injector.js takes the loop's
+ * current record as its root. The emitted script did not: every step inside a
+ * loop body searched the whole page, so "for each product card, extract the
+ * title" exported as a script that extracts *every* title on the page, once per
+ * card. It ran, it produced a file, and it meant something the pipeline never
+ * said (K-28).
+ *
+ * Only `elements` mode has an element to scope to. `count` has no element at
+ * all, and the three pagination modes iterate pages rather than records, so
+ * their bodies stay page-level — which is correct, not an omission.
+ */
+let _scope = "page";
+
+/** The scoped locator for a selector, and the whole point of `_scope`. */
+const _loc = (sel) => `${_scope}.locator('${sel}')`;
+
+/**
+ * A verb, spelled the way a reader of the script would write it.
+ *
+ * At the top level that is Playwright's page shortcut — `page.click('.x')` —
+ * because an exported script should look like one somebody wrote. Inside a loop
+ * the shortcut cannot express "within this element", so the locator form is
+ * used there and only there.
+ */
+const _verb = (sel, pageForm, scopedForm) =>
+  _scope === "page" ? `page.${pageForm}` : `${_loc(sel)}.${scopedForm}`;
+
+/** Emit `fn()` with selectors resolving against `name` instead of the page. */
+function _within(name, fn) {
+  const outer = _scope;
+  _scope = name;
+  try {
+    return fn();
+  } finally {
+    _scope = outer;
+  }
+}
+
 function _emitNodeStep(step) {
   const body = _emitNodeStepBody(step);
   const tries = retryCount(step.config);
@@ -317,18 +359,25 @@ function _emitNodeStepBody(step) {
     case "API":
       return _apiNode(config);
     case "CLICK":
-      return [`await page.click('${esc(_sel(config.selector ?? ""))}');`, ""];
+      return [
+        `await ${_verb(esc(_sel(config.selector ?? "")), `click('${esc(_sel(config.selector ?? ""))}')`, "click()")};`,
+        "",
+      ];
     case "WAIT": {
       const timeout = Number(config.timeout) || 15000;
       if (config.mode === "selector-visible") {
         return [
-          `await page.waitForSelector('${esc(_sel(config.selector ?? ""))}', { state: 'visible', timeout: ${timeout} });`,
+          _scope === "page"
+            ? `await page.waitForSelector('${esc(_sel(config.selector ?? ""))}', { state: 'visible', timeout: ${timeout} });`
+            : `await ${_loc(esc(_sel(config.selector ?? "")))}.first().waitFor({ state: 'visible', timeout: ${timeout} });`,
           "",
         ];
       }
       if (config.mode === "selector-gone") {
         return [
-          `await page.waitForSelector('${esc(_sel(config.selector ?? ""))}', { state: 'hidden', timeout: ${timeout} });`,
+          _scope === "page"
+            ? `await page.waitForSelector('${esc(_sel(config.selector ?? ""))}', { state: 'hidden', timeout: ${timeout} });`
+            : `await ${_loc(esc(_sel(config.selector ?? "")))}.first().waitFor({ state: 'hidden', timeout: ${timeout} });`,
           "",
         ];
       }
@@ -414,7 +463,7 @@ function _emitNodeStepBody(step) {
       }
       if (container) {
         return [
-          `await page.locator('${container}').evaluate((el) => el.scrollBy(0, ${Number(amount)}));`,
+          `await ${_loc(container)}.evaluate((el) => el.scrollBy(0, ${Number(amount)}));`,
           `await sleep(500);`,
           "",
         ];
@@ -442,7 +491,7 @@ function _emitNodeStepBody(step) {
       return [
         `// ASSERT: ${assertion} - ${sel}`,
         `{`,
-        `  const _loc = page.locator('${sel}');`,
+        `  const _loc = ${_loc(sel)};`,
         `  const _count = await _loc.count();`,
         `  const _text = await fsText(_loc);`,
         `  if (!(${test})) {`,
@@ -459,17 +508,20 @@ function _emitNodeStepBody(step) {
       ];
     }
     case "LOOP": {
+      // Named by nesting depth rather than always `el`, so a loop inside a loop
+      // reads as two different elements instead of shadowing one name.
+      const elVar = _scope === "page" ? "el" : `${_scope}_child`;
       const lines = [
         `// LOOP: ${config.type || "count"} (max: ${config.max ?? 10})`,
       ];
       if (config.type === "elements" && config.selector) {
         lines.push(
-          `const elements = await page.locator('${esc(_sel(config.selector))}').all();`,
+          `const elements = await ${_loc(esc(_sel(config.selector)))}.all();`,
         );
         lines.push(
           `for (let i = 0; i < Math.min(elements.length, ${config.max ?? 10}); i++) {`,
         );
-        lines.push(`  const el = elements[i];`);
+        lines.push(`  const ${elVar} = elements[i];`);
       } else if (config.type === "paginate-links" && config.selector) {
         // The page's links are the bound, as they are in the run: a numbered
         // paginator has nothing that goes dead to probe, so "how many pages"
@@ -528,8 +580,13 @@ function _emitNodeStepBody(step) {
           `  }`,
         );
       }
+      // Only `elements` mode binds an element to scope to; `count` has none and
+      // the pagination modes iterate pages, so their bodies stay page-level.
+      const bodyScope =
+        config.type === "elements" && config.selector ? elVar : null;
       for (const child of step.children ?? []) {
-        lines.push(..._emitNodeStep(child).map((l) => "  " + l));
+        const emit = () => _emitNodeStep(child).map((l) => "  " + l);
+        lines.push(...(bodyScope ? _within(bodyScope, emit) : emit()));
       }
       lines.push(`}`, "");
       return lines;
@@ -556,7 +613,7 @@ function _emitNodeStepBody(step) {
       // that compiles the emitted output rather than pattern-matching it.
       lines.push(
         `{`,
-        `  const _loc = page.locator('${esc(_sel(config.selector ?? ""))}');`,
+        `  const _loc = ${_loc(esc(_sel(config.selector ?? "")))};`,
         `  if (${test}) {`,
       );
       for (const child of step.ifBranch ?? []) {
@@ -574,11 +631,14 @@ function _emitNodeStepBody(step) {
       return _emitNodeFill(config, esc);
 
     case "HOVER":
-      return [`await page.hover('${esc(_sel(config.selector))}');`, ""];
+      return [
+        `await ${_verb(esc(_sel(config.selector)), `hover('${esc(_sel(config.selector))}')`, "hover()")};`,
+        "",
+      ];
 
     case "SELECT":
       return [
-        `await page.selectOption('${esc(_sel(config.selector))}', '${esc(config.value)}');`,
+        `await ${_verb(esc(_sel(config.selector)), `selectOption('${esc(_sel(config.selector))}', '${esc(config.value)}')`, `selectOption('${esc(config.value)}')`)};`,
         "",
       ];
 
@@ -697,7 +757,9 @@ function _emitNodeStepBody(step) {
 
     case "DRAG_DROP":
       return [
-        `await page.dragAndDrop('${esc(_sel(config.source))}', '${esc(_sel(config.target))}');`,
+        _scope === "page"
+          ? `await page.dragAndDrop('${esc(_sel(config.source))}', '${esc(_sel(config.target))}');`
+          : `await ${_loc(esc(_sel(config.source)))}.dragTo(${_loc(esc(_sel(config.target)))});`,
         "",
       ];
 
@@ -764,7 +826,7 @@ function _downloadNode(config, esc) {
     lines.push(`const _urls = ['${esc(literal)}'];`);
   } else {
     lines.push(
-      `const _els = (await page.locator('${esc(_sel(config.selector ?? ""))}').all()).slice(0, ${max});`,
+      `const _els = (await ${_loc(esc(_sel(config.selector ?? "")))}.all()).slice(0, ${max});`,
       `const _urls = [];`,
       `for (const _el of _els) {`,
       // The same order the content script reads: what the browser actually
@@ -832,11 +894,13 @@ function _emitNodeFill(config, esc) {
   for (const field of fields) {
     if (!field?.selector) continue;
     lines.push(
-      `await page.fill('${esc(_sel(field.selector))}', fsEnv('${esc(field.value ?? "")}'));`,
+      `await ${_verb(esc(_sel(field.selector)), `fill('${esc(_sel(field.selector))}', fsEnv('${esc(field.value ?? "")}'))`, `fill(fsEnv('${esc(field.value ?? "")}'))`)};`,
     );
   }
   if (config.submitSelector) {
-    lines.push(`await page.click('${esc(_sel(config.submitSelector))}');`);
+    lines.push(
+      `await ${_verb(esc(_sel(config.submitSelector)), `click('${esc(_sel(config.submitSelector))}')`, "click()")};`,
+    );
     lines.push(`await page.waitForLoadState('networkidle');`);
   }
   lines.push("");
@@ -912,10 +976,10 @@ function _extractNode(config) {
     // repetition, and both scripts must count the same thing the run does.
     const read =
       field.type === "count"
-        ? `String(await page.locator('${_sel(selector)}').first().locator('${_sel(countSelector ?? "")}').count())`
+        ? `String(await ${_loc(_sel(selector))}.first().locator('${_sel(countSelector ?? "")}').count())`
         : attribute
-          ? `await page.getAttribute('${_sel(selector)}', '${attribute}')`
-          : `await page.innerText('${_sel(selector)}')`;
+          ? `await ${_verb(_sel(selector), `getAttribute('${_sel(selector)}', '${attribute}')`, `getAttribute('${attribute}')`)}`
+          : `await ${_verb(_sel(selector), `innerText('${_sel(selector)}')`, "innerText()")}`;
     const expr = _transformNode(read, field);
     if (expr === null) {
       lines.push(

@@ -1049,3 +1049,87 @@ test("an unknown API pagination mode refuses rather than doing nothing silently"
   assert.match(js, /UNSUPPORTED/);
   assert.match(py, /UNSUPPORTED/);
 });
+
+// ── K-28: a loop body means "this record", in the script as well as the run ──
+
+test("a step inside an elements loop searches the record, not the page", () => {
+  // The run resolves a child selector against the loop's current element
+  // (_queryScoped). The emitted script searched the whole page, so "for each
+  // card, extract the title" exported as a script that extracts every title on
+  // the page, once per card. It ran, it produced a file, and it meant
+  // something the pipeline never said.
+  //
+  // Asserted as a relationship, not a substring: `page.locator` must not
+  // appear inside the loop body at all, and the queries there must hang off
+  // the bound element. A test that only looked for ".locator(" would pass on
+  // the broken version too, since `page.locator(` contains it.
+  const { py, js } = emit([
+    {
+      ...step("LOOP", { type: "elements", selector: ".card", max: 5 }),
+      children: [
+        step("EXTRACT", { fields: [{ name: "t", selector: ".title" }] }),
+        step("CLICK", { selector: "button.buy" }),
+      ],
+    },
+  ]);
+
+  const jsBody = js.slice(js.indexOf("const el = elements[i]"), js.length);
+  const jsLoopEnd = jsBody.indexOf("\n}");
+  const jsInner = jsBody.slice(0, jsLoopEnd);
+  assert.ok(
+    !/page\.locator\(|page\.click\(/.test(jsInner),
+    `a page-level query survived inside the loop body:\n${jsInner}`,
+  );
+  assert.match(jsInner, /el\.locator\('\.title'\)/);
+  assert.match(jsInner, /el\.locator\('button\.buy'\)\.click\(\)/);
+
+  const pyBody = py.slice(py.indexOf("for i, el in enumerate"));
+  const pyInner = pyBody.slice(0, pyBody.indexOf("\n\n"));
+  assert.ok(
+    !/page\.locator\(|page\.click\(/.test(pyInner),
+    `a page-level query survived inside the loop body:\n${pyInner}`,
+  );
+  assert.match(pyInner, /el\.locator\("\.title"\)/);
+  assert.match(pyInner, /el\.locator\("button\.buy"\)\.click\(\)/);
+});
+
+test("a loop that iterates counts or pages keeps its body page-level", () => {
+  // `count` has no element to scope to, and the pagination modes iterate pages
+  // rather than records — scoping their bodies would be wrong, not stricter.
+  for (const config of [
+    { type: "count", max: 3 },
+    { type: "paginate-links", selector: ".pagination a", max: 0 },
+  ]) {
+    const { py, js } = emit([
+      {
+        ...step("LOOP", config),
+        children: [step("CLICK", { selector: "button.buy" })],
+      },
+    ]);
+    // The page shortcut, not the locator form: at the top level an exported
+    // script should read like one a person wrote, and `page.click(sel)` is how
+    // they would write it. The locator form appears only where "within this
+    // element" actually has to be said.
+    assert.match(js, /page\.click\('button\.buy'\)/, config.type);
+    assert.match(py, /page\.click\("button\.buy"\)/, config.type);
+  }
+});
+
+test("a loop inside a loop scopes to its own element, not the outer one", () => {
+  const { js } = emit([
+    {
+      ...step("LOOP", { type: "elements", selector: ".card", max: 5 }),
+      children: [
+        {
+          ...step("LOOP", { type: "elements", selector: ".variant", max: 3 }),
+          children: [step("CLICK", { selector: ".add" })],
+        },
+      ],
+    },
+  ]);
+  // The inner loop's own query hangs off the outer element…
+  assert.match(js, /await el\.locator\('\.variant'\)\.all\(\)/);
+  // …and its body hangs off the inner one, under a name that does not shadow.
+  assert.match(js, /const el_child = elements\[i\]/);
+  assert.match(js, /el_child\.locator\('\.add'\)\.click\(\)/);
+});

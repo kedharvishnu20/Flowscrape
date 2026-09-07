@@ -541,13 +541,82 @@ function _pushCapture(runState, key, entry, bytes, maxBytes, maxCount, runId) {
  *
  * Order matters: injector.js expects the smart extractor to be present.
  */
-const CONTENT_FILES = [
-  "content/smart-extractor.js",
-  "content/structure-detector.js",
-  "content/page-data.js",
-  "content/page-json.js",
-  "content/injector.js",
-];
+// What every page needs. `injector.js` is the whole step vocabulary; the four
+// specialists below are one step each, and used to ride along with it into
+// every frame of every page — 201 KB parsed per frame, of which 82 KB was for
+// steps the pipeline usually does not contain. A page with twenty iframes paid
+// that twenty times.
+const CONTENT_FILES = ["content/injector.js"];
+
+/**
+ * The specialists, and the one thing each is for.
+ *
+ * Injected when the step that needs it runs, not before. The injector already
+ * throws "not loaded in this page" when its global is missing, which is what
+ * made this safe to split: the failure mode was already named and handled, it
+ * just never happened because everything was always loaded.
+ *
+ * Keyed by the message the page is about to be sent, so the loading rule lives
+ * beside the routing rather than in each caller.
+ */
+const ON_DEMAND_FILES = Object.freeze({
+  FS_DETECT_STRUCTURE: "content/structure-detector.js",
+  PAGE_DATA: "content/page-data.js",
+  PAGE_JSON: "content/page-json.js",
+  AUTO_EXTRACT: "content/smart-extractor.js",
+});
+
+/**
+ * Files already put into a tab, so a loop of 500 rows injects each one once.
+ *
+ * Emptied for a tab the moment it starts loading something else: a new document
+ * has none of this, and remembering otherwise would leave the step calling a
+ * global that is no longer there — the one way this optimisation could turn
+ * into a bug that looks like the feature being broken.
+ */
+const _onDemandLoaded = new Map();
+
+if (chrome.tabs?.onUpdated?.addListener) {
+  chrome.tabs.onUpdated.addListener((tabId, info) => {
+    if (info.status !== "loading") return;
+    for (const key of _onDemandLoaded.keys()) {
+      if (key.startsWith(`${tabId}:`)) _onDemandLoaded.delete(key);
+    }
+  });
+}
+if (chrome.tabs?.onRemoved?.addListener) {
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    for (const key of _onDemandLoaded.keys()) {
+      if (key.startsWith(`${tabId}:`)) _onDemandLoaded.delete(key);
+    }
+  });
+}
+
+/**
+ * Put the specialist for this message into the tab, if it needs one.
+ *
+ * Injected into every frame, matching how the injector itself is placed: a
+ * selector picked inside an iframe is answered by that frame, and a specialist
+ * present only in the top document would leave it answering "not loaded".
+ */
+async function _ensureOnDemand(tabId, type) {
+  const file = ON_DEMAND_FILES[type];
+  if (!file || !tabId) return;
+  const key = `${tabId}:${file}`;
+  if (_onDemandLoaded.get(key)) return;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: [file],
+    });
+    _onDemandLoaded.set(key, true);
+  } catch (err) {
+    // Not fatal here: the step will fail with the injector's own clear message
+    // if the global really is missing, and that message is better than this
+    // one at saying what the user should do.
+    logger.warn(MODULE, "on-demand-inject-fail", { file, error: err.message });
+  }
+}
 
 /**
  * Make sure the content scripts are live in a tab.
@@ -832,6 +901,8 @@ async function _frameIdForUrl(tabId, frameUrl) {
 }
 
 async function _sendToPage(tabId, payload) {
+  await _ensureOnDemand(tabId, payload?.type);
+
   // A step whose selector was picked inside an iframe knows which one, so aim
   // there rather than broadcasting and taking the first answer. With two
   // frames holding similar data the broadcast returned whichever replied
@@ -4502,6 +4573,7 @@ _registerHandler("content:detect", async (payload, sender) => {
   const tabId = payload?.tabId ?? sender.tab?.id;
   if (!tabId) throw new Error("No tab to read");
   await _ensureInjected(tabId);
+  await _ensureOnDemand(tabId, "FS_DETECT_STRUCTURE");
   const resp = await chrome.tabs.sendMessage(tabId, {
     type: "FS_DETECT_STRUCTURE",
     payload: {},

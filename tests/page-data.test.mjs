@@ -353,16 +353,30 @@ test("PAGE_DATA is offered in the palette and has its own config UI", async () =
   assert.match(body, /step\.type === "PAGE_DATA"/);
 });
 
-test("page-data.js is injected with the other content scripts", async () => {
+test("page-data.js is injected when a PAGE_DATA step asks for it", async () => {
+  // It used to ride along with every injection, into every frame of every
+  // page, for a step most pipelines do not contain. Now the message that needs
+  // it brings it (K-31) — and the injector already had the "not loaded in this
+  // page" error for the case where it is missing, which is what made splitting
+  // it safe.
   const sw = await readFile(
     new URL("../background/service-worker.js", import.meta.url),
     "utf8",
   );
-  const files = sw.match(/const CONTENT_FILES = \[[\s\S]*?\]/)[0];
-  assert.match(files, /content\/page-data\.js/);
-  // injector.js dispatches to the globals the others define, so it goes last.
+  const map = sw.match(
+    /const ON_DEMAND_FILES = Object\.freeze\(\{[\s\S]*?\}\);/,
+  )[0];
+  assert.match(map, /PAGE_DATA: "content\/page-data\.js"/);
+
+  const always = sw.match(/const CONTENT_FILES = \[[\s\S]*?\];/)[0];
   assert.ok(
-    files.indexOf("page-data.js") < files.indexOf("injector.js"),
-    "page-data.js must be injected before injector.js",
+    !always.includes("page-data"),
+    "page-data.js is still injected into every page",
   );
+
+  // Every frame, like the injector itself: a selector picked inside an iframe
+  // is answered by that frame, and a reader present only in the top document
+  // would leave it saying "not loaded".
+  const fn = sw.match(/async function _ensureOnDemand\([\s\S]*?\n\}/)[0];
+  assert.match(fn, /allFrames: true/);
 });

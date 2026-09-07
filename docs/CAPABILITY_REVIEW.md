@@ -19,7 +19,7 @@ Five things matter more than everything else in this document.
 | 2   | ~~**Proxy rotation never runs during a scrape.**~~ **Closed by A-05**          | A run can take a proxy from the pool and rotate on a page-load cadence. The part that matters is the giving back: Chrome's proxy setting is browser-wide  |
 | 3   | **MCP cannot scrape.** 18 tools, none of which run a pipeline or read a page   | An AI agent can author a pipeline and never execute one. There is no bridge from the MCP process to the browser                                           |
 | 4   | ~~**Captcha detection is dead code.**~~ **Closed by K-02, then K-14 and K-15** | The dead detector is gone; `captcha-check.js` pauses the run and now tiers what it finds. Free solving is wired; the paid tier is still the A-06 decision |
-| 5   | **185 KB of JS into every frame, every injection**                             | `CONTENT_FILES` is five files totalling 189,462 bytes, injected with `allFrames: true`. A page with 20 iframes parses 3.8 MB                              |
+| 5   | ~~**185 KB of JS into every frame, every injection**~~ **Closed by K-31**      | The four one-step specialists are injected when their step runs. 119 KB always, not 201 KB — and the saving multiplies by the frame count                 |
 
 ---
 

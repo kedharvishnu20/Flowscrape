@@ -88,14 +88,27 @@ test("the worker injects on demand, and only once per tab", () => {
     "only the frames that lack it",
   );
   assert.match(fn, /chrome\.scripting\.executeScript/);
-  // Order matters: injector.js dispatches to globals the others define.
+
+  // The four specialists no longer ride along. Each is one step's worth of
+  // code and they were 82 KB of the 201 KB parsed in every frame of every
+  // page, for steps most pipelines do not contain (K-31).
   const files = swSrc.match(/const CONTENT_FILES = \[[\s\S]*?\];/)[0];
-  assert.match(files, /"content\/smart-extractor\.js"/);
   assert.match(files, /"content\/injector\.js"/);
-  assert.ok(
-    files.lastIndexOf("injector") > files.indexOf("smart-extractor"),
-    "injector must load last",
-  );
+  for (const specialist of [
+    "smart-extractor",
+    "structure-detector",
+    "page-data",
+    "page-json",
+  ]) {
+    assert.ok(
+      !files.includes(specialist),
+      `${specialist} is back in the always-injected set`,
+    );
+    assert.ok(
+      swSrc.includes(`content/${specialist}.js`),
+      `${specialist} is not injected anywhere at all`,
+    );
+  }
 });
 
 test("a page that refuses injection says which pages those are", () => {

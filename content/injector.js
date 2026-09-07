@@ -1019,30 +1019,44 @@
       amount,
       value,
       selector,
+      container,
       behavior = "smooth",
     } = config;
     const scrollAmount = amount ?? value ?? 300;
     const scrollBehavior = behavior === "instant" ? "auto" : "smooth";
+    // Infinite feeds live inside a `div` with its own scrollbar as often as
+    // they live in the document — a chat window, a card list beside a fixed
+    // sidebar. `container` names that element and every mode below scrolls it
+    // instead of window/document, resolved through the same _queryScoped every
+    // other selector-bearing step uses rather than a second query path.
+    const target = container
+      ? _queryScoped(container, context, false)[0]
+      : null;
+    if (container && !target) {
+      throw new Error(`Scroll: no container matched "${container}".`);
+    }
     if ((mode === "selector" || mode === "element") && selector) {
+      // scrollIntoView already walks every scrollable ancestor to bring the
+      // target on screen, container or not, so this mode needs nothing extra.
       const el = _queryScoped(selector, context, false)[0];
       if (el) el.scrollIntoView({ behavior: scrollBehavior, block: "center" });
     } else if (mode === "percent") {
       // documentElement, not body: with `body { height: 100% }` — or any layout
       // where the scroll container is the html element — body.scrollHeight is the
-      // viewport height, so "scroll to 100%" moved one screen (B-31).
-      const docHeight = Math.max(
-        document.documentElement?.scrollHeight ?? 0,
-        document.body?.scrollHeight ?? 0,
-      );
-      window.scrollTo({
-        top: (docHeight * scrollAmount) / 100,
-        behavior: scrollBehavior,
-      });
+      // viewport height, so "scroll to 100%" moved one screen (B-31). A named
+      // container has the equivalent trap: it is the element's own scrollHeight
+      // that matters, not the document's.
+      const top =
+        ((target ? target.scrollHeight : _docHeight()) * scrollAmount) / 100;
+      if (target) target.scrollTo({ top, behavior: scrollBehavior });
+      else window.scrollTo({ top, behavior: scrollBehavior });
     } else if (mode === "infinite" || mode === "bottom") {
-      return _scrollInfinite(config);
+      return _scrollInfinite(config, context);
     } else {
       // mode === 'pixel' or 'px' or default
-      window.scrollBy({ top: scrollAmount, behavior: scrollBehavior });
+      if (target)
+        target.scrollBy({ top: scrollAmount, behavior: scrollBehavior });
+      else window.scrollBy({ top: scrollAmount, behavior: scrollBehavior });
     }
     return { scrolled: true };
   }
@@ -1070,22 +1084,52 @@
    *     rounds with no growth are required, because a feed that is mid-fetch when
    *     the timer fires looks exactly like a feed that has finished.
    *
+   * `container`, when given, names the element that actually scrolls — the
+   * common shape for a lazy-loaded list is a `div` with its own scrollbar, and
+   * measuring the document there never sees the list grow: the page around it
+   * never changes height, so the loop would call it "exhausted" on round one.
+   *
    * @returns {Promise<{scrolled: boolean, mode: string, scrolls: number,
-   *   height: number, grew: number, exhausted: boolean}>}
+   *   height: number, grew: number, exhausted: boolean, container: boolean}>}
    */
-  async function _scrollInfinite({
-    maxScrolls = 50,
-    settleMs = 1200,
-    stableRounds = 2,
-    selector = "",
-  } = {}) {
+  async function _scrollInfinite(
+    {
+      maxScrolls = 50,
+      settleMs = 1200,
+      stableRounds = 2,
+      selector = "",
+      container = "",
+    } = {},
+    context = {},
+  ) {
     const limit = Math.max(1, Number(maxScrolls) || 50);
     const settle = Math.max(0, Number(settleMs) ?? 1200);
     const needed = Math.max(1, Number(stableRounds) || 2);
 
-    const startHeight = _docHeight();
-    const countItems = () =>
-      selector ? document.querySelectorAll(selector).length : 0;
+    const target = container
+      ? _queryScoped(container, context, false)[0]
+      : null;
+    if (container && !target) {
+      throw new Error(`Scroll: no container matched "${container}".`);
+    }
+
+    const measureHeight = () => (target ? target.scrollHeight : _docHeight());
+    const scrollToEnd = () => {
+      if (target)
+        target.scrollTo({ top: target.scrollHeight, behavior: "auto" });
+      else window.scrollTo({ top: _docHeight(), behavior: "auto" });
+    };
+    // Counted within the container when one is set — _resolveIn is the same
+    // resolver _queryScoped calls internally, so this stays one query path
+    // rather than a plain querySelectorAll bolted on beside it.
+    const countItems = () => {
+      if (!selector) return 0;
+      return target
+        ? _resolveIn(target, selector, true).length
+        : _queryScoped(selector, context, true).length;
+    };
+
+    const startHeight = measureHeight();
     const startItems = countItems();
 
     let height = startHeight;
@@ -1095,11 +1139,11 @@
     let exhausted = false;
 
     while (scrolls < limit) {
-      window.scrollTo({ top: _docHeight(), behavior: "auto" });
+      scrollToEnd();
       scrolls++;
       await _sleep(settle);
 
-      const nextHeight = _docHeight();
+      const nextHeight = measureHeight();
       const nextItems = countItems();
       // Item count is the better signal where it is available: a feed can swap
       // a placeholder for a card without the document getting any taller.
@@ -1126,6 +1170,7 @@
       items,
       newItems: items - startItems,
       exhausted,
+      container: !!target,
     };
   }
 

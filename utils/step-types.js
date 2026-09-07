@@ -103,6 +103,7 @@ export const STEP_TYPES = Object.freeze({
       maxScrolls: 50,
       settleMs: 1200,
       selector: "",
+      container: "",
       inFrame: false,
     },
   },

@@ -118,6 +118,56 @@ test("SCROLL honours its other modes", () => {
   );
 });
 
+// ── K-26: a named container is scrolled, not the document ──────────────────
+
+test("a container scroll targets the container's own locator, not window", () => {
+  const { py, js } = emit([
+    step("SCROLL", { mode: "pixel", amount: 250, container: "#feed" }),
+  ]);
+  for (const src of [py, js]) {
+    assert.match(src, /locator\(['"]#feed['"]\)/, "the container is a locator");
+    assert.match(src, /scrollBy\(0, (250|amt)\)/);
+    assert.match(
+      src,
+      /250/,
+      "the amount travels with the step even if not inline",
+    );
+    assert.doesNotMatch(src, /window\.scrollBy/);
+  }
+});
+
+test("percent scroll against a container reads the container's own scrollHeight", () => {
+  const { py, js } = emit([
+    step("SCROLL", { mode: "percent", amount: 50, container: "#feed" }),
+  ]);
+  for (const src of [py, js]) {
+    assert.match(src, /locator\(['"]#feed['"]\)/);
+    assert.match(src, /el\.scrollTo\(0, el\.scrollHeight \* (0\.5|pct)\)/);
+    assert.match(src, /0\.5/, "the percentage travels with the step");
+    assert.doesNotMatch(src, /window\.scrollTo/);
+  }
+});
+
+test("infinite scroll against a container loops on the container's own height", () => {
+  const { py, js } = emit([
+    step("SCROLL", {
+      mode: "infinite",
+      maxScrolls: 5,
+      settleMs: 200,
+      container: "#feed",
+    }),
+  ]);
+  for (const src of [py, js]) {
+    assert.match(src, /locator\(['"]#feed['"]\)/);
+    assert.match(src, /5/, "the scroll limit is still carried over");
+    assert.match(src, /scrollHeight/);
+    assert.doesNotMatch(
+      src,
+      /window\.scrollTo|document\.documentElement\.scrollHeight/,
+    );
+  }
+});
+
 // ── what cannot be exported ──────────────────────────────────────────────────
 
 test("an unexportable step fails loudly instead of becoming a comment", () => {

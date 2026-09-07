@@ -2008,8 +2008,21 @@ function _configFields(step) {
         "Given one, growth is measured in items rather than page height — " +
           "more reliable on a feed that swaps placeholders for cards.",
       );
+      html += `<label>Container <span style="color:var(--text-dim);font-weight:400;">(optional)</span></label>`;
+      html += selectorRow(step, "container");
+      html += hint(
+        "For a feed inside its own scrolling div rather than the whole page — " +
+          "growth is measured on this element instead of the document.",
+      );
     } else {
       html += field(step, "amount", "Amount", "number", c.amount ?? 500);
+      if ((c.mode || "pixel") === "pixel" || c.mode === "percent") {
+        html += `<label>Container <span style="color:var(--text-dim);font-weight:400;">(optional)</span></label>`;
+        html += selectorRow(step, "container");
+        html += hint(
+          "Scrolls this element instead of the page — for a feed with its own scrollbar.",
+        );
+      }
     }
     html += toggle(
       step,

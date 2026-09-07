@@ -276,6 +276,11 @@ function _emitNodeStepBody(step) {
       // config.amount is what the UI writes; `value` was read here, so every
       // exported scroll used the hardcoded default.
       const amount = config.amount ?? config.value ?? 300;
+      // A named container is a `div` with its own scrollbar, not the document —
+      // an infinite feed inside one never grows document.documentElement, so
+      // every mode below has to reach into the container's own scrollHeight.
+      // locator.evaluate() runs in the page for the container element itself.
+      const container = config.container ? esc(_sel(config.container)) : "";
       if (config.mode === "selector" && config.selector) {
         return [
           `await page.locator('${esc(_sel(config.selector))}').scrollIntoViewIfNeeded();`,
@@ -283,6 +288,13 @@ function _emitNodeStepBody(step) {
         ];
       }
       if (config.mode === "percent") {
+        if (container) {
+          return [
+            `await page.locator('${container}').evaluate((el) => el.scrollTo(0, el.scrollHeight * ${Number(amount) / 100}));`,
+            `await sleep(500);`,
+            "",
+          ];
+        }
         return [
           `await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight * ${Number(amount) / 100}));`,
           `await sleep(500);`,
@@ -292,6 +304,21 @@ function _emitNodeStepBody(step) {
       if (config.mode === "infinite" || config.mode === "bottom") {
         const maxScrolls = Number(config.maxScrolls) || 50;
         const settle = Number(config.settleMs) || 1200;
+        if (container) {
+          return [
+            `// Scroll the container until it stops growing, or ${maxScrolls} scrolls.`,
+            `const _container = page.locator('${container}');`,
+            `let _lastHeight = 0;`,
+            `for (let i = 0; i < ${maxScrolls}; i++) {`,
+            `  await _container.evaluate((el) => el.scrollTo(0, el.scrollHeight));`,
+            `  await sleep(${settle});`,
+            `  const _h = await _container.evaluate((el) => el.scrollHeight);`,
+            `  if (_h === _lastHeight) break;`,
+            `  _lastHeight = _h;`,
+            `}`,
+            "",
+          ];
+        }
         return [
           `// Scroll until the page stops growing, or ${maxScrolls} scrolls.`,
           `let _lastHeight = 0;`,
@@ -302,6 +329,13 @@ function _emitNodeStepBody(step) {
           `  if (_h === _lastHeight) break;`,
           `  _lastHeight = _h;`,
           `}`,
+          "",
+        ];
+      }
+      if (container) {
+        return [
+          `await page.locator('${container}').evaluate((el) => el.scrollBy(0, ${Number(amount)}));`,
+          `await sleep(500);`,
           "",
         ];
       }

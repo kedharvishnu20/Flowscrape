@@ -1434,34 +1434,61 @@ async function _captureElement(tab, config, runId) {
     );
   }
 
+  const view = box.result.viewport ?? {};
+  const viewWidth = view.width ?? width + x;
+  const viewHeight = view.height ?? height + y;
+
+  // The page already scrolled the element to the middle of the screen
+  // (ELEMENT_BOX, injector.js) before measuring it, so a box that still runs
+  // off the top/bottom/sides here is one `captureVisibleTab` genuinely cannot
+  // show in a single shot: it only ever photographs the viewport, and an
+  // element taller (or wider) than that has no scroll position that puts all
+  // of it on screen at once. Crop to whatever was actually on screen and say
+  // so, rather than padding the rest of the box with blank canvas and calling
+  // it the whole element (K-27).
+  const visLeft = Math.max(0, x);
+  const visTop = Math.max(0, y);
+  const visWidth = Math.max(1, Math.min(x + width, viewWidth) - visLeft);
+  const visHeight = Math.max(1, Math.min(y + height, viewHeight) - visTop);
+  const truncated = visWidth < width - 0.5 || visHeight < height - 0.5;
+  if (truncated) {
+    _broadcastLog(
+      "warn-log",
+      `Screenshot: the element matching "${config.selector}" is ` +
+        `${Math.round(width)}×${Math.round(height)}px — taller or wider than the ` +
+        `${Math.round(viewWidth)}×${Math.round(viewHeight)}px viewport Chrome can ` +
+        `capture in one shot, so only the part on screen is in this image.`,
+      runId,
+    );
+  }
+
   const cap = await _captureViewport(tab.windowId, config);
   const ext = cap.format === "png" ? "png" : "jpg";
   const mime = cap.format === "png" ? "image/png" : "image/jpeg";
-  const view = box.result.viewport ?? {};
   try {
     const dataUrl = await _stitchStrips([{ dataUrl: cap.dataUrl, top: 0 }], {
       // The canvas the crop is taken *from* is the whole capture, not the
       // element: sizing it to the element would leave everything but the
       // top-left corner of the viewport outside it, and the crop would come
       // back blank for any element not at the very top of the page.
-      width: Math.round((view.width ?? width + x) * dpr),
-      height: Math.round((view.height ?? height + y) * dpr),
+      width: Math.round(viewWidth * dpr),
+      height: Math.round(viewHeight * dpr),
       mime,
       crop: {
-        x: Math.round(x * dpr),
-        y: Math.round(y * dpr),
-        width: Math.round(width * dpr),
-        height: Math.round(height * dpr),
+        x: Math.round(visLeft * dpr),
+        y: Math.round(visTop * dpr),
+        width: Math.round(visWidth * dpr),
+        height: Math.round(visHeight * dpr),
       },
     });
-    return { dataUrl, ext };
+    return { dataUrl, ext, truncated };
   } catch (err) {
     _broadcastLog(
       "warn-log",
       `Screenshot: ${err.message} Keeping the whole visible area instead.`,
       runId,
     );
-    return { dataUrl: cap.dataUrl, ext };
+    return { dataUrl: cap.dataUrl, ext, truncated };
   }
 }
 

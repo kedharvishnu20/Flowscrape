@@ -491,3 +491,136 @@ test("pixel scrolling is unchanged", async () => {
   assert.equal(by, 250);
   h.close();
 });
+
+// ── K-26: SCROLL against a named container, not just the document ──────────
+//
+// jsdom lays nothing out, so scrollHeight/scrollTop are plain settable
+// properties rather than something a real render would produce. These tests
+// drive those properties directly — the same approach the harness already
+// uses for window.scrollTo in the percent-scroll test above — and assert on
+// which element the step told to move, not on any visual result.
+
+test("pixel scrolling with a container moves the container, not the window", async () => {
+  const h = await loadInjector(`<div id="feed"></div>`);
+  const feed = h.document.getElementById("feed");
+  let windowBy = null;
+  let feedBy = null;
+  h.window.scrollBy = (opts) => (windowBy = opts.top);
+  feed.scrollBy = (opts) => (feedBy = opts.top);
+
+  await h.api._stepScroll({ mode: "pixel", amount: 250, container: "#feed" });
+
+  assert.equal(feedBy, 250, "the container should have been scrolled");
+  assert.equal(windowBy, null, "the window should not have moved at all");
+  h.close();
+});
+
+test("percent scrolling with a container measures the container's own height", async () => {
+  const h = await loadInjector(`<div id="feed"></div>`);
+  const feed = h.document.getElementById("feed");
+  Object.defineProperty(feed, "scrollHeight", {
+    configurable: true,
+    get: () => 4000,
+  });
+  // A document that never changes size — proving the percent came from the
+  // container, not from _docHeight() silently winning anyway.
+  Object.defineProperty(h.window.document.documentElement, "scrollHeight", {
+    configurable: true,
+    get: () => 999999,
+  });
+
+  let target = null;
+  feed.scrollTo = (opts) => (target = opts.top);
+  await h.api._stepScroll({ mode: "percent", amount: 50, container: "#feed" });
+  assert.equal(target, 2000, "50% of the container's 4000px, not the page's");
+  h.close();
+});
+
+test("a container that matches nothing fails rather than falling back to the page", async () => {
+  const h = await loadInjector(`<div id="nope"></div>`);
+  await assert.rejects(
+    () =>
+      h.api._stepScroll({
+        mode: "pixel",
+        amount: 100,
+        container: "#does-not-exist",
+      }),
+    /does-not-exist/,
+  );
+  h.close();
+});
+
+test("infinite scroll against a container watches the container grow, not the document", async () => {
+  // A div with its own scrollbar is the common infinite-feed shape: the
+  // document around it never gets any taller, so measuring document.
+  // scrollHeight — what the step used to do — would call this "exhausted" on
+  // the very first round even though the feed has more to give.
+  const h = await loadInjector(`<div id="feed"></div>`);
+  const feed = h.document.getElementById("feed");
+
+  // The document stays exactly the size of the viewport throughout — if the
+  // fix were still measuring the document, `grew` would be 0 and the loop
+  // would stop after `stableRounds`.
+  Object.defineProperty(h.window.document.documentElement, "scrollHeight", {
+    configurable: true,
+    get: () => 800,
+  });
+
+  // The container grows for the first two scrolls, then stops.
+  let heights = [1000, 1000, 2000, 3000, 3000, 3000, 3000];
+  let call = -1;
+  Object.defineProperty(feed, "scrollHeight", {
+    configurable: true,
+    get: () => heights[Math.min(++call, heights.length - 1)],
+  });
+  let scrollCalls = 0;
+  feed.scrollTo = () => scrollCalls++;
+  h.window.scrollTo = () => {
+    throw new Error("the window must not be scrolled when a container is set");
+  };
+
+  const result = await h.api._stepScroll({
+    mode: "infinite",
+    container: "#feed",
+    settleMs: 0,
+    stableRounds: 2,
+    maxScrolls: 10,
+  });
+
+  assert.equal(result.container, true);
+  assert.ok(
+    result.exhausted,
+    "it should have noticed the container stop growing",
+  );
+  assert.ok(
+    scrollCalls >= 1 && scrollCalls < 10,
+    `scrolled ${scrollCalls} times`,
+  );
+  h.close();
+});
+
+test("infinite scroll counts items inside the container, not the whole page", async () => {
+  const h = await loadInjector(
+    `<div id="feed"><div class="card"></div></div><div class="card"></div>`,
+  );
+  const feed = h.document.getElementById("feed");
+  feed.scrollTo = () => {};
+  // Height never changes — only the item count signals growth, and only the
+  // one card inside the container should be counted, not the one outside it.
+  Object.defineProperty(feed, "scrollHeight", {
+    configurable: true,
+    get: () => 500,
+  });
+
+  const result = await h.api._stepScroll({
+    mode: "infinite",
+    container: "#feed",
+    selector: ".card",
+    settleMs: 0,
+    stableRounds: 1,
+    maxScrolls: 3,
+  });
+
+  assert.equal(result.items, 1, "only the card inside the container counts");
+  h.close();
+});

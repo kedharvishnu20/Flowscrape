@@ -429,6 +429,87 @@ test("an element capture crops to the element's box", async () => {
   await endRun(runId);
 });
 
+// ── K-27: an element taller than the viewport cannot be captured whole ─────
+//
+// captureVisibleTab only ever photographs the viewport. Scrolling the element
+// into view (already done on the page side, in ELEMENT_BOX) puts as much of a
+// short element on screen as possible, but an element taller than the
+// viewport has no scroll position that shows all of it at once — so the crop
+// has to be clamped to what was actually visible, and the run has to be told,
+// rather than silently padding the image with blank canvas.
+
+test("an oversized element is cropped to what's on screen and the run is warned", async () => {
+  reset();
+  const { runId, runState } = startRun();
+  onContentMessage((payload) => {
+    if (payload.type === "ELEMENT_BOX") {
+      // A 600px-tall card in an 800px viewport, scrolled to y=600: its bottom
+      // (1200) runs 400px past the bottom of the screen.
+      return {
+        ok: true,
+        result: {
+          x: 20,
+          y: 600,
+          width: 300,
+          height: 600,
+          dpr: 1,
+          viewport: { width: 1000, height: 800 },
+        },
+      };
+    }
+    return { ok: true, result: {} };
+  });
+
+  await _dispatchStep(
+    step("SCREENSHOT", { area: "element", selector: ".tall-card" }),
+    1,
+    runId,
+    ctx(),
+  );
+
+  assert.equal(runState.screenshots.length, 1);
+  const warned = calls.runtimeMessages.some((m) =>
+    /taller or wider than|truncated/i.test(m?.payload?.message ?? ""),
+  );
+  assert.ok(warned, "a cropped element capture must say it was cropped");
+  await endRun(runId);
+});
+
+test("an element that fits inside the viewport is not reported as cropped", async () => {
+  reset();
+  const { runId, runState } = startRun();
+  onContentMessage((payload) => {
+    if (payload.type === "ELEMENT_BOX") {
+      return {
+        ok: true,
+        result: {
+          x: 20,
+          y: 40,
+          width: 300,
+          height: 150,
+          dpr: 1,
+          viewport: { width: 1000, height: 800 },
+        },
+      };
+    }
+    return { ok: true, result: {} };
+  });
+
+  await _dispatchStep(
+    step("SCREENSHOT", { area: "element", selector: ".card" }),
+    1,
+    runId,
+    ctx(),
+  );
+
+  assert.equal(runState.screenshots.length, 1);
+  const warned = calls.runtimeMessages.some((m) =>
+    /taller or wider than|truncated/i.test(m?.payload?.message ?? ""),
+  );
+  assert.ok(!warned, "an element that fully fit should not be flagged");
+  await endRun(runId);
+});
+
 test("an element capture with no match fails, rather than photographing the page", async () => {
   // A viewport shot under the name "the element" is the worst outcome: it
   // looks like it worked.

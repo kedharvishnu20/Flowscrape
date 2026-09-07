@@ -361,6 +361,11 @@ function _emitStepBody(step) {
       // config.amount is what the UI writes; `value` was read here, so every
       // exported scroll used the hardcoded default of 300px.
       const amount = config.amount ?? config.value ?? 300;
+      // A named container is a `div` with its own scrollbar, not the document —
+      // an infinite feed inside one never grows document.documentElement, so
+      // every mode below has to reach into the container's own scrollHeight.
+      // locator.evaluate() runs in the page for the container element itself.
+      const container = config.container ? _escStr(_sel(config.container)) : "";
       if (config.mode === "selector" && config.selector) {
         return [
           `await page.locator("${_escStr(_sel(config.selector))}").scroll_into_view_if_needed()`,
@@ -368,6 +373,13 @@ function _emitStepBody(step) {
         ];
       }
       if (config.mode === "percent") {
+        if (container) {
+          return [
+            `await page.locator("${container}").evaluate("(el, pct) => el.scrollTo(0, el.scrollHeight * pct)", ${Number(amount) / 100})`,
+            `await asyncio.sleep(0.5)`,
+            "",
+          ];
+        }
         return [
           `await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight * ${Number(amount) / 100})")`,
           `await asyncio.sleep(0.5)`,
@@ -377,6 +389,21 @@ function _emitStepBody(step) {
       if (config.mode === "infinite" || config.mode === "bottom") {
         const maxScrolls = Number(config.maxScrolls) || 50;
         const settle = (Number(config.settleMs) || 1200) / 1000;
+        if (container) {
+          return [
+            `# Scroll the container until it stops growing, or ${maxScrolls} scrolls.`,
+            `_container = page.locator("${container}")`,
+            `_last_height = 0`,
+            `for _ in range(${maxScrolls}):`,
+            `    await _container.evaluate("el => el.scrollTo(0, el.scrollHeight)")`,
+            `    await asyncio.sleep(${settle})`,
+            `    _h = await _container.evaluate("el => el.scrollHeight")`,
+            `    if _h == _last_height:`,
+            `        break`,
+            `    _last_height = _h`,
+            "",
+          ];
+        }
         return [
           `# Scroll until the page stops growing, or ${maxScrolls} scrolls.`,
           `_last_height = 0`,
@@ -387,6 +414,13 @@ function _emitStepBody(step) {
           `    if _h == _last_height:`,
           `        break`,
           `    _last_height = _h`,
+          "",
+        ];
+      }
+      if (container) {
+        return [
+          `await page.locator("${container}").evaluate("(el, amt) => el.scrollBy(0, amt)", ${Number(amount)})`,
+          `await asyncio.sleep(0.5)`,
           "",
         ];
       }

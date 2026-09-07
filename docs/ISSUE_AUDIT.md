@@ -2430,6 +2430,77 @@ The log says which path answered — "solved on this machine, at no cost" or
 "answered by the model you configured" — because that distinction is the whole
 promise of the free tier.
 
+### K-26 · MEDIUM · `SCROLL` could only measure the document, never a container
+
+`SCROLL` already took a `selector`, but every mode measured
+`document.documentElement.scrollHeight` and moved `window`. The common
+infinite-feed shape is a `div` with its own scrollbar — a chat panel, a card
+list beside a fixed sidebar — and inside one of those the document never
+changes height at all: the page around the feed is the same size before and
+after it loads a hundred more rows. `mode: "infinite"` measured that unchanging
+number, saw no growth on the first round, and declared the feed exhausted
+before it had scrolled the container even once. Where the container happened
+to sit inside a taller document, the step scrolled the page behind the feed
+instead — the "load more" trigger, tied to the container's own scroll
+position, never fired.
+
+A `container` selector now reaches every mode — pixel, percent, `selector`,
+and infinite/bottom — resolved through `_queryScoped`, the same resolver
+`CLICK`, `FILL`, `EXTRACT` and the rest already use, rather than a second query
+path bolted on beside it. Percent and infinite measure `container.scrollHeight`
+instead of the document's; pixel and infinite scroll the container itself
+(`element.scrollBy`/`scrollTo`) instead of `window`. The infinite mode's
+optional item-count selector is counted inside the container too, through
+`_resolveIn` — the same shadow/pierce/XPath-aware resolver `_queryScoped` calls
+internally — so a feed that swaps a placeholder for a card without changing
+height is still seen growing. A container selector that matches nothing fails
+the step rather than silently falling back to the document, which would look
+like success while scrolling the wrong thing. `mode: "selector"` needed no
+change: `scrollIntoView` already walks every scrollable ancestor on its own.
+
+Both script emitters gained the same behaviour. Playwright's
+`locator(container).evaluate(...)` runs the same scroll/measure calls inside
+the page for that one element, so an exported script drives the container the
+pipeline drove rather than falling back to `window.scrollTo` under a name that
+says otherwise.
+
+|        | a feed inside its own scrolling `div`        |
+| ------ | -------------------------------------------- |
+| before | declared exhausted after the first round     |
+| after  | scrolls the container until it stops growing |
+
+### K-27 · MEDIUM · An oversized element screenshot padded itself with blank canvas
+
+`SCREENSHOT`'s element mode already scrolled the target into view
+(`el.scrollIntoView({block: "center"})`, in `ELEMENT_BOX`) before measuring it
+and cropping the capture to its box — that part was not the gap. The gap was
+what happened when the element did not fit: `captureVisibleTab` only ever
+photographs the viewport, and an element taller (or wider) than that has no
+scroll position that puts all of it on screen at once, centered or not. The
+worker asked for a crop the size of the element's full box regardless, reading
+past the edge of the captured canvas — which does not throw, it just draws
+nothing there — so the bottom (or side) of the image came back blank, silently,
+under a filename that says it is the whole element.
+
+The crop is clamped now to whatever was actually on screen —
+`min(elementEdge, viewportEdge)` on each side — and a taller-or-wider element
+logs a warning naming both sizes, the same pattern `PDF_EXTRACTION` and the
+full-page shot already use for their own truncation. Stitching several captures
+into one tall image the way the full-page mode does was considered and set
+aside: full-page stitching already pays for the complexity because "the whole
+page" is the point of that mode, but here it would mean re-scrolling and
+re-measuring the element between shots while accounting for Chrome's ~2
+captures/second cap, purely to enlarge the one case — an element genuinely
+taller than the viewport — that is also the rarest, since most elements worth
+screenshotting fit in one screen once scrolled to. Saying honestly that the
+image is partial costs one log line; stitching it costs a second code path
+this audit found no real pipeline that would exercise.
+
+|        | a card taller than the viewport            |
+| ------ | ------------------------------------------ |
+| before | bottom of the image is blank, no warning   |
+| after  | cropped to what was on screen, and said so |
+
 ### A-05 · BLOCKER · The proxy pool was never consulted by a run — now closed
 
 Recorded as left-by-decision for most of this audit, and it was the clearest

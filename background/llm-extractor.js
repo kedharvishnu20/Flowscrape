@@ -123,13 +123,36 @@ Return a JSON object with exactly this structure:
  * @param {string[]} fields
  * @param {string} dom
  */
-function _schemaPrompt(fields, dom) {
+function _schemaPrompt(fields, dom, wantSelectors = false) {
   const shape = fields
     .map((f) => `  ${JSON.stringify(f)}: string or null`)
     .join(",\n");
   const conf = fields
     .map((f) => `    ${JSON.stringify(f)}: integer`)
     .join(",\n");
+  const sel = fields
+    .map((f) => `    ${JSON.stringify(f)}: string or null`)
+    .join(",\n");
+
+  // Asking for "a selector" gets nth-child chains that verify today and break
+  // when the site adds a banner. Asking for a stable one gets classes and
+  // attributes more often — and the ones that still come back positional are
+  // kept and labelled rather than trusted.
+  const selectorRules = wantSelectors
+    ? `
+- selectors: a CSS selector that matches exactly ONE element holding that value.
+- Prefer a class, id or data attribute over a position. Do not use :nth-child
+  or a long chain of bare tag names — those break when the page changes.
+- Use null for a selector you are not confident about. A wrong selector is
+  worse than none.`
+    : "";
+
+  const selectorBlock = wantSelectors
+    ? `,
+  "selectors": {
+${sel}
+  }`
+    : "";
 
   return `You are a precise data extraction engine for web pages.
 Extract exactly these fields from the page content below.
@@ -138,7 +161,7 @@ Rules:
 - Use null (not an empty string) for a field the page does not state.
 - Copy values as the page writes them; do not reformat, convert or summarise.
 - Never infer or invent. If you are not certain, use null.
-- confidence values are integers 0-100.
+- confidence values are integers 0-100.${selectorRules}
 
 ---PAGE CONTENT START---
 ${dom}
@@ -149,7 +172,7 @@ Return a JSON object with exactly this structure:
 ${shape},
   "confidence": {
 ${conf}
-  }
+  }${selectorBlock}
 }`;
 }
 
@@ -166,7 +189,7 @@ export async function llmExtract(simplifiedDom, config, schema = null) {
   const dom = simplifiedDom.slice(0, MAX_DOM_CHARS);
   const prompt =
     schema && !schema.isDefault
-      ? _schemaPrompt(schema.fields, dom)
+      ? _schemaPrompt(schema.fields, dom, schema.wantSelectors === true)
       : `${SYSTEM_INSTRUCTION}\n\n${PROMPT_TEMPLATE.replace("{dom}", dom)}`;
 
   const said = await askText(
@@ -462,6 +485,9 @@ function _parseSchemaAnswer(raw, fields) {
     result,
     perField,
     fields,
+    // Carried through unjudged. Whether a selector is worth keeping is decided
+    // by running it in the page, which cannot happen here.
+    selectors: mapModelKeys(parsed.selectors ?? {}, fields),
     overallConfidence,
     method: "llm",
     warnings: [],

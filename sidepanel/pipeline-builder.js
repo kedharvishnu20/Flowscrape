@@ -2526,6 +2526,19 @@ function _configFields(step) {
 
     html += toggle(
       step,
+      "learnSelectors",
+      "Ask the model for selectors, and offer the ones that check out",
+    );
+    html += hint(
+      "Each selector is run in the page and kept only if it produces the " +
+        "value the model reported. What survives is offered as an EXTRACT " +
+        "step \u2014 after that the site is scraped with no model at all, and " +
+        "the pipeline exports to a Playwright or Python script, which this " +
+        "step cannot.",
+    );
+
+    html += toggle(
+      step,
       "cache",
       "Reuse the model's answer for a page that has not changed",
     );
@@ -5170,6 +5183,10 @@ function listenToSystem() {
       renderProvenance(msg.payload?.provenance);
     }
 
+    if (msg.type === "pipeline:selectors") {
+      offerLearnedSelectors(msg.payload);
+    }
+
     if (msg.type === "pipeline:log") {
       logToMonitor(msg.payload.level, msg.payload.message);
       if (msg.payload.level === "error-log") {
@@ -5268,6 +5285,97 @@ function logToMonitor(levelClass, message) {
     logs.removeChild(logs.firstElementChild);
   }
 
+  logs.scrollTop = logs.scrollHeight;
+}
+
+/**
+ * Offer the selectors the model proposed and the page confirmed.
+ *
+ * Offered, not added. A step appearing in a pipeline nobody put there is worse
+ * than not offering one, however good the selectors are — and the whole point
+ * of this feature is that the user ends up with a pipeline they can read.
+ *
+ * What it buys them, said plainly on the button: after this the site is
+ * scraped with no model at all, which also means the pipeline exports to a
+ * Playwright or Python script. AUTO_EXTRACT never could.
+ */
+function offerLearnedSelectors(payload) {
+  const logs = document.getElementById("mon-logs");
+  if (!logs || !payload?.step) return;
+  const fields = payload.step.config?.fields ?? [];
+  if (fields.length === 0) return;
+
+  const box = document.createElement("div");
+  box.className = "log-entry info-log learned-selectors";
+
+  const head = document.createElement("div");
+  head.className = "log-msg";
+  head.style.fontWeight = "600";
+  head.textContent = `${fields.length} selector(s) verified against this page`;
+  box.appendChild(head);
+
+  for (const f of fields) {
+    const line = document.createElement("div");
+    line.style.cssText =
+      "display:flex;gap:8px;font-size:11px;padding-left:8px;";
+    const name = document.createElement("span");
+    name.className = "mono";
+    name.textContent = f.name;
+    name.style.cssText = "min-width:96px;color:var(--text-main);";
+    const sel = document.createElement("span");
+    sel.className = "mono";
+    sel.textContent = f.selector;
+    sel.style.color = "var(--text-dim)";
+    line.append(name, sel);
+    if ((payload.fragile ?? []).includes(f.name)) {
+      const warn = document.createElement("span");
+      // Kept, and said out loud: it works now and will break on a redesign,
+      // which is not the same as a selector that is wrong today.
+      warn.textContent =
+        "position-based — will break if the page is restructured";
+      warn.style.color = "var(--amber,#d97706)";
+      line.appendChild(warn);
+    }
+    box.appendChild(line);
+  }
+
+  const note = document.createElement("p");
+  note.style.cssText =
+    "font-size:11px;color:var(--text-dim);margin:6px 0 6px 8px;";
+  note.textContent =
+    "Each of these was run in the page and produced the value the model " +
+    "reported. Saved as an EXTRACT step, this site is scraped with no model " +
+    "at all \u2014 and the pipeline exports to a script, which AUTO_EXTRACT cannot.";
+  box.appendChild(note);
+
+  const btn = document.createElement("button");
+  btn.className = "btn";
+  btn.style.marginLeft = "8px";
+  btn.textContent = "Save as an EXTRACT step";
+  btn.addEventListener("click", () => {
+    const stepNode = {
+      id: _nextStepId(),
+      type: "EXTRACT",
+      config: { ...defaultConfig("EXTRACT"), ...payload.step.config },
+    };
+    _pipeline.steps.push(stepNode);
+    _expandedNodeId = stepNode.id;
+    saveState();
+    renderPipeline();
+    btn.disabled = true;
+    btn.textContent = "Added";
+    logToMonitor(
+      "info-log",
+      `Added an EXTRACT step with ${fields.length} verified selector(s). ` +
+        "It runs on its own, with no model.",
+    );
+  });
+  box.appendChild(btn);
+
+  logs.appendChild(box);
+  while (logs.childElementCount > MAX_LOG_ENTRIES) {
+    logs.removeChild(logs.firstElementChild);
+  }
   logs.scrollTop = logs.scrollHeight;
 }
 

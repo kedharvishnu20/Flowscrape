@@ -142,6 +142,7 @@ import {
   mapNodeToSchema,
 } from "../utils/extraction-schema.js";
 import { groundFields } from "../utils/extraction-grounding.js";
+import { judgeSelectors, toExtractStep } from "../utils/selector-learning.js";
 import {
   buildProvenance,
   summarise as summariseProvenance,
@@ -1840,6 +1841,9 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     extraction = _applySchema(extraction, fields, threshold, runId);
   }
 
+  // Set only when a model answered and proposed selectors for its answer.
+  let llmSelectors = null;
+
   // ── Layer 3: LLM fallback if confidence is still low ──────────────────────
   if (extraction.needsLlm && !useLlm) {
     // The step's "Enable AI fallback" toggle used to be ignored entirely, so
@@ -1864,7 +1868,14 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     try {
       llmResult = await runLlmLayer(
         extraction.simplifiedDom,
-        { fields, isDefault },
+        {
+          fields,
+          isDefault,
+          // Only for a schema the user named: the product prompt has its own
+          // fixed shape, and widening it is a change to the path every saved
+          // pipeline already runs.
+          wantSelectors: !isDefault && config.learnSelectors !== false,
+        },
         // The URL is part of the cache key, so an answer is never served for a
         // page it was not given for.
         { url: await _tabUrl(tabId), cache: config.cache !== false },
@@ -1912,6 +1923,7 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
         runId,
       );
     } else if (llmResult) {
+      llmSelectors = llmResult.selectors ?? null;
       // LLM wins field-by-field where it has higher confidence
       extraction = _mergeLlmOverL12(extraction, llmResult);
       _broadcastLog(
@@ -1951,6 +1963,16 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     _broadcastLog("warn-log", warning, runId);
   }
 
+  // Selectors the model proposed, checked in the page.
+  //
+  // Checked, not trusted: run each one and keep it only if it produces the
+  // value the model reported. What survives is offered as an ordinary EXTRACT
+  // step, which scrapes this site deterministically and for free from then on
+  // — and, unlike AUTO_EXTRACT, exports to a Playwright script.
+  if (llmSelectors && Object.keys(llmSelectors).length) {
+    await _learnSelectors(llmSelectors, extraction.result ?? {}, tabId, runId);
+  }
+
   // Which layer answered each field, and what that is worth.
   //
   // The row carries one `_extractionMethod`, taken from whichever layer
@@ -1986,6 +2008,78 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   if (config.provenance) row._provenance = provenanceColumn(provenance);
 
   return row;
+}
+
+/**
+ * Check the model's selectors in the page, and offer what survives.
+ *
+ * The page runs them and reports what each found; the judging happens here,
+ * because `content/injector.js` is a classic content script and cannot import
+ * `utils/selector-learning.js`. A field whose value grounding dropped has a
+ * null value by now, so its selector is never judged — a selector "verified"
+ * against something the model invented has been checked against nothing.
+ *
+ * Nothing is added to the pipeline: the panel offers it and the user decides.
+ * A step appearing in a pipeline nobody added is worse than not offering one.
+ */
+async function _learnSelectors(selectors, values, tabId, runId) {
+  let probed;
+  try {
+    // Not through `_sendToPage`: that helper rewrites the outer type to
+    // "step:execute" because everything it carries is a step, and a probe is
+    // not one. Same shape as the structure detector's own path — make sure the
+    // script is there, then address the message directly.
+    await _ensureInjected(tabId);
+    const resp = await chrome.tabs.sendMessage(tabId, {
+      type: "FS_PROBE_SELECTORS",
+      payload: { selectors },
+    });
+    probed = resp?.ok ? resp.result : null;
+  } catch (err) {
+    logger.warn(MODULE, "probe-failed", { error: err.message });
+    probed = null;
+  }
+  if (!probed) return;
+
+  const { verified, how, fragile } = judgeSelectors({
+    selectors,
+    values,
+    probe: (_sel, field) => probed[field] ?? { count: 0, text: null },
+  });
+
+  const kept = Object.keys(verified);
+  if (kept.length === 0) {
+    // Said once, quietly. A model that proposed nothing usable costs nothing
+    // beyond the request that was being made anyway.
+    const tried = Object.keys(how).length;
+    if (tried) {
+      _broadcastLog(
+        "info-log",
+        `AUTO_EXTRACT: none of the ${tried} selector(s) the model proposed matched the value it reported, so none were kept.`,
+        runId,
+      );
+    }
+    return;
+  }
+
+  _broadcastLog(
+    "info-log",
+    `AUTO_EXTRACT: ${kept.length} selector(s) checked against the page and verified (${kept.join(", ")}). ` +
+      "Save them as an EXTRACT step and this site is scraped without a model from then on." +
+      (fragile.length
+        ? ` ${fragile.join(", ")} rely on position rather than a class or id, so they will break if the page is restructured.`
+        : ""),
+    runId,
+  );
+
+  const step = toExtractStep(verified);
+  if (!step) return;
+  chrome.runtime
+    .sendMessage({
+      type: "pipeline:selectors",
+      payload: { step, verified, fragile, how, runId, tabId },
+    })
+    .catch(() => {});
 }
 
 /**

@@ -40,6 +40,8 @@ const ARTICLE = `<!doctype html><html><head><title>Court listing</title>
    "keywords":["contract","damages"]}
   </script></head><body>
   <h1>Acme Ltd v Bloggs</h1><p>Judgment of the court.</p>
+  <nav><a href="/">Home</a></nav>
+  <span class="court">Chancery Division</span>
 </body></html>`;
 
 // An upload widget with no file input at all — the shape that made
@@ -944,6 +946,124 @@ test("the same page is not sent to the model twice", async () => {
     // And the switch means what it says.
     await run({ cache: false });
     assert.equal(calls, 3, "the step was told not to use the cache");
+  } finally {
+    await env.send("gateway:save", {
+      provider: "gemini",
+      apiKey: "",
+      model: "gemini-2.0-flash",
+      baseUrl: "",
+    });
+    await new Promise((r) => model.close(r));
+  }
+});
+
+test("a selector the model proposed is checked in the page before it is offered", async () => {
+  // The end of the story this project tells about AI: the model is asked once,
+  // its selectors are tested against the page, and what survives is an
+  // ordinary EXTRACT step that runs for free ever after.
+  //
+  // The model here proposes one selector that is right and one that points at
+  // the site's navigation while reporting a plausible value. Saved unchecked,
+  // the second would produce a pipeline that runs, reports success, and fills
+  // a column with the word "Home".
+  const http = await import("node:http");
+  const model = http.createServer((req, res) => {
+    req.on("data", () => {});
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          model: "fake-local",
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  headline: "Acme Ltd v Bloggs",
+                  court: "Chancery Division",
+                  confidence: { headline: 90, court: 88 },
+                  selectors: {
+                    headline: "h1",
+                    // Real element, real text on the page — and the wrong
+                    // element for this field.
+                    court: "nav a",
+                  },
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+  });
+  await new Promise((r) => model.listen(0, "127.0.0.1", r));
+  const port = model.address().port;
+
+  try {
+    const saved = await env.send("gateway:save", {
+      provider: "openai-compatible",
+      apiKey: "",
+      model: "fake-local",
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+    });
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    // Listen for the offer the worker broadcasts, from the panel's own page.
+    await env.panel.evaluate(() => {
+      globalThis.__fsSelectorOffers = [];
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (msg?.type === "pipeline:selectors") {
+          globalThis.__fsSelectorOffers.push(msg.payload);
+        }
+      });
+    });
+
+    const { tabId, page } = await onSite("/article");
+    const res = await env.send("step:execute", {
+      step: step("AUTO_EXTRACT", {
+        schema: "headline, court",
+        useLlm: true,
+        cache: false,
+        learnSelectors: true,
+      }),
+      tabId,
+    });
+    await page.close();
+    assert.equal(res.ok, true, JSON.stringify(res));
+
+    const offers = await env.panel.evaluate(
+      () => globalThis.__fsSelectorOffers ?? [],
+    );
+    assert.equal(offers.length, 1, "the panel was never offered the step");
+    const offer = offers[0];
+
+    assert.equal(
+      offer.verified.headline,
+      "h1",
+      "a selector that produces the reported value should survive",
+    );
+    assert.equal(
+      offer.verified.court,
+      undefined,
+      "a selector pointing at the navigation reached the offer",
+    );
+    assert.equal(offer.how.court, "wrong-value");
+
+    // And what is offered is a step the pipeline can actually run.
+    assert.equal(offer.step.type, "EXTRACT");
+    assert.deepEqual(offer.step.config.fields, [
+      { name: "headline", selector: "h1", type: "text" },
+    ]);
+
+    // The point of all of it: that step runs on its own, with no model.
+    const standalone = await onSite("/article");
+    const ran = await env.send("step:execute", {
+      step: step("EXTRACT", offer.step.config),
+      tabId: standalone.tabId,
+    });
+    await standalone.page.close();
+    assert.equal(ran.ok, true, JSON.stringify(ran));
+    const rows = Array.isArray(ran.result) ? ran.result : [ran.result];
+    assert.equal(rows[0].headline, "Acme Ltd v Bloggs");
   } finally {
     await env.send("gateway:save", {
       provider: "gemini",

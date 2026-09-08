@@ -475,6 +475,11 @@ export const STEP_TYPES = Object.freeze({
       // text is the key, so a page that changed is asked again and there is no
       // staleness window to get wrong.
       cache: true,
+      // Ask the model for a CSS selector per field as well as the value. Each
+      // one is checked in the page and only kept if it produces the value the
+      // model reported; what survives is offered as an EXTRACT step, which
+      // scrapes the site without a model — and exports to a script.
+      learnSelectors: true,
     },
     // Not expressible in an exported script: the first two layers are an
     // in-page extractor with no standalone equivalent, and the third asks a

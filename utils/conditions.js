@@ -29,6 +29,8 @@ import { applyTransform, isValidRegex } from "./value-transforms.js";
  * @property {boolean} exists   - did the selector match anything
  * @property {string}  text     - its textContent, unnormalised
  * @property {?string} attrValue - the requested attribute, or null
+ * @property {?Observed} [other] - the second element, when the branch compares
+ *   against one rather than against a typed value
  */
 
 /** Collapse the whitespace real markup leaves inside a rendered string. */
@@ -183,7 +185,42 @@ export function evaluateCondition(condition, observed, config = {}) {
       `Unknown condition "${condition}". Supported: ${CONDITION_NAMES.join(", ")}.`,
     );
   }
-  return Boolean(meta.fn(observed, config));
+  if (config.compareTo !== "selector")
+    return Boolean(meta.fn(observed, config));
+
+  // Comparing against a second element on the page. "Is the sale price under
+  // the list price" cannot be written as a literal, because the literal is
+  // different on every row.
+  const other = observed.other;
+  // Not a decision this can make: the other side is not there to compare
+  // with. False rather than an exception, because a missing element is data
+  // rather than a mistake — the worker says so in the log, so it does not
+  // pass as a condition that was simply not met.
+  if (!other || !other.exists) return false;
+
+  const raw = config.attr ? (other.attrValue ?? "") : other.text;
+
+  // A numeric comparison reads the page's number the same way the left side
+  // is read, or "£1,299.00" would be refused as "not a number" — and the two
+  // sides of one comparison must be read by one reader.
+  if (condition.startsWith("number-")) {
+    const n = applyTransform(raw, "number");
+    if (n === null) return false;
+    return Boolean(meta.fn(observed, { ...config, value: n }));
+  }
+
+  return Boolean(meta.fn(observed, { ...config, value: raw }));
 }
+
+/**
+ * Which conditions can be pointed at a second element.
+ *
+ * Everything that needs a value to compare against. "Element exists" and its
+ * relatives ask about one element and have no right-hand side at all, so
+ * offering the choice there would be a control that does nothing.
+ */
+export const COMPARABLE_CONDITIONS = Object.freeze(
+  CONDITION_NAMES.filter((name) => CONDITIONS[name].needs.includes("value")),
+);
 
 // === END conditions.js ===

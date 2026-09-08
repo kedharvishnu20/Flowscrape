@@ -3764,6 +3764,21 @@ async function _executeIfElse(step, tabId, runId, parentCtx = {}) {
     // EXTRACT does.
     const r = await _sendToPage(tabId, resolved);
     if (!r?.ok) throw new Error(r?.error || "could not read the page");
+
+    // A branch comparing against a second element, whose second element is not
+    // on the page, has no comparison to make. It takes ELSE — but silently
+    // that is indistinguishable from a condition that was simply not met, and
+    // "the selector is wrong" is the far more likely explanation.
+    if (resolved.config.compareTo === "selector" && !r.result?.other?.exists) {
+      _broadcastLog(
+        "warn-log",
+        `IF_ELSE: nothing matched "${resolved.config.valueSelector}", the element ` +
+          "it was told to compare against — so there is nothing to compare with, " +
+          "and the ELSE branch is taken.",
+        runId,
+      );
+    }
+
     met = evaluateCondition(condition, r.result, resolved.config);
   } catch (err) {
     // This used to swallow everything into `met = false` and take ELSE, so a

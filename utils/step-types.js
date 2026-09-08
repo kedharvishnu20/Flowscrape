@@ -172,6 +172,12 @@ export const STEP_TYPES = Object.freeze({
       value: "",
       attr: "",
       inFrame: false,
+      // What the right-hand side of the comparison is. A literal covers "is
+      // the price under 50"; a second selector covers "is the sale price under
+      // the list price", where the literal differs on every row.
+      // value | selector
+      compareTo: "value",
+      valueSelector: "",
     },
   },
   LOOP: {

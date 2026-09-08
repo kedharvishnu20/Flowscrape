@@ -2447,17 +2447,33 @@
    * holds it. A second parser here would drift from the first (G-01), so the
    * worker evaluates against `utils/conditions.js` and this only reads the DOM.
    *
-   * @returns {{exists: boolean, text: string, attrValue: ?string}}
+   * A branch can compare against a second element rather than a typed value —
+   * "is the sale price under the list price", "has the count changed" — so it
+   * reports that one too, under `other`, read exactly the same way. Both sides
+   * in one message: a second round trip would read the two at different
+   * moments, and on a page that updates itself that is a comparison between
+   * two states rather than between two elements.
+   *
+   * @returns {{exists: boolean, text: string, attrValue: ?string, other: ?object}}
    */
-  async function _stepIfElse({ selector, attr = "" }, context = {}) {
-    const el = _queryScoped(selector, context, false)[0] || null;
-    return {
-      exists: !!el,
-      // Unnormalised: the worker normalises, so both sides cannot disagree about
-      // what counts as whitespace (B-25).
-      text: el ? el.textContent : "",
-      attrValue: el && attr ? el.getAttribute(attr) : null,
+  async function _stepIfElse(
+    { selector, attr = "", compareTo = "value", valueSelector = "" },
+    context = {},
+  ) {
+    const read = (sel) => {
+      const el = sel ? _queryScoped(sel, context, false)[0] || null : null;
+      return {
+        exists: !!el,
+        // Unnormalised: the worker normalises, so both sides cannot disagree
+        // about what counts as whitespace (B-25).
+        text: el ? el.textContent : "",
+        attrValue: el && attr ? el.getAttribute(attr) : null,
+      };
     };
+    const observed = read(selector);
+    observed.other =
+      compareTo === "selector" && valueSelector ? read(valueSelector) : null;
+    return observed;
   }
 
   /**

@@ -19,6 +19,31 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — IF_ELSE can compare one element against another
+
+"Only take it if the sale price is under the list price" could not be written
+at all. A condition tested one selector against a value you typed, and the value
+you type is different on every row. (Comparing against something stored earlier
+in the run already worked — `{{extracted.field}}` is resolved before the step
+runs — so the second element was the whole gap.)
+
+The right-hand side of a comparison can now be a second selector. Three details
+decide whether that is worth having.
+
+**Both sides are read in one message.** Two round trips would read them at two
+moments, and on a page that updates itself that compares two states rather than
+two elements.
+
+**Both sides go through the same number reader.** `Number("£1,299.00")` is NaN,
+so a comparison built on it would refuse most of the prices on a real shop. The
+right-hand side is read exactly the way the left one is.
+
+**A missing element is not a match.** The empty string is what a missing element
+trims to, so without an explicit guard an empty left side would "equal" an
+element that is not on the page. It takes the ELSE branch — and the run says so,
+naming the selector, because silently taking ELSE is indistinguishable from a
+condition that was simply not met.
+
 ### Added — CLICK with the right button, the middle button, or keys held
 
 `CLICK` now takes a mouse button and a set of keys to hold. What it can do is

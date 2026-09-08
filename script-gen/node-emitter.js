@@ -317,10 +317,24 @@ function _conditionNode(condition, config, esc) {
   const value = esc(String(config.value ?? ""));
   const attr = esc(String(config.attr ?? ""));
   const num = Number(String(config.value ?? "").trim());
-  const numeric = (op) =>
-    Number.isFinite(num)
-      ? `((n => n !== null && n ${op} ${num})(fsNumber(await fsText(_loc))))`
+
+  // The right-hand side is either a literal baked into the expression or
+  // `_rhs`, a value the emitted block reads from a second element just before
+  // the test. Written once, so the two forms cannot diverge condition by
+  // condition — which is exactly how a comparison ends up right for text and
+  // wrong for numbers.
+  const fromSelector = config.compareTo === "selector";
+  const str = fromSelector ? "_rhs" : `'${value}'`;
+  const numRhs = fromSelector
+    ? "fsNumber(_rhs)"
+    : Number.isFinite(num)
+      ? String(num)
       : null;
+
+  const numeric = (op) =>
+    numRhs === null
+      ? null
+      : `((a, b) => a !== null && b !== null && a ${op} b)(fsNumber(await fsText(_loc)), ${numRhs})`;
 
   switch (condition) {
     case "exists":
@@ -332,16 +346,18 @@ function _conditionNode(condition, config, esc) {
     case "not-empty":
       return `((t => t !== null && t !== '')(await fsText(_loc)))`;
     case "text-equals":
-      return `(await fsText(_loc)) === fsTrim('${value}')`;
+      return `(await fsText(_loc)) === fsTrim(${str})`;
     case "text-contains":
-      return `((t => t !== null && t.includes(fsTrim('${value}')))(await fsText(_loc)))`;
+      return `((t => t !== null && t.includes(fsTrim(${str})))(await fsText(_loc)))`;
     case "text-matches":
-      if (!isValidRegex(config.value ?? "")) return null;
-      return `((t => t !== null && new RegExp('${value.replace(/\\/g, "\\\\")}').test(t))(await fsText(_loc)))`;
+      // A pattern read off the page cannot be checked here; a bad one throws
+      // at run time, which is what the extension does with it too.
+      if (!fromSelector && !isValidRegex(config.value ?? "")) return null;
+      return `((t => t !== null && new RegExp(${fromSelector ? "_rhs" : `'${value.replace(/\\/g, "\\\\")}'`}).test(t))(await fsText(_loc)))`;
     case "attr-equals":
-      return `((a => a !== null && a.trim() === '${value}'.trim())(await fsAttr(_loc, '${attr}')))`;
+      return `((a => a !== null && a.trim() === String(${str}).trim())(await fsAttr(_loc, '${attr}')))`;
     case "attr-contains":
-      return `((a => a !== null && a.includes('${value}'))(await fsAttr(_loc, '${attr}')))`;
+      return `((a => a !== null && a.includes(${str}))(await fsAttr(_loc, '${attr}')))`;
     case "attr-exists":
       return `(await fsAttr(_loc, '${attr}')) !== null`;
     case "number-equals":
@@ -870,8 +886,24 @@ function _emitNodeStepBody(step) {
       lines.push(
         `{`,
         `  const _loc = ${_loc(esc(_sel(config.selector ?? "")))};`,
-        `  if (${test}) {`,
       );
+      if (config.compareTo === "selector") {
+        // Read once, before the test, and both sides in the same moment — the
+        // extension reads them in one message for the same reason.
+        const otherLoc = _loc(esc(_sel(config.valueSelector ?? "")));
+        lines.push(
+          `  const _loc2 = ${otherLoc};`,
+          config.attr
+            ? `  const _rhs = await fsAttr(_loc2, '${esc(String(config.attr))}');`
+            : `  const _rhs = await fsText(_loc2);`,
+          // Nothing matched the other side, so there is nothing to compare
+          // with and the ELSE branch is taken. Without this guard an empty
+          // left side would "equal" a missing right side.
+          `  if (_rhs !== null && ${test}) {`,
+        );
+      } else {
+        lines.push(`  if (${test}) {`);
+      }
       for (const child of step.ifBranch ?? []) {
         lines.push(..._emitNodeStep(child).map((l) => "    " + l));
       }

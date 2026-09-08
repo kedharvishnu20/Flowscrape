@@ -444,10 +444,23 @@ function _conditionPy(condition, config) {
   const value = _escStr(String(config.value ?? ""));
   const attr = _escStr(String(config.attr ?? ""));
   const num = Number(String(config.value ?? "").trim());
-  const numeric = (op) =>
-    Number.isFinite(num)
-      ? `(lambda n: n is not None and n ${op} ${num})(fs_number(await fs_text(_loc)))`
+
+  // Either a literal baked into the expression, or `_rhs` — a value the block
+  // reads from a second element just before the test. The twin of the same
+  // choice in node-emitter.js, written once per language so the forms cannot
+  // diverge condition by condition.
+  const fromSelector = config.compareTo === "selector";
+  const str = fromSelector ? "_rhs" : `"${value}"`;
+  const numRhs = fromSelector
+    ? "fs_number(_rhs)"
+    : Number.isFinite(num)
+      ? String(num)
       : null;
+
+  const numeric = (op) =>
+    numRhs === null
+      ? null
+      : `(lambda a, b: a is not None and b is not None and a ${op} b)(fs_number(await fs_text(_loc)), ${numRhs})`;
 
   switch (condition) {
     case "exists":
@@ -459,10 +472,15 @@ function _conditionPy(condition, config) {
     case "not-empty":
       return `(lambda t: t is not None and t != "")(await fs_text(_loc))`;
     case "text-equals":
-      return `await fs_text(_loc) == fs_trim("${value}")`;
+      return `await fs_text(_loc) == fs_trim(${str})`;
     case "text-contains":
-      return `(lambda t: t is not None and fs_trim("${value}") in t)(await fs_text(_loc))`;
+      return `(lambda t: t is not None and fs_trim(${str}) in t)(await fs_text(_loc))`;
     case "text-matches": {
+      // A pattern read off the page cannot be checked here; a bad one raises
+      // at run time, which is what the extension does with it too.
+      if (fromSelector) {
+        return `(lambda t: t is not None and re.search(_rhs, t) is not None)(await fs_text(_loc))`;
+      }
       const raw = String(config.value ?? "");
       // A raw literal cannot end in a backslash, and such a pattern is not
       // valid anyway — refuse rather than trim it into something else.
@@ -470,9 +488,9 @@ function _conditionPy(condition, config) {
       return `(lambda t: t is not None and re.search(r"${raw.replace(/"/g, '\\"')}", t) is not None)(await fs_text(_loc))`;
     }
     case "attr-equals":
-      return `(lambda a: a is not None and a.strip() == "${value}".strip())(await fs_attr(_loc, "${attr}"))`;
+      return `(lambda a: a is not None and a.strip() == str(${str}).strip())(await fs_attr(_loc, "${attr}"))`;
     case "attr-contains":
-      return `(lambda a: a is not None and "${value}" in a)(await fs_attr(_loc, "${attr}"))`;
+      return `(lambda a: a is not None and ${str} in a)(await fs_attr(_loc, "${attr}"))`;
     case "attr-exists":
       return `await fs_attr(_loc, "${attr}") is not None`;
     case "number-equals":
@@ -917,10 +935,21 @@ function _emitStepBody(step) {
         );
         return lines;
       }
-      lines.push(
-        `_loc = ${_pyLoc(_escStr(_sel(config.selector ?? "")))}`,
-        `if ${test}:`,
-      );
+      lines.push(`_loc = ${_pyLoc(_escStr(_sel(config.selector ?? "")))}`);
+      if (config.compareTo === "selector") {
+        lines.push(
+          `_loc2 = ${_pyLoc(_escStr(_sel(config.valueSelector ?? "")))}`,
+          config.attr
+            ? `_rhs = await fs_attr(_loc2, "${_escStr(String(config.attr))}")`
+            : `_rhs = await fs_text(_loc2)`,
+          // Nothing matched the other side, so there is nothing to compare
+          // with and the else branch is taken. Without this guard an empty
+          // left side would "equal" a missing right side.
+          `if _rhs is not None and ${test}:`,
+        );
+      } else {
+        lines.push(`if ${test}:`);
+      }
       for (const child of step.ifBranch ?? []) {
         lines.push(..._emitStep(child).map((l) => "    " + l));
       }

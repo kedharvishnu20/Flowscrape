@@ -1993,6 +1993,32 @@ function _configFields(step) {
     }
     if (meta.needs === "value" || meta.needs === "attr+value") {
       const numeric = cond.startsWith("number-");
+      const against = c.compareTo === "selector" ? "selector" : "value";
+      html += `<label>Compare against</label>
+      <select id="cfg-${step.id}-compareTo" data-id="${step.id}" data-key="compareTo" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+        <option value="value"${against === "value" ? " selected" : ""}>A value I type</option>
+        <option value="selector"${against === "selector" ? " selected" : ""}>Another element on the page</option>
+      </select>`;
+
+      if (against === "selector") {
+        html += selectorRow(
+          step,
+          "valueSelector",
+          "Element to compare against",
+        );
+        html += hint(
+          "Both elements are read in the same moment, so a page that updates " +
+            "itself cannot be compared against its own earlier state. If nothing " +
+            "matches, the ELSE branch is taken and the log says why.",
+        );
+        html += toggle(
+          step,
+          "optional",
+          "Optional — keep going if this step fails",
+        );
+        return html;
+      }
+
       html += field(
         step,
         "value",

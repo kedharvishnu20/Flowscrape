@@ -680,7 +680,15 @@ test("an emitted numeric condition compares numbers, not strings", () => {
     /fsNumber/,
     `the branch does not read a number: ${jsTest}`,
   );
-  assert.match(jsTest, /< 50/);
+  // Both sides are now named rather than one being inlined next to the
+  // operator, because the right-hand side can also come from a second element.
+  // What matters is unchanged: a `<` against 50 as a number, never as a string.
+  assert.match(jsTest, /a < b/, `not a numeric comparison: ${jsTest}`);
+  assert.match(jsTest, /, 50\)/, `50 is not the operand: ${jsTest}`);
+  assert.ok(
+    !/['"]50['"]/.test(jsTest),
+    `50 is quoted, so this compares strings: ${jsTest}`,
+  );
 
   const pyTest = py.match(/# IF_ELSE:[\s\S]*?\n\s*if (.*):/)?.[1] ?? "";
   assert.match(
@@ -688,7 +696,12 @@ test("an emitted numeric condition compares numbers, not strings", () => {
     /fs_number/,
     `the branch does not read a number: ${pyTest}`,
   );
-  assert.match(pyTest, /< 50/);
+  assert.match(pyTest, /a < b/, `not a numeric comparison: ${pyTest}`);
+  assert.match(pyTest, /, 50\)/, `50 is not the operand: ${pyTest}`);
+  assert.ok(
+    !/['"]50['"]/.test(pyTest),
+    `50 is quoted, so this compares strings: ${pyTest}`,
+  );
 });
 
 test("the emitted branches still parse with every condition in them", (t) => {

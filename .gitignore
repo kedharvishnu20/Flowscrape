@@ -9,3 +9,5 @@ test-results/
 
 # Scratch scripts the MCP runner writes and removes.
 .fs-mcp-runs/
+
+dist/

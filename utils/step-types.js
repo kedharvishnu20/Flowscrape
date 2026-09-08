@@ -453,7 +453,9 @@ export const STEP_TYPES = Object.freeze({
     desc: "Smart product auto-extract",
     runsIn: "background",
     def: { confidenceThreshold: 70, useLlm: true },
-    // Not expressible in an exported script: needs the three-layer extractor and a Gemini key.
+    // Not expressible in an exported script: the first two layers are an
+    // in-page extractor with no standalone equivalent, and the third asks a
+    // model the script has no configuration for.
     exportable: false,
   },
 

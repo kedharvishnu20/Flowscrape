@@ -85,7 +85,7 @@ package.json                   test tooling only; the extension has no deps
 background/                    Service worker
   service-worker.js            Pipeline orchestrator, message bus, export
   ethics-engine.js             7 pre-run gates
-  llm-extractor.js             AUTO_EXTRACT layer 3 (Gemini Flash)
+  llm-extractor.js             AUTO_EXTRACT layer 3, through the AI gateway
   api-key-manager.js           AES-GCM key store; captcha dispatch (unreachable)
   proxy-manager.js             Proxy pool (unreachable — see A-05)
   rate-limiter.js              Token bucket; paces every acting step
@@ -274,8 +274,11 @@ confident enough:
 1. **Structured data** — JSON-LD `@type Product`, microdata, Open Graph
 2. **Heuristic DOM** — class/id keywords, font size, distance to the add-to-cart
    button, price regexes
-3. **Gemini Flash** — only below the configured confidence, only if a Gemini key
-   is stored, and only if the step's AI toggle is on
+3. **A model of your choosing** — only below the configured confidence, only if
+   a provider is set up under Settings → AI gateway, and only if the step's AI
+   toggle is on. Anthropic, OpenAI, Gemini, or any OpenAI-compatible local
+   server: point it at Ollama or LM Studio and this layer costs nothing and
+   sends nothing off the machine
 
 Rows carry `_confidence` and `_extractionMethod`.
 
@@ -357,7 +360,7 @@ expressed standalone:
 | `UPLOAD_ACTIVITY` | Needs file bytes from the storage library                                                                                          |
 | `API_SNIFFER`     | Needs the in-page fetch/XHR hook                                                                                                   |
 | `PDF_EXTRACTION`  | Playwright drives a browser; it has no PDF text extractor                                                                          |
-| `AUTO_EXTRACT`    | Needs the three-layer extractor and a Gemini key                                                                                   |
+| `AUTO_EXTRACT`    | Needs the in-page three-layer extractor, and a model the script has no configuration for                                           |
 | `PAGE_JSON`       | A second copy of the DOM walker would drift from the first                                                                         |
 | `SOLVE_CAPTCHA`   | A script carries neither the run authorisation nor the domain attestation, so it would be the act without the consent              |
 | `SESSION`         | The saved state is encrypted in the extension's own storage, and reading a cookie needs a Chrome permission a script does not have |

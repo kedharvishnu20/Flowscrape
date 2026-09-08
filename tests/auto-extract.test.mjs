@@ -39,7 +39,7 @@ test("_executeAutoExtract reads the useLlm toggle", () => {
   assert.match(
     autoExtract,
     /if \(extraction\.needsLlm && !useLlm\)/,
-    "a low-confidence page must not be sent to Gemini when the toggle is off",
+    "a low-confidence page must not be sent to a model when the toggle is off",
   );
 });
 
@@ -48,11 +48,36 @@ test("a skipped LLM layer is reported, not silently absorbed", () => {
     !/runLlmLayer\([^)]*\)\.catch\(\(\) => null\)/.test(autoExtract),
     "the old .catch(() => null) hid a missing key, a network error and a bad response alike",
   );
-  assert.match(autoExtract, /no Gemini API key stored/, "missing key says so");
+  // The layer is no longer Gemini-only — it goes through the gateway, so any
+  // of four providers can answer and one of them is a free local server. The
+  // message must say a model is missing without naming a vendor as the only
+  // way to supply one.
   assert.match(
     autoExtract,
-    /LLM layer failed \(\$\{llmError\}\)/,
+    /no AI model is configured/,
+    "a skipped layer says why",
+  );
+  assert.match(
+    autoExtract,
+    /Ollama or LM Studio/,
+    "and points at the option that costs nothing",
+  );
+  assert.ok(
+    !/no Gemini API key/.test(autoExtract),
+    "naming one paid vendor as the requirement is what this stopped being",
+  );
+  assert.match(
+    autoExtract,
+    /the AI layer failed \(\$\{llmError\}\)/,
     "a real failure reports its reason",
+  );
+  // A provider that refused — a bad key, a local server that is not running,
+  // a rate limit — is phrased by the gateway for a person to read. Passing it
+  // along beats replacing it with "the LLM layer failed".
+  assert.match(
+    autoExtract,
+    /llmResult\?\.error/,
+    "a refusal from the provider must reach the user with its own reason",
   );
 });
 

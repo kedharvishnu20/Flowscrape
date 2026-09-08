@@ -101,6 +101,12 @@ const GEMINI_URL_BASE =
  * @property {?string} [model]
  * @property {?string} [baseUrl]  required and only used for openai-compatible
  * @property {number}  [timeoutMs]
+ * @property {boolean} [json]      ask for a JSON object rather than prose,
+ *   using each provider's own native mechanism. The caller's prompt must still
+ *   say what shape it wants — and must contain the word "JSON", which OpenAI
+ *   requires before it will honour the request at all.
+ * @property {number}  [maxTokens] default 1024. An extraction answering for a
+ *   dozen fields, each with a selector, does not fit in that.
  */
 
 /**
@@ -230,6 +236,8 @@ async function _dispatch(config, run) {
       apiKey: config.apiKey ?? null,
       model,
       baseUrl: config.baseUrl ?? null,
+      json: config.json === true,
+      maxTokens: Number(config.maxTokens) > 0 ? Number(config.maxTokens) : 1024,
       signal: controller.signal,
     });
   } catch (err) {
@@ -292,10 +300,17 @@ async function _askAnthropic(ctx, prompt, image) {
       ]
     : prompt;
 
+  const messages = [{ role: "user", content }];
+  // Anthropic has no JSON-mode flag. The reliable equivalent is to put the
+  // opening brace in the model's own mouth: a prefilled assistant turn it must
+  // continue from, so there is no room for "Here is the JSON you asked for".
+  // The brace is not echoed back in the response, so it is prepended below.
+  if (ctx.json) messages.push({ role: "assistant", content: "{" });
+
   const body = {
     model: ctx.model,
-    max_tokens: 1024,
-    messages: [{ role: "user", content }],
+    max_tokens: ctx.maxTokens,
+    messages,
   };
 
   const res = await _boundedFetch(
@@ -327,7 +342,8 @@ async function _askAnthropic(ctx, prompt, image) {
   if (!textBlock?.text) {
     return _fail("bad-response", "Anthropic returned no text content.");
   }
-  return { ok: true, text: textBlock.text, model: json.model || ctx.model };
+  const text = ctx.json ? `{${textBlock.text}` : textBlock.text;
+  return { ok: true, text, model: json.model || ctx.model };
 }
 
 // ── OpenAI / OpenAI-compatible ────────────────────────────────────────────────
@@ -345,20 +361,44 @@ async function _askOpenAiChat(ctx, url, prompt, image) {
 
   const body = {
     model: ctx.model,
-    max_tokens: 1024,
+    max_tokens: ctx.maxTokens,
     messages: [{ role: "user", content }],
   };
+  if (ctx.json) body.response_format = { type: "json_object" };
 
   const headers = { "content-type": "application/json" };
   if (ctx.apiKey) headers["authorization"] = `Bearer ${ctx.apiKey}`;
 
   const label = ctx.provider === "openai" ? "OpenAI" : "The local server";
 
-  const res = await _boundedFetch(
-    url,
-    { method: "POST", headers, body: JSON.stringify(body), signal: ctx.signal },
-    label,
-  );
+  const send = (payload) =>
+    _boundedFetch(
+      url,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: ctx.signal,
+      },
+      label,
+    );
+
+  let res = await send(body);
+
+  // The free path must not be the fragile one. "OpenAI-compatible" is a family,
+  // not a specification: Ollama and llama.cpp honour response_format, several
+  // other local servers reject the whole request for carrying a field they do
+  // not know. Asking again without it costs one round trip on servers that
+  // would otherwise have failed outright, and nothing on servers that work.
+  if (
+    !res.ok &&
+    ctx.json &&
+    ctx.provider === "openai-compatible" &&
+    res.status === 400
+  ) {
+    const { response_format: _dropped, ...plain } = body;
+    res = await send(plain);
+  }
   if (!res.ok) return res;
 
   const json = res.json;
@@ -395,7 +435,10 @@ async function _askGemini(ctx, prompt, image) {
 
   const body = {
     contents: [{ role: "user", parts }],
-    generationConfig: { maxOutputTokens: 1024 },
+    generationConfig: {
+      maxOutputTokens: ctx.maxTokens,
+      ...(ctx.json ? { responseMimeType: "application/json" } : {}),
+    },
   };
 
   // The key travels as a query parameter — Gemini has no header auth for this

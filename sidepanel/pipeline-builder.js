@@ -2453,12 +2453,12 @@ function _configFields(step) {
   if (step.type === "AUTO_EXTRACT") {
     html += `<div class="step-note">
       <div class="step-note-title">Smart Product Auto-Extractor</div>
-      <p class="prose">Product pages. Layers 1 and 2 run in-page with no API call; layer 3 asks Gemini only if confidence is low.</p>
+      <p class="prose">Product pages. The first layers run in the page and cost nothing; a model is asked only when they cannot answer confidently.</p>
       <ol class="step-note-layers">
         <li>JSON-LD / Schema.org</li>
         <li>Open Graph tags</li>
         <li>Heuristic DOM scorer</li>
-        <li>Gemini Flash fallback</li>
+        <li>Whichever model you set up under Settings &rarr; AI gateway</li>
       </ol>
     </div>`;
 
@@ -2470,13 +2470,15 @@ function _configFields(step) {
       c.confidenceThreshold ?? 70,
     );
     html += `<p style="font-size:11px;color:var(--text-dim);margin:-4px 0 10px;">
-      Rows are always kept. Below this score the page is sent to Gemini for a
-      second opinion; above it, only the on-page layers run.</p>`;
+      Rows are always kept. Below this score the page text is sent to your
+      configured model for a second opinion; above it, only the on-page layers
+      run. A local Ollama or LM Studio server works here and costs nothing \u2014
+      nothing leaves the machine.</p>`;
 
     html += toggle(
       step,
       "useLlm",
-      "Enable AI fallback (Gemini) when confidence is low",
+      "Ask a model when the on-page layers are not confident",
     );
 
     html += `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(99,102,241,0.1);font-size:11px;color:var(--text-dim);">

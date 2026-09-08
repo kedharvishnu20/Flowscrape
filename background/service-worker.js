@@ -121,6 +121,11 @@ import {
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { runLlmLayer } from "./llm-extractor.js";
+// Non-secret AI-gateway settings (provider/model/baseUrl). The key itself
+// never lives here — it goes through api-key-manager.js's encrypted,
+// session-only storage under provider id `gateway:<provider>`, same as every
+// other credential this extension holds (K-17).
+import { GATEWAY_STORAGE_KEY as STORAGE_GATEWAY_KEY } from "./gateway-config.js";
 import {
   formatRows,
   formatMeta,
@@ -130,11 +135,6 @@ import {
 
 const MODULE = "service-worker";
 const STORAGE_FILES_KEY = "fs_storage_files_v1";
-// Non-secret AI-gateway settings (provider/model/baseUrl). The key itself
-// never lives here — it goes through api-key-manager.js's encrypted,
-// session-only storage under provider id `gateway:<provider>`, same as every
-// other credential this extension holds (K-17).
-const STORAGE_GATEWAY_KEY = "fs_gateway_config_v1";
 
 // ── Restricted sites that block automated file uploads ────────────────────────
 const RESTRICTED_UPLOAD_SITES = Object.freeze({
@@ -1812,24 +1812,37 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
       llmError = err.message;
     }
 
-    if (llmResult) {
+    if (llmResult?.error) {
+      // The gateway already phrased this for a person — a key it refused, a
+      // local server that is not running, a rate limit. Repeating it beats
+      // replacing it with "the LLM layer failed".
+      _broadcastLog(
+        "warn-log",
+        `AUTO_EXTRACT: ${llmResult.error} — using the L1/L2 result (confidence: ${extraction.overallConfidence}%).`,
+        runId,
+      );
+    } else if (llmResult) {
       // LLM wins field-by-field where it has higher confidence
       extraction = _mergeLlmOverL12(extraction, llmResult);
       _broadcastLog(
         "info-log",
-        `AUTO_EXTRACT: LLM merged — overall confidence now ${extraction.overallConfidence}%.`,
+        `AUTO_EXTRACT: the model answered — overall confidence now ${extraction.overallConfidence}%.`,
         runId,
       );
     } else if (llmError) {
       _broadcastLog(
         "warn-log",
-        `AUTO_EXTRACT: LLM layer failed (${llmError}) — using L1/L2 result (confidence: ${extraction.overallConfidence}%).`,
+        `AUTO_EXTRACT: the AI layer failed (${llmError}) — using L1/L2 result (confidence: ${extraction.overallConfidence}%).`,
         runId,
       );
     } else {
+      // No provider configured. Not a failure: it is the default state, and
+      // the free layers already answered. Says what to do rather than naming
+      // one vendor — a local model costs nothing and is the point.
       _broadcastLog(
         "warn-log",
-        `AUTO_EXTRACT: no Gemini API key stored, so the AI fallback was skipped — using L1/L2 result (confidence: ${extraction.overallConfidence}%). Add a key in Settings.`,
+        `AUTO_EXTRACT: no AI model is configured, so the fallback was skipped — using the L1/L2 result (confidence: ${extraction.overallConfidence}%). ` +
+          "Pick a provider under Settings → AI gateway; a local Ollama or LM Studio server works and costs nothing.",
         runId,
       );
     }
@@ -4834,18 +4847,14 @@ async function _pauseForCaptcha(runId, tabId, stepType, known = null) {
  *   default state of a tool that costs nothing to use.
  */
 async function _askGatewayForCaptcha(tabId, found, runId) {
-  const stored = await chrome.storage.local
-    .get(STORAGE_GATEWAY_KEY)
-    .catch(() => ({}));
-  const config = stored?.[STORAGE_GATEWAY_KEY];
-  if (!config?.provider) return null;
-
-  const { getApiKey } = await import("./api-key-manager.js");
-  const apiKey = await getApiKey(`gateway:${config.provider}`).catch(
-    () => null,
-  );
-  // A local endpoint needs no key; every hosted provider does.
-  if (!apiKey && config.provider !== "openai-compatible") return null;
+  // One reader for the storage key, the gateway:<provider> naming convention
+  // and the "a local server needs no key" exception — this used to be spelled
+  // out here and again in the extraction layer, which is two chances for the
+  // free path to work in one place and be refused in the other.
+  const { readGatewayConfig } = await import("./gateway-config.js");
+  const config = await readGatewayConfig();
+  if (!config) return null;
+  const apiKey = config.apiKey;
 
   let grabbed = null;
   try {

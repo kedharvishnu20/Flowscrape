@@ -19,6 +19,38 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Changed — the AI layer works with a free local model
+
+`AUTO_EXTRACT`'s third layer was a **second HTTP client**. It spoke to Gemini and
+only Gemini, with its own key lookup, its own timeout and its own idea of what a
+bad response looks like — while `utils/ai-gateway.js` already spoke to Anthropic,
+OpenAI, Gemini **and any OpenAI-compatible local server**, and was wired to the
+settings panel with a provider picker and a test button.
+
+So the one feature that most needed a free local model was the only feature that
+could not use one, and a fix to either client left the other wrong. It now goes
+through the gateway like everything else. Point it at Ollama or LM Studio and
+extraction costs nothing and sends nothing off the machine — including the
+credential: a local server that asks for no auth is not sent one.
+
+The gateway gained a JSON mode that uses each provider's **own** mechanism —
+Gemini a response MIME type, OpenAI a response format, Anthropic a prefilled
+assistant turn it must continue from, since it has no JSON flag. Asking for JSON
+and then hunting for a code fence in prose is how half an explanation ends up in
+a parser.
+
+One deliberate concession to reality: "OpenAI-compatible" is a family, not a
+specification. Ollama and llama.cpp honour `response_format`; several other local
+servers reject the whole request for carrying a field they do not know. A 400
+from a _local_ server is retried once without it, because the free path must not
+be the fragile one. A hosted provider is not retried — dropping the field OpenAI
+rejected would hide a real problem behind a worse answer.
+
+`background/gateway-config.js` is now the one place that knows the storage key,
+the `gateway:<provider>` key-naming convention and the "a local server needs no
+key" exception. Two copies of a convention is two chances for the free path to
+work in one place and be refused in the other.
+
 ### Docs — the capability review says what is true
 
 `docs/CAPABILITY_REVIEW.md` recorded gaps, not defects: things that were not

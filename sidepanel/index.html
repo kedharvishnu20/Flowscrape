@@ -2295,6 +2295,41 @@
 
         <!-- View: CONFIG -->
         <div id="view-config" class="view">
+          <!-- Schedules -->
+          <div class="accordion-section">
+            <div class="accordion-header">
+              <span>Schedules</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
+            </div>
+            <div class="accordion-content">
+              <p>
+                Run the pipeline on this board on a timer. There is no server:
+                <b>Chrome has to be running</b> for a schedule to fire, so one
+                set for 3am runs at 3am if this machine is awake and does not if
+                it is shut. A window that passes while the browser is closed is
+                reported as missed rather than made up for &mdash; running the
+                missed hours back to back would hammer the site.
+              </p>
+              <label>Page to open</label>
+              <input
+                type="text"
+                id="sched-url"
+                placeholder="https://example.com/products"
+              />
+              <label>Run every (minutes)</label>
+              <input type="number" id="sched-every" min="1" value="60" />
+              <p class="prose" id="sched-floor">
+                Chrome will not fire an alarm more often than once a minute.
+              </p>
+              <div class="flex gap-2 mb-2">
+                <button class="btn" id="btn-sched-add">
+                  Schedule this pipeline
+                </button>
+              </div>
+              <div id="sched-list"></div>
+            </div>
+          </div>
+
           <!-- API Keys -->
           <div class="accordion-section">
             <div class="accordion-header">

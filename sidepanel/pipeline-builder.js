@@ -819,6 +819,10 @@ function bindGlobalControls() {
       _saveAndValidateKey("gemini", "Gemini", "key-gemini"),
     );
   document
+    .getElementById("btn-sched-add")
+    ?.addEventListener("click", () => _addSchedule());
+  _renderSchedules();
+  document
     .getElementById("btn-gateway-save")
     ?.addEventListener("click", () => _saveGatewayConfig());
   document
@@ -5286,6 +5290,117 @@ function logToMonitor(levelClass, message) {
   }
 
   logs.scrollTop = logs.scrollHeight;
+}
+
+/**
+ * Schedule the pipeline currently on the board.
+ *
+ * The pipeline is copied into the schedule rather than referenced. A schedule
+ * pointing at "whatever is on the board" would change meaning every time the
+ * user edits something, and would run a half-built pipeline at 3am.
+ */
+async function _addSchedule() {
+  const url = document.getElementById("sched-url")?.value?.trim() ?? "";
+  const every = Number(document.getElementById("sched-every")?.value ?? 60);
+
+  if (!_pipeline.steps?.length) {
+    return logToMonitor(
+      "warn-log",
+      "There is no pipeline on the board to schedule.",
+    );
+  }
+
+  const res = await chrome.runtime.sendMessage({
+    type: "schedule:save",
+    payload: {
+      schedule: {
+        name: _pipeline.name || new URL(url || "https://x.test").hostname,
+        url,
+        everyMinutes: every,
+        pipeline: { name: _pipeline.name, steps: _pipeline.steps },
+      },
+    },
+  });
+
+  if (!res?.ok) {
+    return logToMonitor(
+      "error-log",
+      res?.error ?? "Could not save the schedule.",
+    );
+  }
+  if (res.result?.note) {
+    // Said, not silently applied: a schedule firing at a rate other than the
+    // number the user typed is how they conclude the feature is broken.
+    logToMonitor("warn-log", res.result.note);
+  }
+  logToMonitor(
+    "info-log",
+    `Scheduled "${res.result.name}" every ${res.result.everyMinutes} minute(s). ` +
+      "It only fires while Chrome is running.",
+  );
+  await _renderSchedules();
+}
+
+/** Draw the stored schedules, with what each one last did. */
+async function _renderSchedules() {
+  const box = document.getElementById("sched-list");
+  if (!box) return;
+  const res = await chrome.runtime
+    .sendMessage({ type: "schedule:list" })
+    .catch(() => null);
+  box.replaceChildren();
+  const list = res?.ok ? (res.result.schedules ?? []) : [];
+
+  if (list.length === 0) {
+    const none = document.createElement("p");
+    none.className = "prose";
+    none.textContent = "No schedules yet.";
+    box.appendChild(none);
+    return;
+  }
+
+  for (const s of list) {
+    const row = document.createElement("div");
+    row.className = "flex gap-2 mb-2";
+    row.style.cssText = "align-items:baseline;font-size:11px;";
+
+    const label = document.createElement("span");
+    // Built as nodes: the name comes from a pipeline the user may have
+    // imported, and the URL is theirs to type.
+    label.textContent = `${s.name} — every ${s.everyMinutes} min — ${s.url}`;
+    label.style.flex = "1";
+
+    const state = document.createElement("span");
+    state.textContent = s.lastRunAt
+      ? `last: ${new Date(s.lastRunAt).toLocaleString()}${s.lastStatus && s.lastStatus !== "started" ? ` (${s.lastStatus})` : ""}`
+      : "never run";
+    state.style.color = "var(--text-dim)";
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.className = "btn";
+    toggleBtn.textContent = s.enabled ? "Pause" : "Resume";
+    toggleBtn.addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({
+        type: "schedule:save",
+        payload: { schedule: { ...s, enabled: !s.enabled } },
+      });
+      await _renderSchedules();
+    });
+
+    const del = document.createElement("button");
+    del.className = "btn";
+    del.textContent = "Delete";
+    del.addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({
+        type: "schedule:delete",
+        payload: { id: s.id },
+      });
+      await _renderSchedules();
+    });
+
+    row.append(label, state, toggleBtn, del);
+    box.appendChild(row);
+  }
 }
 
 /**

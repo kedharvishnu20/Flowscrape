@@ -822,6 +822,84 @@ test("AUTO_EXTRACT leaves a field nothing answered empty rather than guessing", 
   await page.close();
 });
 
+test("a schedule fires and runs the pipeline it was saved with", async () => {
+  // The claim both reviews said was missing, proved rather than described: no
+  // server, no subscription, and the pipeline runs on a timer in the browser
+  // that is already open.
+  //
+  // One minute is the floor Chrome honours, which is too long for a check, so
+  // the alarm is fired directly — the same entry point Chrome uses. What that
+  // proves is everything after the alarm: the tab opens, the pipeline runs,
+  // the rows land, and the schedule records that it ran.
+  const list0 = await env.send("schedule:list", {});
+  assert.equal(list0.ok, true, JSON.stringify(list0));
+
+  const saved = await env.send("schedule:save", {
+    schedule: {
+      name: "e2e nightly",
+      url: site.url("/"),
+      everyMinutes: 60,
+      pipeline: {
+        name: "e2e nightly",
+        steps: [
+          step("EXTRACT", {
+            fields: [{ name: "title", selector: "#title", type: "text" }],
+          }),
+        ],
+      },
+    },
+  });
+  assert.equal(saved.ok, true, JSON.stringify(saved));
+  const id = saved.result.id;
+
+  try {
+    // An alarm exists for it, which is the half that decides whether the
+    // schedule ever fires at all.
+    const armed = await env.sw.evaluate(
+      (name) =>
+        new Promise((resolve) => {
+          chrome.alarms.getAll((all) =>
+            resolve(all.map((a) => a.name).includes(name)),
+          );
+        }),
+      `fs_schedule_${id}`,
+    );
+    assert.equal(armed, true, "the schedule was stored with no alarm");
+
+    const before = (await env.send("schedule:list", {})).result.schedules.find(
+      (s) => s.id === id,
+    );
+    assert.equal(before.lastRunAt, null);
+
+    const fired = await env.send("schedule:run", { id });
+    assert.equal(fired.ok, true, JSON.stringify(fired));
+
+    const after = (await env.send("schedule:list", {})).result.schedules.find(
+      (s) => s.id === id,
+    );
+    assert.ok(after.lastRunAt, "the schedule did not record having run");
+    assert.equal(
+      after.lastStatus,
+      "started",
+      `the scheduled run failed: ${after.lastStatus}`,
+    );
+  } finally {
+    await env.send("schedule:delete", { id });
+    const gone = await env.sw.evaluate(
+      (name) =>
+        new Promise((resolve) => {
+          chrome.alarms.getAll((all) =>
+            resolve(all.map((a) => a.name).includes(name)),
+          );
+        }),
+      `fs_schedule_${id}`,
+    );
+    // An alarm outliving its schedule fires forever for something the user
+    // deleted and can no longer see.
+    assert.equal(gone, false, "the alarm outlived the schedule");
+  }
+});
+
 test("the row records which layer answered each field", async () => {
   // A row carried one `_extractionMethod` for all of it, taken from whichever
   // layer answered first. On this page that would say "json-ld" while half the

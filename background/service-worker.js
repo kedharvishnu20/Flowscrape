@@ -30,6 +30,17 @@
  */
 
 import { logger } from "../utils/logger.js";
+import {
+  listSchedules,
+  getSchedule,
+  saveSchedule,
+  deleteSchedule,
+  markRun,
+  syncAlarms,
+  missedWindows,
+  scheduleIdFromAlarm,
+  MIN_PERIOD_MINUTES,
+} from "./scheduler.js";
 import { SeenKeys, filterRows, parseFields } from "../utils/row-dedupe.js";
 import { extractPdfText, extractPdfItems } from "../utils/pdf-text.js";
 import { tablesFromPages } from "../utils/pdf-tables.js";
@@ -475,6 +486,14 @@ async function _bootstrap() {
     });
   }
 
+  // Alarms do not survive an extension reload, and a schedule with no alarm
+  // never runs — silently, which is the worst way for a scheduler to fail.
+  // Re-armed every time the worker starts, which also clears any alarm whose
+  // schedule was deleted while the worker was down.
+  await syncAlarms().catch((err) =>
+    logger.error(MODULE, "alarm-sync-fail", { error: err.message }),
+  );
+
   logger.info(MODULE, "sw-bootstrapped", {});
 }
 
@@ -533,6 +552,17 @@ function _stopHeartbeat() {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  const scheduleId = scheduleIdFromAlarm(alarm.name);
+  if (scheduleId) {
+    _runSchedule(scheduleId).catch((err) => {
+      logger.error(MODULE, "schedule-run-failed", {
+        id: scheduleId,
+        error: err.message,
+      });
+    });
+    return;
+  }
+
   if (alarm.name === "fs_sw_heartbeat") {
     logger.debug(MODULE, "heartbeat", { active: _runStates.size > 0 });
     // The worker may have been restarted by this very alarm, in which case the
@@ -5859,6 +5889,120 @@ _registerHandler("content:detect", async (payload, sender) => {
   });
   if (!resp?.ok) throw new Error(resp?.error || "Could not read the page");
   return resp.result;
+});
+
+// ── Schedules ────────────────────────────────────────────────────────────────
+//
+// A schedule is a stored pipeline and an alarm. The run happens in the browser
+// the user already has open, which is what makes this free — and what makes
+// the two limits worth stating rather than burying: Chrome has to be running,
+// and a minute is the floor Chrome will honour.
+
+/** Schedules currently mid-run, so one cannot start a second copy of itself. */
+const _scheduleRuns = new Set();
+
+/**
+ * Fire one schedule.
+ *
+ * Opens the page in a background tab, runs the pipeline through the same
+ * handler the Run button uses — enforcement, ethics gates and all — and closes
+ * the tab afterwards.
+ */
+async function _runSchedule(id) {
+  const schedule = await getSchedule(id);
+  if (!schedule) {
+    // The alarm outlived its schedule. Clear it rather than firing forever for
+    // something the user deleted and can no longer see.
+    await chrome.alarms.clear(`fs_schedule_${id}`);
+    return;
+  }
+  if (!schedule.enabled) return;
+
+  if (_scheduleRuns.has(id)) {
+    // An hourly run over a slow site can still be going when the next hour
+    // comes round. Two copies of one pipeline on one tab is not a schedule
+    // running twice, it is a mess — and the site gets double the traffic.
+    _broadcastLog(
+      "warn-log",
+      `Schedule "${schedule.name}" is already running, so this firing was skipped.`,
+      null,
+    );
+    return;
+  }
+
+  const missed = missedWindows(schedule, Date.now());
+  if (missed > 0) {
+    // Named rather than made up for. A gap in the data that looks like the
+    // site having had no results is the failure this line exists to prevent;
+    // running the missed windows back to back would be a worse one.
+    _broadcastLog(
+      "warn-log",
+      `Schedule "${schedule.name}": ${missed} run(s) were missed, most likely because Chrome was not running. ` +
+        "They are not being made up — running them back to back would hammer the site.",
+      null,
+    );
+  }
+
+  _scheduleRuns.add(id);
+  let tab = null;
+  try {
+    // Not focused: a schedule that steals the window every hour is unusable.
+    tab = await chrome.tabs.create({ url: schedule.url, active: false });
+    // The same wait every navigation uses. A pipeline started against a
+    // half-loaded page fails on step 1 for a reason that has nothing to do
+    // with the pipeline.
+    if (!(await _waitForTabLoad(tab.id))) {
+      throw new Error("The scheduled page did not finish loading.");
+    }
+
+    const start = _handlers.get(MSG.PIPELINE_START);
+    const result = await start(
+      {
+        pipeline: schedule.pipeline,
+        tabId: tab.id,
+        targetOrigin: new URL(schedule.url).origin,
+      },
+      {},
+    );
+    await markRun(id, "started");
+    _broadcastLog(
+      "info-log",
+      `Schedule "${schedule.name}" started (run ${result?.runId ?? "?"}).`,
+      result?.runId ?? null,
+    );
+  } catch (err) {
+    await markRun(id, `failed: ${err.message}`);
+    _broadcastLog(
+      "error-log",
+      `Schedule "${schedule.name}" failed to start: ${err.message}`,
+      null,
+    );
+    if (tab?.id) await chrome.tabs.remove(tab.id).catch(() => {});
+  } finally {
+    _scheduleRuns.delete(id);
+  }
+}
+
+_registerHandler("schedule:list", async () => ({
+  schedules: await listSchedules(),
+  minPeriodMinutes: MIN_PERIOD_MINUTES,
+}));
+
+_registerHandler("schedule:save", async (payload) => {
+  const saved = await saveSchedule(payload?.schedule ?? payload);
+  await syncAlarms();
+  return saved;
+});
+
+_registerHandler("schedule:delete", async (payload) => {
+  const removed = await deleteSchedule(payload?.id);
+  await syncAlarms();
+  return { removed };
+});
+
+_registerHandler("schedule:run", async (payload) => {
+  await _runSchedule(payload?.id);
+  return { started: true };
 });
 
 _registerHandler("content:ensure", async (payload, sender) => {

@@ -2524,6 +2524,17 @@ function _configFields(step) {
       );
     }
 
+    html += toggle(
+      step,
+      "provenance",
+      "Add a column recording where each field came from",
+    );
+    html += hint(
+      "The panel shows this for every run either way. The column puts it in " +
+        "the file too, as one cell per row — useful when someone else has " +
+        "to check the data and cannot see the run that produced it.",
+    );
+
     html += `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(99,102,241,0.1);font-size:11px;color:var(--text-dim);">
       <b>Extracted fields:</b> name, price, originalPrice, currency, brand, description, sku, availability, rating, reviewCount, images[]<br>
       <b>Tip:</b> Use this step inside a LOOP to extract products from multiple pages automatically.
@@ -5143,6 +5154,10 @@ function listenToSystem() {
         );
       }
     }
+    if (msg.type === "pipeline:provenance") {
+      renderProvenance(msg.payload?.provenance);
+    }
+
     if (msg.type === "pipeline:log") {
       logToMonitor(msg.payload.level, msg.payload.message);
       if (msg.payload.level === "error-log") {
@@ -5241,6 +5256,80 @@ function logToMonitor(levelClass, message) {
     logs.removeChild(logs.firstElementChild);
   }
 
+  logs.scrollTop = logs.scrollHeight;
+}
+
+/**
+ * The per-field record for one AUTO_EXTRACT row.
+ *
+ * A row's single confidence figure says how the extraction went on average.
+ * This says which cells to look at: the ones a heuristic guessed, and the
+ * ones a model answered without the page backing it up.
+ *
+ * Built as nodes for the same reason every other log line is: every value in
+ * here came off a page, and the panel's CSP stops inline script but not
+ * markup injection.
+ */
+function renderProvenance(rows) {
+  const logs = document.getElementById("mon-logs");
+  if (!logs || !Array.isArray(rows) || rows.length === 0) return;
+
+  const box = document.createElement("div");
+  box.className = "log-entry info-log fs-provenance";
+
+  const head = document.createElement("div");
+  head.className = "log-msg";
+  head.textContent = "Where each field came from";
+  head.style.fontWeight = "600";
+  box.appendChild(head);
+
+  for (const r of rows) {
+    const line = document.createElement("div");
+    line.style.cssText =
+      "display:flex;gap:8px;align-items:baseline;font-size:11px;padding-left:8px;";
+
+    const name = document.createElement("span");
+    name.className = "mono";
+    name.textContent = r.field;
+    name.style.cssText = "min-width:96px;color:var(--text-main);";
+
+    const src = document.createElement("span");
+    src.textContent = r.label;
+    // A field nothing answered is dimmed rather than hidden: an absent column
+    // is the thing a person spends an afternoon looking for.
+    src.style.color =
+      r.trust === "none"
+        ? "var(--text-dim)"
+        : r.trust === "model"
+          ? "var(--amber,#d97706)"
+          : "var(--text-dim)";
+
+    line.append(name, src);
+
+    if (r.trust !== "none") {
+      const conf = document.createElement("span");
+      conf.className = "mono";
+      conf.textContent = `${r.confidence}%`;
+      conf.style.cssText = "margin-left:auto;color:var(--text-dim);";
+      line.appendChild(conf);
+    }
+
+    if (r.note) {
+      const note = document.createElement("span");
+      note.textContent = r.verified ? "\u2713 verified" : r.note;
+      note.style.color = r.verified
+        ? "var(--green,#16a34a)"
+        : "var(--text-dim)";
+      line.appendChild(note);
+    }
+
+    box.appendChild(line);
+  }
+
+  logs.appendChild(box);
+  while (logs.childElementCount > MAX_LOG_ENTRIES) {
+    logs.removeChild(logs.firstElementChild);
+  }
   logs.scrollTop = logs.scrollHeight;
 }
 

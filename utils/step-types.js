@@ -465,6 +465,12 @@ export const STEP_TYPES = Object.freeze({
       // shown, and drop what is not there. On by default: the prompt can only
       // ask a model not to invent, and this can check.
       grounded: true,
+      // Add the per-field record to the exported row as one cell.
+      //
+      // Off by default: provenance is per field and a CSV cell is not, so
+      // every export that exists would change shape for a detail most runs
+      // never look at. The panel shows it either way.
+      provenance: false,
     },
     // Not expressible in an exported script: the first two layers are an
     // in-page extractor with no standalone equivalent, and the third asks a

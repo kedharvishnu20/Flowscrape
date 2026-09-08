@@ -1051,9 +1051,16 @@ function _mergeResults(layer1, layer2) {
     merged[field] = isEmpty(sv) ? (isEmpty(hv) ? null : hv) : sv;
   }
 
-  // Build per-field confidence (structured = 95+, heuristic = as-scored)
+  // Build per-field confidence (structured = 95+, heuristic = as-scored) and,
+  // beside it, which layer actually answered.
+  //
+  // The row used to carry one `method` for all of it, taken from whichever
+  // layer answered first. That is untrue of any real page: `name` from the
+  // site's JSON-LD and `price` from a guess at the markup are not the same
+  // kind of claim, and one label hides which cells are which.
   const l1Conf = layer1?.confidence ?? 0;
   const perField = {};
+  const from = {};
 
   for (const field of fieldList) {
     const sv = structured[field];
@@ -1072,8 +1079,12 @@ function _mergeResults(layer1, layer2) {
           : layer1?.method === "microdata"
             ? 95
             : 90;
+      from[field] = layer1?.method || "json-ld";
     } else {
+      // The value, not the score, decides the source: a field nothing found
+      // is empty, not a guess that happened to score zero.
       perField[field] = hp;
+      from[field] = isEmpty(heuristic[field]) ? "none" : "heuristic";
     }
   }
 
@@ -1114,7 +1125,14 @@ function _mergeResults(layer1, layer2) {
           ? "og-meta"
           : "heuristic";
 
-  return { result: merged, perField, overallConfidence, method, warnings };
+  return {
+    result: merged,
+    perField,
+    from,
+    overallConfidence,
+    method,
+    warnings,
+  };
 }
 
 // ── Simplified DOM for LLM ────────────────────────────────────────────────────
@@ -1188,6 +1206,7 @@ function fsSmartExtract(config = {}) {
   const out = {
     result: merged.result,
     perField: merged.perField,
+    from: merged.from,
     overallConfidence: merged.overallConfidence,
     method: merged.method,
     warnings: merged.warnings,

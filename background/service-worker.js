@@ -142,6 +142,11 @@ import {
   mapNodeToSchema,
 } from "../utils/extraction-schema.js";
 import { groundFields } from "../utils/extraction-grounding.js";
+import {
+  buildProvenance,
+  summarise as summariseProvenance,
+  provenanceColumn,
+} from "../utils/extraction-provenance.js";
 // Non-secret AI-gateway settings (provider/model/baseUrl). The key itself
 // never lives here — it goes through api-key-manager.js's encrypted,
 // session-only storage under provider id `gateway:<provider>`, same as every
@@ -1941,6 +1946,28 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     _broadcastLog("warn-log", warning, runId);
   }
 
+  // Which layer answered each field, and what that is worth.
+  //
+  // The row carries one `_extractionMethod`, taken from whichever layer
+  // answered first — untrue of any real page, where `name` comes from the
+  // site's JSON-LD and `price` from a guess at the markup. Both fields are
+  // kept as they were so no existing export changes shape; the per-field
+  // record goes to the panel beside them.
+  const provenance = buildProvenance({
+    fields: extraction.fields ?? Object.keys(extraction.result ?? {}),
+    result: extraction.result ?? {},
+    perField: extraction.perField,
+    from: extraction.from,
+    grounding: extraction.grounding,
+  });
+
+  _broadcastProvenance(provenance, runId, tabId);
+  _broadcastLog(
+    "info-log",
+    `AUTO_EXTRACT: ${summariseProvenance(provenance)}`,
+    runId,
+  );
+
   // Build the final row — include confidence metadata as hidden fields
   const row = {
     ...extraction.result,
@@ -1948,7 +1975,28 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     _extractionMethod: extraction.method,
   };
 
+  // Off by default: provenance is per field and a CSV cell is not, so adding
+  // it to every row would change the shape of every export that exists for a
+  // detail most runs never look at.
+  if (config.provenance) row._provenance = provenanceColumn(provenance);
+
   return row;
+}
+
+/**
+ * Send the per-field record to the panel.
+ *
+ * Its own message rather than a log line: a log line is a sentence, and this
+ * is a table the panel renders as one — and as nodes, because every value in
+ * it came off a page.
+ */
+function _broadcastProvenance(provenance, runId, tabId) {
+  chrome.runtime
+    .sendMessage({
+      type: "pipeline:provenance",
+      payload: { provenance, runId, tabId },
+    })
+    .catch(() => {});
 }
 
 /**
@@ -2072,6 +2120,7 @@ function _mergeLlmOverL12(l12, llm) {
 
   const mergedResult = { ...(l12.result || {}) };
   const mergedPerField = { ...(l12.perField || {}) };
+  const mergedFrom = { ...(l12.from || {}) };
   const mergedWarnings = [...(l12.warnings || []), ...(llm.warnings || [])];
 
   for (const field of fieldList) {
@@ -2092,30 +2141,34 @@ function _mergeLlmOverL12(l12, llm) {
     ) {
       mergedResult[field] = llmVal;
       mergedPerField[field] = llmConf;
+      // Or the row would keep layer 1's label on a value layer 3 replaced,
+      // which is the exact untruth per-field provenance exists to remove.
+      mergedFrom[field] = "llm";
     }
   }
 
-  // Recompute overall confidence after merge
-  const weights = {
-    name: 30,
-    price: 25,
-    images: 15,
-    brand: 10,
-    description: 10,
-    sku: 5,
-    availability: 5,
-  };
+  // Recompute overall confidence after merge, over the fields that were
+  // actually asked for. The product weights were hardcoded here, so a custom
+  // schema summed seven fields it does not have and reported 0% however well
+  // the model had answered.
+  const weights = weightsFor(fieldList, !l12.fields);
   let totalWeight = 0,
     weightedSum = 0;
-  for (const [field, weight] of Object.entries(weights)) {
+  for (const field of fieldList) {
+    const weight = weights[field] ?? 0;
     totalWeight += weight;
     weightedSum += (mergedPerField[field] || 0) * weight;
   }
-  const overallConfidence = Math.round(weightedSum / totalWeight);
+  const overallConfidence = totalWeight
+    ? Math.round(weightedSum / totalWeight)
+    : 0;
 
   return {
+    ...l12,
     result: mergedResult,
     perField: mergedPerField,
+    from: mergedFrom,
+    grounding: llm.grounding || l12.grounding,
     overallConfidence,
     method: llm.method || l12.method,
     warnings: mergedWarnings,

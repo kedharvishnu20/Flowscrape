@@ -820,6 +820,55 @@ test("AUTO_EXTRACT leaves a field nothing answered empty rather than guessing", 
   await page.close();
 });
 
+test("the row records which layer answered each field", async () => {
+  // A row carried one `_extractionMethod` for all of it, taken from whichever
+  // layer answered first. On this page that would say "json-ld" while half the
+  // columns came from somewhere else entirely.
+  const { tabId, page } = await onSite("/article");
+  const res = await env.send("step:execute", {
+    step: step("AUTO_EXTRACT", {
+      schema: "headline, defendant solicitor",
+      useLlm: false,
+      provenance: true,
+    }),
+    tabId,
+  });
+  await page.close();
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  const cell = res.result._provenance;
+  assert.ok(cell, "the column was asked for and is not there");
+  assert.match(
+    cell,
+    /headline=json-ld\(headline\)/,
+    "the site's own key is the part a person can go and check",
+  );
+  assert.match(
+    cell,
+    /defendant solicitor=none/,
+    "a field nothing answered must not borrow the page's authority",
+  );
+  assert.ok(
+    !/\n/.test(cell),
+    "a newline inside a CSV cell is a support ticket",
+  );
+});
+
+test("the column is not there unless the step was asked for it", async () => {
+  const { tabId, page } = await onSite("/article");
+  const res = await env.send("step:execute", {
+    step: step("AUTO_EXTRACT", { schema: "headline", useLlm: false }),
+    tabId,
+  });
+  await page.close();
+  assert.equal(res.result._provenance, undefined);
+  assert.equal(
+    typeof res.result._confidence,
+    "number",
+    "the fields every existing export already has must stay",
+  );
+});
+
 test("a value the model invented is dropped, not exported", async () => {
   // The strongest claim this project makes about its AI layer, proved rather
   // than asserted — and proved with no key and no cost, against a local server

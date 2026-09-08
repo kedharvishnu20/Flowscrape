@@ -869,6 +869,92 @@ test("the column is not there unless the step was asked for it", async () => {
   );
 });
 
+test("the same page is not sent to the model twice", async () => {
+  // The one part of this that costs anything, not paid for twice. A local
+  // server counts the requests: two identical runs, one call.
+  const http = await import("node:http");
+  let calls = 0;
+  const model = http.createServer((req, res) => {
+    calls++;
+    req.on("data", () => {});
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          model: "fake-local",
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  headline: "Acme Ltd v Bloggs",
+                  confidence: { headline: 90 },
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+  });
+  await new Promise((r) => model.listen(0, "127.0.0.1", r));
+  const port = model.address().port;
+
+  try {
+    const saved = await env.send("gateway:save", {
+      provider: "openai-compatible",
+      apiKey: "",
+      model: "fake-local",
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+    });
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    const run = async (config) => {
+      const { tabId, page } = await onSite("/article");
+      const res = await env.send("step:execute", {
+        step: step("AUTO_EXTRACT", {
+          schema: "headline, defendant solicitor",
+          useLlm: true,
+          ...config,
+        }),
+        tabId,
+      });
+      await page.close();
+      assert.equal(res.ok, true, JSON.stringify(res));
+      return res.result;
+    };
+
+    const first = await run({});
+    assert.equal(calls, 1, "the model should have been asked once");
+    assert.equal(first.headline, "Acme Ltd v Bloggs");
+
+    const second = await run({});
+    assert.equal(calls, 1, "the second run asked again for an unchanged page");
+    assert.equal(
+      second.headline,
+      "Acme Ltd v Bloggs",
+      "a cached answer has to be the same answer, not an empty one",
+    );
+
+    // The question changed, so the cache must not answer it. A field the page
+    // cannot answer for free, or the free layers would settle it and the model
+    // would not be asked either way.
+    await run({ schema: "headline, defendant address" });
+    assert.equal(calls, 2, "a different schema is a different question");
+
+    // And the switch means what it says.
+    await run({ cache: false });
+    assert.equal(calls, 3, "the step was told not to use the cache");
+  } finally {
+    await env.send("gateway:save", {
+      provider: "gemini",
+      apiKey: "",
+      model: "gemini-2.0-flash",
+      baseUrl: "",
+    });
+    await new Promise((r) => model.close(r));
+  }
+});
+
 test("a value the model invented is dropped, not exported", async () => {
   // The strongest claim this project makes about its AI layer, proved rather
   // than asserted — and proved with no key and no cost, against a local server

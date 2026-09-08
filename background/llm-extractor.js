@@ -36,6 +36,7 @@ import { askText } from "../utils/ai-gateway.js";
 import { readGatewayConfig, describeGateway } from "./gateway-config.js";
 import { mapModelKeys } from "../utils/extraction-schema.js";
 import { logger } from "../utils/logger.js";
+import { cacheKey, readCache, writeCache } from "../checkpoint/ai-cache.js";
 
 const MODULE = "llm-extractor";
 
@@ -341,11 +342,18 @@ function _arrayOfStrings(v) {
 /**
  * Run layer 3 with whatever model the user configured, if any.
  *
+ * Also where the cache sits, because this is the point at which the provider
+ * and model are known — and both are part of the question. Putting it in the
+ * executor instead would mean reading the gateway settings twice and getting
+ * the key wrong the day someone switches provider.
+ *
  * @param {string} simplifiedDom
+ * @param {{fields: string[], isDefault: boolean}|null} schema
+ * @param {{url?: string, cache?: boolean}} [opts]
  * @returns {Promise<object|null>} null when no model is configured — which is
  *   the default, and not a failure.
  */
-export async function runLlmLayer(simplifiedDom, schema = null) {
+export async function runLlmLayer(simplifiedDom, schema = null, opts = {}) {
   const config = await readGatewayConfig();
   if (!config) {
     logger.info(MODULE, "no-model-configured", {
@@ -353,8 +361,41 @@ export async function runLlmLayer(simplifiedDom, schema = null) {
     });
     return null;
   }
+
+  const useCache = opts.cache !== false;
+  const dom = String(simplifiedDom ?? "").slice(0, MAX_DOM_CHARS);
+  const fields = schema && !schema.isDefault ? schema.fields : [];
+
+  let key = null;
+  if (useCache && dom) {
+    key = await cacheKey({
+      url: opts.url ?? "",
+      dom,
+      fields,
+      provider: config.provider,
+      model: config.model,
+      baseUrl: config.baseUrl,
+    });
+    const hit = await readCache(key);
+    if (hit?.value) {
+      logger.info(MODULE, "cache-hit", { model: hit.model });
+      // Marked, not disguised: a run that says "the model answered" when the
+      // answer came out of a store is telling the user something untrue about
+      // where their data came from.
+      return { ...hit.value, cached: true };
+    }
+  }
+
   logger.info(MODULE, "asking", { model: describeGateway(config) });
-  return llmExtract(simplifiedDom, config, schema);
+  const out = await llmExtract(simplifiedDom, config, schema);
+
+  // Only a real answer. A rate limit, a local server not started yet, a reply
+  // that would not parse — all transient, and all would otherwise become this
+  // page's permanent answer.
+  if (!out?.error && out?.result && key) {
+    await writeCache(key, out, { url: opts.url ?? "", model: out.model ?? "" });
+  }
+  return out;
 }
 
 /**

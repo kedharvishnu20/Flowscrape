@@ -1862,10 +1862,13 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     let llmResult = null;
     let llmError = null;
     try {
-      llmResult = await runLlmLayer(extraction.simplifiedDom, {
-        fields,
-        isDefault,
-      });
+      llmResult = await runLlmLayer(
+        extraction.simplifiedDom,
+        { fields, isDefault },
+        // The URL is part of the cache key, so an answer is never served for a
+        // page it was not given for.
+        { url: await _tabUrl(tabId), cache: config.cache !== false },
+      );
     } catch (err) {
       llmError = err.message;
     }
@@ -1913,7 +1916,9 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
       extraction = _mergeLlmOverL12(extraction, llmResult);
       _broadcastLog(
         "info-log",
-        `AUTO_EXTRACT: the model answered — overall confidence now ${extraction.overallConfidence}%.`,
+        llmResult.cached
+          ? `AUTO_EXTRACT: answered from cache — this page has not changed since the model last read it (confidence ${extraction.overallConfidence}%).`
+          : `AUTO_EXTRACT: the model answered — overall confidence now ${extraction.overallConfidence}%.`,
         runId,
       );
     } else if (llmError) {
@@ -1981,6 +1986,21 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   if (config.provenance) row._provenance = provenanceColumn(provenance);
 
   return row;
+}
+
+/**
+ * The URL of a tab, or "" if it cannot be read.
+ *
+ * Part of the AI cache key. A failure here has to be a cache miss rather than
+ * a failed step, so it never throws.
+ */
+async function _tabUrl(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return tab?.url ?? "";
+  } catch {
+    return "";
+  }
 }
 
 /**

@@ -2526,6 +2526,18 @@ function _configFields(step) {
 
     html += toggle(
       step,
+      "cache",
+      "Reuse the model's answer for a page that has not changed",
+    );
+    html += hint(
+      "The page text is the key, so a page that changed is asked again and a " +
+        "page that did not costs nothing the second time. Switching model or " +
+        "changing the fields asks again too \u2014 a different question. Only " +
+        "answers are kept, never the page text.",
+    );
+
+    html += toggle(
+      step,
       "provenance",
       "Add a column recording where each field came from",
     );

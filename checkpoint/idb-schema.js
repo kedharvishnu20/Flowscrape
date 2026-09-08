@@ -31,13 +31,17 @@ export const DB_NAME = "flowscrape_v3";
  *      all exist regardless of which module opens the database first.
  * v3 — `datasets`, which outlive a run: an EXPORT set to append accumulates
  *      into one named collection so a run per day builds one file.
+ * v4 — `ai_cache`: an answer a model already gave, for a page that has not
+ *      changed since. The one part of this that costs money is not paid for
+ *      twice.
  */
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 export const STORE_CURSORS = "cursors";
 export const STORE_ROW_BUFFER = "row_buffer";
 export const STORE_DATA_ROWS = "data_rows";
 export const STORE_DATASETS = "datasets";
+export const STORE_AI_CACHE = "ai_cache";
 
 /**
  * Declarative schema. `upgrade` runs only when the store is created.
@@ -64,6 +68,17 @@ const STORES = [
     options: { autoIncrement: true },
     indexes: [
       { name: "dataset", keyPath: "dataset", options: { unique: false } },
+    ],
+  },
+  {
+    // Keyed by the fingerprint of the question, so a lookup is a `get` and
+    // never a scan. The index is on last use rather than on when the entry was
+    // written: eviction has to drop what nobody is asking for, not what was
+    // stored longest ago.
+    name: STORE_AI_CACHE,
+    options: { keyPath: "key" },
+    indexes: [
+      { name: "lastUsed", keyPath: "lastUsed", options: { unique: false } },
     ],
   },
 ];

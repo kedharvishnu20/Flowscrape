@@ -471,6 +471,10 @@ export const STEP_TYPES = Object.freeze({
       // every export that exists would change shape for a detail most runs
       // never look at. The panel shows it either way.
       provenance: false,
+      // Reuse an answer the model already gave for this exact page. The page
+      // text is the key, so a page that changed is asked again and there is no
+      // staleness window to get wrong.
+      cache: true,
     },
     // Not expressible in an exported script: the first two layers are an
     // in-page extractor with no standalone equivalent, and the third asks a

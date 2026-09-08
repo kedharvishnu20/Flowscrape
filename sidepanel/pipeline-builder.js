@@ -2234,7 +2234,25 @@ function _configFields(step) {
       ? c.fileIds.filter((id) => validIds.has(id))
       : [];
 
-    html += selectorRow(step, "selector");
+    const upMode = c.mode === "drop" ? "drop" : "input";
+    html += `<label>How the page takes files</label>
+    <select id="cfg-${step.id}-mode" data-id="${step.id}" data-key="mode" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="input"${upMode === "input" ? " selected" : ""}>It has a file input</option>
+      <option value="drop"${upMode === "drop" ? " selected" : ""}>It is a drop zone with no file input</option>
+    </select>`;
+    html += selectorRow(
+      step,
+      "selector",
+      upMode === "drop" ? "The drop zone" : "The file input",
+    );
+    if (upMode === "drop") {
+      html += hint(
+        "For a widget built on the drop event, which has no input whose files " +
+          "could be set. Pick the zone itself. If nothing on the page handles the " +
+          "drop the step fails and says so, rather than reporting an upload that " +
+          "never happened.",
+      );
+    }
 
     html += `<div class="flex gap-2" style="margin-bottom:8px;">
       <button class="btn" data-action="upload-step-select-all" data-id="${step.id}">Select All Storage Files</button>

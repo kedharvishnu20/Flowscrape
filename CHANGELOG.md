@@ -19,6 +19,40 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — UPLOAD_ACTIVITY onto a drop zone, and a fix it uncovered
+
+More and more upload widgets have no `input[type=file]` at all. They listen for
+`drop` and read `event.dataTransfer.files`, so there is nothing whose `.files`
+can be set — the step's entire mechanism did not apply, and it failed with
+"Upload input not found" on a page perfectly willing to take the file.
+
+`UPLOAD_ACTIVITY` now has a drop mode: point it at the zone and it dispatches
+the real sequence — `dragenter`, `dragover`, `drop` — carrying a `DataTransfer`
+holding real `File` objects, with `types` reporting `"Files"`, because that is
+what a dropzone checks before it accepts.
+
+The part that decides whether this is honest is knowing when it did **not**
+work. Dispatching a drop at an element with no handler does nothing at all: no
+error, no change, nothing on screen. A step that fired the events and reported
+success would be exactly the failure this project keeps finding. There is a real
+signal, though: a page that accepts a drop _must_ cancel `dragover`, or the
+browser refuses the drop outright. So "did anything cancel these" answers "did
+anything take the files", and a drop nothing handled fails the step with that
+explanation rather than reporting an upload that never happened.
+
+### Fixed — every upload on a freshly loaded page
+
+`UPLOAD_ACTIVITY` talked to the tab with `chrome.tabs.sendMessage` directly
+rather than through the helper that puts the content script back. Content
+scripts are injected on demand and die with the document that hosts them (C-09),
+so any upload after a navigation failed with "Receiving end does not exist" —
+the same defect that had already been fixed for every other page step, missed
+here because this one had its own send.
+
+No unit test could have caught it: the worker harness answers whether or not
+anything was injected. It surfaced the first time the new drop mode was run in a
+real browser.
+
 ### Added — LOOP over a list you supply
 
 Every other `LOOP` mode takes its bound from the page: the elements it matched,

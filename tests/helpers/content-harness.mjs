@@ -16,6 +16,7 @@ const SOURCE = new URL("../../content/injector.js", import.meta.url);
 const EXPOSED = [
   "_executeStep",
   "_stepClick",
+  "_stepUploadActivity",
   "_stepExtract",
   "_stepIfElse",
   "_queryScoped",
@@ -73,6 +74,74 @@ function stubLayout(window) {
 }
 
 /**
+ * The drag-and-drop constructors jsdom does not implement.
+ *
+ * jsdom has `File` but neither `DataTransfer` nor `DragEvent`, so the drop
+ * path throws `DataTransfer is not defined` before it does anything — which
+ * says nothing about whether the code is right.
+ *
+ * These are as small as the code under test needs and no smaller: `types`
+ * reporting "Files" matters, because a real dropzone checks it before
+ * accepting, and `defaultPrevented` matters, because that is the signal the
+ * step reads to decide whether the page took the files. What they cannot show
+ * is whether a real browser delivers the sequence the same way — that is what
+ * the end-to-end check in a real Chromium is for.
+ */
+function stubDragAndDrop(window) {
+  if (!window.DataTransfer) {
+    window.DataTransfer = class DataTransfer {
+      constructor() {
+        this._files = [];
+        this.dropEffect = "none";
+        this.effectAllowed = "all";
+        this.items = {
+          add: (file) => {
+            this._files.push(file);
+            return file;
+          },
+        };
+      }
+      get files() {
+        return this._files;
+      }
+      get types() {
+        return this._files.length ? ["Files"] : [];
+      }
+    };
+  }
+  if (!window.DragEvent) {
+    window.DragEvent = class DragEvent extends window.MouseEvent {
+      constructor(type, init = {}) {
+        super(type, init);
+        this.dataTransfer = init.dataTransfer ?? null;
+      }
+    };
+  }
+  // `input.files = dt.files` is the whole mechanism of the file-input mode.
+  // jsdom's setter type-checks for a real FileList, which the DataTransfer
+  // above cannot produce — so the assignment throws for a reason that has
+  // nothing to do with the code. Replaced rather than conditionally patched:
+  // jsdom does define a setter, it just refuses our stand-in.
+  const original = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "files",
+  );
+  Object.defineProperty(window.HTMLInputElement.prototype, "files", {
+    configurable: true,
+    get() {
+      return "_fsFiles" in this ? this._fsFiles : original?.get?.call(this);
+    },
+    set(value) {
+      Object.defineProperty(this, "_fsFiles", {
+        value,
+        configurable: true,
+        writable: true,
+      });
+    },
+  });
+}
+
+/**
  * Build a page and load injector.js into it.
  *
  * @param {string} html - body markup for the page under test
@@ -98,6 +167,7 @@ export async function loadInjector(html = "") {
   };
 
   stubLayout(window);
+  stubDragAndDrop(window);
 
   let source = await readFile(SOURCE, "utf8");
 

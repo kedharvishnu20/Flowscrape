@@ -1618,8 +1618,75 @@
     return results;
   }
 
+  /**
+   * Build the File objects a page would have got from a file picker.
+   *
+   * @param {Array<{name?: string, dataUrl?: string}>} files
+   * @returns {DataTransfer}
+   */
+  function _filesToDataTransfer(files) {
+    const dt = new DataTransfer();
+    for (const item of files) {
+      const dataUrl = String(item?.dataUrl || "");
+      const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!match) {
+        throw new Error(`Invalid file payload for ${item?.name || "unknown"}`);
+      }
+      const mime = match[1] || "application/octet-stream";
+      const bytes = Uint8Array.from(atob(match[2]), (c) => c.charCodeAt(0));
+      dt.items.add(
+        new File([bytes], item?.name || "upload.bin", { type: mime }),
+      );
+    }
+    return dt;
+  }
+
+  /**
+   * Drop files onto a zone that has no file input behind it.
+   *
+   * More and more upload widgets have none: they listen for `drop` and read
+   * `event.dataTransfer.files`, so there is nothing whose `.files` can be set.
+   *
+   * The part worth getting right is knowing whether it worked. A drop on an
+   * element with no handler does nothing at all — no error, no change — so a
+   * step that dispatched the events and reported success would be the exact
+   * shape of failure this project keeps finding. A page that accepts a drop
+   * *must* call preventDefault() on `dragover`, or the browser refuses the drop
+   * outright; almost all of them cancel `drop` too. So "did anything cancel
+   * these" is a real answer to "did anything take the files", and it is
+   * reported rather than assumed.
+   *
+   * @param {Element} zone
+   * @param {DataTransfer} dt
+   * @returns {{accepted: boolean, cancelled: string[]}}
+   */
+  function _dropOnto(zone, dt) {
+    const cancelled = [];
+    const fire = (type) => {
+      const ev = new DragEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        dataTransfer: dt,
+      });
+      zone.dispatchEvent(ev);
+      if (ev.defaultPrevented) cancelled.push(type);
+    };
+    // The full sequence: a dropzone that only tracks `dragenter`/`dragleave`
+    // for its highlight still needs them to end up in the right state, and one
+    // that reads `dragover` to decide whether to accept never sees the drop
+    // without it.
+    fire("dragenter");
+    fire("dragover");
+    fire("drop");
+    return {
+      accepted: cancelled.includes("dragover") || cancelled.includes("drop"),
+      cancelled,
+    };
+  }
+
   async function _stepUploadActivity(
-    { selector = "", files = [] },
+    { selector = "", files = [], mode = "input" },
     context = {},
   ) {
     const _isFileInput = (node) =>
@@ -1790,30 +1857,38 @@
       return allInputs[0] || null;
     };
 
+    if (!Array.isArray(files) || files.length === 0) {
+      throw new Error("UPLOAD_ACTIVITY has no files to upload.");
+    }
+
+    if (mode === "drop") {
+      // The selector names the drop zone itself, so it is resolved the way
+      // every other selector is rather than through the file-input search.
+      const zone = _queryScoped(selector, context, false)[0];
+      if (!zone) {
+        throw new Error(`Upload: no drop zone matched "${selector}".`);
+      }
+      const dropDt = _filesToDataTransfer(files);
+      zone.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      await _sleep(120);
+      const { accepted, cancelled } = _dropOnto(zone, dropDt);
+      return {
+        uploaded: accepted ? dropDt.files.length : 0,
+        selector,
+        mode: "drop",
+        accepted,
+        cancelled,
+        fileNames: Array.from(dropDt.files).map((f) => f.name),
+      };
+    }
+
     const input = await _findUploadInput();
     if (!input) throw new Error(`Upload input not found near: ${selector}`);
     if (!_isFileInput(input)) {
       throw new Error(`Target is not input[type=file]: ${selector}`);
     }
 
-    if (!Array.isArray(files) || files.length === 0) {
-      throw new Error("UPLOAD_ACTIVITY has no files to upload.");
-    }
-
-    const dt = new DataTransfer();
-    for (const item of files) {
-      const dataUrl = String(item?.dataUrl || "");
-      const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-      if (!match) {
-        throw new Error(`Invalid file payload for ${item?.name || "unknown"}`);
-      }
-      const mime = match[1] || "application/octet-stream";
-      const bytes = Uint8Array.from(atob(match[2]), (c) => c.charCodeAt(0));
-      const file = new File([bytes], item?.name || "upload.bin", {
-        type: mime,
-      });
-      dt.items.add(file);
-    }
+    const dt = _filesToDataTransfer(files);
 
     input.files = dt.files;
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1822,6 +1897,8 @@
     return {
       uploaded: dt.files.length,
       selector,
+      mode: "input",
+      accepted: true,
       fileNames: Array.from(dt.files).map((f) => f.name),
     };
   }

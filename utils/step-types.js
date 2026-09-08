@@ -144,6 +144,11 @@ export const STEP_TYPES = Object.freeze({
       fileIds: [],
       optional: false,
       inFrame: false,
+      // "input" sets the files on a file input; "drop" dispatches a real drag
+      // onto a zone that has none, which is what a widget built on `drop` and
+      // `event.dataTransfer.files` needs — there is nothing whose `.files` can
+      // be set on one of those.
+      mode: "input",
     },
     // Not expressible in an exported script: needs the file bytes from the extension's storage library.
     exportable: false,

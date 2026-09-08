@@ -27,6 +27,29 @@ const PRODUCTS = `<!doctype html><html><head><title>Shop</title></head><body>
   </script>
 </body></html>`;
 
+// An upload widget with no file input at all — the shape that made
+// UPLOAD_ACTIVITY fail with "Upload input not found" on a page that was
+// perfectly willing to take the file. It does what a real dropzone must:
+// cancels dragover, so the browser allows the drop, then reads the files off
+// the event.
+const DROPZONE = `<!doctype html><html><body>
+  <div id="zone" style="width:300px;height:120px;border:2px dashed #888">Drop files here</div>
+  <div id="dropped">none</div>
+  <div id="inert" style="width:120px;height:60px">No handler here</div>
+  <script>
+    var zone = document.getElementById('zone');
+    zone.addEventListener('dragover', function (e) { e.preventDefault(); });
+    zone.addEventListener('drop', function (e) {
+      e.preventDefault();
+      var names = [];
+      for (var i = 0; i < e.dataTransfer.files.length; i++) {
+        names.push(e.dataTransfer.files[i].name + ':' + e.dataTransfer.files[i].size);
+      }
+      document.getElementById('dropped').textContent = names.join(',');
+    });
+  </script>
+</body></html>`;
+
 // A controlled input that behaves like React's: it caches the last value it saw
 // and overwrites anything it did not notice. This is the B-10 failure mode, in
 // a real browser rather than a jsdom simulation of one.
@@ -235,6 +258,7 @@ test.before(async () => {
     "/apipage": APIPAGE,
     "/api/items": '{"items":[1,2,3]}',
     "/track/px": "ok",
+    "/dropzone": DROPZONE,
     "/framed": FRAMED,
     "/framed-inner": FRAMED_INNER,
   });
@@ -343,6 +367,28 @@ async function onSite(path = "/") {
 
 const step = (type, config) => ({ id: `s_${type}`, type, config });
 
+/**
+ * Put one file in the extension's storage library.
+ *
+ * UPLOAD_ACTIVITY reads its bytes from there rather than from the step, which
+ * is why it is not exportable — so a check that handed the bytes in directly
+ * would be testing a path the product does not have.
+ */
+async function seedStorageFile() {
+  await env.sw.evaluate(async () => {
+    await chrome.storage.local.set({
+      fs_storage_files_v1: [
+        {
+          id: "e2e-shot",
+          name: "shot.png",
+          type: "image/png",
+          dataUrl: "data:image/png;base64,QUJD",
+        },
+      ],
+    });
+  });
+}
+
 test("EXTRACT reads several rows from a real page", async () => {
   const { page, tabId } = await onSite();
   const res = await env.send("step:execute", {
@@ -394,6 +440,48 @@ test("CLICK actually clicks", async () => {
   });
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(await page.locator("#clicked").textContent(), "yes");
+  await page.close();
+});
+
+test("UPLOAD_ACTIVITY drops files onto a zone with no file input", async () => {
+  // jsdom has neither DataTransfer nor DragEvent, so the unit tests run against
+  // stand-ins. Whether Chrome delivers the sequence, and whether a page really
+  // gets a File out of the other end, can only be answered here.
+  const { page, tabId } = await onSite("/dropzone");
+  await seedStorageFile();
+  const res = await env.send("step:execute", {
+    step: step("UPLOAD_ACTIVITY", {
+      selector: "#zone",
+      mode: "drop",
+      fileIds: ["e2e-shot"],
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(
+    await page.locator("#dropped").textContent(),
+    "shot.png:3",
+    "the page read a real File, with its real length, off the event",
+  );
+  await page.close();
+});
+
+test("a drop nothing handles is reported as not accepted", async () => {
+  const { page, tabId } = await onSite("/dropzone");
+  await seedStorageFile();
+  const res = await env.send("step:execute", {
+    step: step("UPLOAD_ACTIVITY", {
+      selector: "#inert",
+      mode: "drop",
+      fileIds: ["e2e-shot"],
+    }),
+    tabId,
+  });
+  // The step fails, and that is the point: a drop nobody handled must not be
+  // reported as an upload that happened.
+  assert.equal(res.ok, false, JSON.stringify(res));
+  assert.match(res.error, /did not accept the drop/i);
+  assert.equal(await page.locator("#dropped").textContent(), "none");
   await page.close();
 });
 

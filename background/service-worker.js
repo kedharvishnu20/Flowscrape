@@ -3425,9 +3425,14 @@ async function _executeUploadActivityStep(config = {}, tabId, runId = null) {
     ? stored[STORAGE_FILES_KEY]
     : [];
 
+  const mode = config.mode === "drop" ? "drop" : "input";
   const selector = String(config.selector || "").trim();
   if (!selector) {
-    throw new Error("UPLOAD_ACTIVITY requires a file input selector.");
+    throw new Error(
+      mode === "drop"
+        ? "UPLOAD_ACTIVITY requires a selector for the drop zone."
+        : "UPLOAD_ACTIVITY requires a file input selector.",
+    );
   }
 
   const wantedIds = Array.isArray(config.fileIds) ? config.fileIds : [];
@@ -3460,39 +3465,61 @@ async function _executeUploadActivityStep(config = {}, tabId, runId = null) {
 
   _broadcastLog(
     "info-log",
-    `Upload Activity: uploading ${selected.length} file(s) to ${selector}`,
+    `Upload Activity: ${mode === "drop" ? "dropping" : "uploading"} ${selected.length} file(s) ${mode === "drop" ? "onto" : "to"} ${selector}`,
     runId,
   );
 
-  const resp = await chrome.tabs
-    .sendMessage(tabId, {
-      type: "step:execute",
-      payload: {
-        type: "UPLOAD_ACTIVITY",
-        config: {
-          selector,
-          files: selected.map((file) => ({
-            name: file.name,
-            type: file.type || "application/octet-stream",
-            dataUrl: file.dataUrl,
-          })),
-        },
-      },
-    })
-    .catch((err) => ({ ok: false, error: err?.message }));
+  // _sendToPage, not chrome.tabs.sendMessage: content scripts are injected on
+  // demand (C-09) and are destroyed with the document that hosts them, so
+  // talking to the tab directly meant every upload on a freshly loaded page
+  // failed with "Receiving end does not exist" — the same defect that had
+  // already been fixed for every other page step, missed here because this one
+  // had its own send. Found by an end-to-end check in a real browser; no unit
+  // test could see it, because the harness answers whether or not anything was
+  // injected.
+  const resp = await _sendToPage(tabId, {
+    type: "UPLOAD_ACTIVITY",
+    config: {
+      selector,
+      mode,
+      inFrame: config.inFrame,
+      frameUrl: config.frameUrl,
+      files: selected.map((file) => ({
+        name: file.name,
+        type: file.type || "application/octet-stream",
+        dataUrl: file.dataUrl,
+      })),
+    },
+  }).catch((err) => ({ ok: false, error: err?.message }));
 
   if (!resp?.ok) {
     throw new Error(resp?.error || "Upload failed in page context.");
   }
 
+  // A drop that nothing handled is the silent failure this mode could
+  // otherwise produce: the events go out, the page ignores them, and the step
+  // reports success having uploaded nothing. A page that accepts a drop has to
+  // cancel `dragover` for the browser to allow it, so "nothing cancelled it"
+  // is a real answer rather than a guess.
+  if (mode === "drop" && resp.result?.accepted === false) {
+    throw new Error(
+      `Upload: "${selector}" did not accept the drop — nothing on the page ` +
+        "handled it, so no files were taken. Check the selector names the drop " +
+        "zone itself, or use the file-input mode if the widget has one.",
+    );
+  }
+
   _broadcastLog(
     "info-log",
-    `Upload Activity complete: ${selected.length} file(s) staged in target input.`,
+    mode === "drop"
+      ? `Upload Activity complete: ${selected.length} file(s) dropped and accepted.`
+      : `Upload Activity complete: ${selected.length} file(s) staged in target input.`,
     runId,
   );
 
   return {
     uploaded: selected.length,
+    mode,
     fileNames: selected.map((f) => f.name),
   };
 }

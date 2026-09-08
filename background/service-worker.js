@@ -51,7 +51,23 @@ import {
   permissionRefusal,
   permissionStatus,
 } from "./optional-permissions.js";
-import { initSessionKey } from "./api-key-manager.js";
+// Statically, not with a dynamic import().
+//
+// `import()` is disallowed outright in a ServiceWorkerGlobalScope — the HTML
+// spec forbids it, and Chrome throws "import() is disallowed on
+// ServiceWorkerGlobalScope". Nine call sites here used it, so the AI gateway's
+// save and test buttons, the API-key handlers and the captcha model path all
+// threw the moment they ran in a real browser. Every unit test passed: Node
+// allows dynamic import, so the worker harness never reproduced it. An
+// end-to-end check against a real Chromium is what finally surfaced it.
+import {
+  initSessionKey,
+  listProviders,
+  validateApiKey,
+  getApiKey,
+  setApiKey,
+  solveCaptcha,
+} from "./api-key-manager.js";
 import {
   applyHeaderRules,
   parseHeaderText,
@@ -64,7 +80,6 @@ import {
   deleteSession,
   listSessions,
 } from "./session-store.js";
-import { setApiKey } from "./api-key-manager.js";
 import {
   loadPool,
   selectProxy,
@@ -126,11 +141,20 @@ import {
   weightsFor,
   mapNodeToSchema,
 } from "../utils/extraction-schema.js";
+import { groundFields } from "../utils/extraction-grounding.js";
 // Non-secret AI-gateway settings (provider/model/baseUrl). The key itself
 // never lives here — it goes through api-key-manager.js's encrypted,
 // session-only storage under provider id `gateway:<provider>`, same as every
 // other credential this extension holds (K-17).
-import { GATEWAY_STORAGE_KEY as STORAGE_GATEWAY_KEY } from "./gateway-config.js";
+import {
+  GATEWAY_STORAGE_KEY as STORAGE_GATEWAY_KEY,
+  readGatewayConfig,
+} from "./gateway-config.js";
+import {
+  askVision,
+  testConnection,
+  GATEWAY_PROVIDERS,
+} from "../utils/ai-gateway.js";
 import {
   formatRows,
   formatMeta,
@@ -1839,6 +1863,35 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
       });
     } catch (err) {
       llmError = err.message;
+    }
+
+    // Everything the model said has to be on the page it was shown. The text
+    // is already in hand, so this costs a string comparison and rules out the
+    // failure the prompt can only ask about: a column of plausible values the
+    // page never contained.
+    if (llmResult?.result && config.grounded !== false) {
+      const checked = groundFields(
+        llmResult.result,
+        llmResult.fields ?? fields,
+        extraction.simplifiedDom,
+      );
+      llmResult.result = checked.result;
+      llmResult.grounding = checked.how;
+      for (const { field, value } of checked.dropped) {
+        // Named, with what was claimed: "the model made something up" is only
+        // useful if you can see what, and on which field.
+        _broadcastLog(
+          "warn-log",
+          `AUTO_EXTRACT: dropped "${field}" — the model answered ${JSON.stringify(value)}, ` +
+            "which is not on the page it was shown. An empty cell cannot be acted on by mistake; a made-up one can.",
+          runId,
+        );
+      }
+      // A field the model invented is a field nothing answered, so its
+      // confidence has to fall with it or the merge would prefer the hole.
+      for (const { field } of checked.dropped) {
+        if (llmResult.perField) llmResult.perField[field] = 0;
+      }
     }
 
     if (llmResult?.error) {
@@ -4980,7 +5033,6 @@ async function _askGatewayForCaptcha(tabId, found, runId) {
   // and the "a local server needs no key" exception — this used to be spelled
   // out here and again in the extraction layer, which is two chances for the
   // free path to work in one place and be refused in the other.
-  const { readGatewayConfig } = await import("./gateway-config.js");
   const config = await readGatewayConfig();
   if (!config) return null;
   const apiKey = config.apiKey;
@@ -4998,7 +5050,6 @@ async function _askGatewayForCaptcha(tabId, found, runId) {
   if (!grabbed) return { error: "no captcha image was found on the page" };
   if (grabbed.error) return { error: grabbed.error };
 
-  const { askVision } = await import("../utils/ai-gateway.js");
   _broadcastLog(
     "info-log",
     `SOLVE_CAPTCHA is asking your ${config.provider} model to read the image (${grabbed.width}×${grabbed.height}).`,
@@ -5892,7 +5943,6 @@ _registerHandler(MSG.PROXY_TEST, async (payload) => {
 });
 
 _registerHandler(MSG.CAPTCHA_SOLVE, async (payload) => {
-  const { solveCaptcha } = await import("./api-key-manager.js");
   const token = await solveCaptcha(payload);
   return { token };
 });
@@ -5905,8 +5955,6 @@ _registerHandler(MSG.CAPTCHA_SOLVE, async (payload) => {
 // ever validated: all six _validate* functions in api-key-manager.js were
 // unreachable, and saving a bad key gave the same "saved" as a good one (F-03).
 _registerHandler(MSG.KEY_GET, async (payload) => {
-  const { listProviders, validateApiKey } =
-    await import("./api-key-manager.js");
   const providers = await listProviders();
   if (!payload?.validate) return { providers };
 
@@ -5956,7 +6004,6 @@ _registerHandler(MSG.CHECKPOINT_SAVE, async (payload) => {
 
 // Wire up API key save buttons
 _registerHandler("key:set", async (payload) => {
-  const { setApiKey } = await import("./api-key-manager.js");
   await setApiKey(payload.provider, payload.value);
   return { ok: true };
 });
@@ -5971,7 +6018,6 @@ _registerHandler("key:set", async (payload) => {
 // extraction paths another part of this codebase owns, and conflating the two
 // would mean changing one silently changes the other's behavior.
 _registerHandler("gateway:save", async (payload) => {
-  const { GATEWAY_PROVIDERS } = await import("../utils/ai-gateway.js");
   const { provider, apiKey, model, baseUrl } = payload ?? {};
   if (!GATEWAY_PROVIDERS[provider]) {
     return { ok: false, error: `Unknown provider "${provider}"` };
@@ -5980,7 +6026,6 @@ _registerHandler("gateway:save", async (payload) => {
   // base URL is the common thing to change, and re-pasting the key every time
   // would be needless friction (and a needless chance to fat-finger it).
   if (apiKey) {
-    const { setApiKey } = await import("./api-key-manager.js");
     await setApiKey(`gateway:${provider}`, apiKey);
   }
   await chrome.storage.local.set({
@@ -6014,8 +6059,6 @@ _registerHandler("gateway:config-get", async () => {
 });
 
 _registerHandler("gateway:test", async (payload) => {
-  const { testConnection } = await import("../utils/ai-gateway.js");
-  const { getApiKey } = await import("./api-key-manager.js");
   const { provider, apiKey, model, baseUrl } = payload ?? {};
   // The field may be blank because the user is testing a key saved earlier —
   // fall back to storage rather than treating "blank box" as "no key".

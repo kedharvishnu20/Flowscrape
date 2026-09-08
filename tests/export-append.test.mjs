@@ -341,7 +341,7 @@ test("the side panel offers it, and says what it really does", () => {
     new URL("../sidepanel/pipeline-builder.js", import.meta.url),
     "utf8",
   );
-  assert.match(src, /data-key="append"/);
+  assert.match(src, /"append",/);
   // Built through the generic `field` helper, so the source names the key
   // rather than spelling out the attribute.
   assert.match(src, /"dataset",\s*\n?\s*"Dataset name"/);

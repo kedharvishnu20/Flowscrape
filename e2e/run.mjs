@@ -820,6 +820,94 @@ test("AUTO_EXTRACT leaves a field nothing answered empty rather than guessing", 
   await page.close();
 });
 
+test("a value the model invented is dropped, not exported", async () => {
+  // The strongest claim this project makes about its AI layer, proved rather
+  // than asserted — and proved with no key and no cost, against a local server
+  // standing in for Ollama.
+  //
+  // The model is told to answer one field truthfully and one falsely. The
+  // truthful one must survive; the false one must not reach the row, because
+  // an empty cell cannot be acted on by mistake and a fabricated one can.
+  const http = await import("node:http");
+  let asked = false;
+  const model = http.createServer((req, res) => {
+    asked = true;
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          model: "fake-local",
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  // On the page.
+                  headline: "Acme Ltd v Bloggs",
+                  // Not on the page, and entirely plausible.
+                  "defendant solicitor": "Hopper & Co LLP",
+                  confidence: {
+                    headline: 90,
+                    "defendant solicitor": 88,
+                  },
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+  });
+  await new Promise((r) => model.listen(0, "127.0.0.1", r));
+  const modelPort = model.address().port;
+
+  try {
+    const saved = await env.send("gateway:save", {
+      provider: "openai-compatible",
+      apiKey: "",
+      model: "fake-local",
+      baseUrl: `http://127.0.0.1:${modelPort}/v1`,
+    });
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    const { tabId, page } = await onSite("/article");
+    const res = await env.send("step:execute", {
+      step: step("AUTO_EXTRACT", {
+        schema: "headline, defendant solicitor",
+        useLlm: true,
+        grounded: true,
+      }),
+      tabId,
+    });
+    await page.close();
+
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(asked, true, "the local model should have been consulted");
+    assert.equal(
+      res.result.headline,
+      "Acme Ltd v Bloggs",
+      "a true answer must survive the check",
+    );
+    assert.equal(
+      res.result["defendant solicitor"],
+      null,
+      "the model invented a solicitor and it reached the row",
+    );
+  } finally {
+    // Put the gateway back to a provider with no key, so nothing after this
+    // finds a model configured.
+    await env.send("gateway:save", {
+      provider: "anthropic",
+      apiKey: "",
+      model: "",
+      baseUrl: "",
+    });
+    model.closeAllConnections?.();
+    await new Promise((r) => model.close(r));
+  }
+});
+
 // ── the steps that only a real browser can prove ─────────────────────────────
 
 test("WAIT for an element waits for it to become visible, not merely to exist", async () => {

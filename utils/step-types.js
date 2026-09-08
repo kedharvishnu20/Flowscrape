@@ -461,6 +461,10 @@ export const STEP_TYPES = Object.freeze({
       // "smart auto-extract" — the structured-data and model layers generalise,
       // the product heuristics keep their opinion to the fields they know.
       schema: "",
+      // Check every value the model returns against the page text it was
+      // shown, and drop what is not there. On by default: the prompt can only
+      // ask a model not to invent, and this can check.
+      grounded: true,
     },
     // Not expressible in an exported script: the first two layers are an
     // in-page extractor with no standalone equivalent, and the third asks a

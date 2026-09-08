@@ -19,6 +19,50 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — the model's answer has to be on the page
+
+The prompt says "never invent". That is an instruction, not a guarantee, and
+the failure it is meant to prevent is the worst kind this tool can produce: a
+column of plausible values the page never contained. Nothing about the export
+says so, and the first person to notice is whoever acts on the data.
+
+There is a real check available and it costs a string comparison, because the
+text sent to the model is already in hand: **a value not present in it was
+invented**. No second request, no model grading its own homework. A field that
+fails is dropped and named in the log with what was claimed — an empty cell
+cannot be acted on by mistake, and a fabricated one can.
+
+The honest limit is stated in the panel: this rules out invention, not
+confusion. A model that puts a real author's name in the price column passes,
+because the name is on the page. The confidence figure is what speaks to that.
+
+Most of the work is in not producing a _false_ positive, because a check that
+vouches for an invented value is worse than no check — it puts a badge on the
+thing it was built to catch. Four cases, each of which fooled an earlier draft:
+a real year on the page must not vouch for the invented name beside it; a digit
+inside a URL must not vouch for the URL; half a list is not a list; and a value
+too short to prove anything is reported as unproven rather than as verified.
+Four more go the other way, where a true answer must not be thrown away: a
+number the page writes as `£1,299.00` and the model returns as `1299`, a list
+the model joined from separate elements, a URL it resolved against the page,
+and the curly quotes and en dashes a CMS substitutes.
+
+### Fixed — every dynamic import in the service worker
+
+`import()` is disallowed outright in a `ServiceWorkerGlobalScope`. The HTML
+specification forbids it and Chrome throws
+`import() is disallowed on ServiceWorkerGlobalScope`.
+
+There were **nine** of them. The AI gateway's save and test buttons, the API-key
+handlers, the captcha model path — every one of those threw the moment it ran in
+a real browser, which means the gateway settings had never worked outside the
+tests. All nine are now static imports.
+
+No unit test could have caught it: Node allows dynamic import, so the worker
+harness reproduced none of it. It surfaced the first time an end-to-end check
+saved a gateway config in a real Chromium — which is exactly what that suite is
+for.
+
 ### Added — AUTO_EXTRACT for any schema, not only for products
 
 The step had seven field names hardcoded across two hundred lines of scoring

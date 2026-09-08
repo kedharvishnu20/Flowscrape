@@ -32,10 +32,15 @@ test("the handler can actually validate, and imports the module once", () => {
     /validateApiKey\(provider\)/,
     "it was imported and never called",
   );
+  // Zero now, not one. `import()` is disallowed outright in a service worker
+  // — the HTML spec forbids it and Chrome throws — so every dynamic import in
+  // this worker was a handler that could not run in a real browser. The
+  // imports are static; the original point of this assertion, that the module
+  // is not pulled in twice, is kept.
   assert.equal(
     (handler.match(/await import\(/g) ?? []).length,
-    1,
-    "it imported api-key-manager.js twice",
+    0,
+    "a dynamic import here throws in a real service worker",
   );
   assert.ok(!/getApiKey/.test(handler), "an unused import is gone");
 });

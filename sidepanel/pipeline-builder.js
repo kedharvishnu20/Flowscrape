@@ -2199,12 +2199,16 @@ function _configFields(step) {
 
     const canAppend = APPENDABLE_FORMATS.includes(c.format || "csv");
     if (canAppend) {
-      html += appendToggle(step);
+      html += toggle(step, "append", "Add to a dataset instead of a new file", {
+        rerender: true,
+      });
     } else if (c.append) {
       // The toggle is on and the format cannot carry it. Say so here rather
       // than letting the run fail at the last step, after all the scraping.
       html += `<p style="font-size:11px;color:var(--red);margin:0 0 8px;">Appending is on, but ${esc(formatMeta(c.format).label)} cannot be added to a file a run at a time — a JSON array, an XML tree and a Markdown table each have to be rewritten whole. Choose ${esc(APPENDABLE_FORMATS.join(", ").toUpperCase())}, or turn appending off.</p>`;
-      html += appendToggle(step);
+      html += toggle(step, "append", "Add to a dataset instead of a new file", {
+        rerender: true,
+      });
     }
 
     if (canAppend && c.append) {
@@ -2498,6 +2502,27 @@ function _configFields(step) {
       "useLlm",
       "Ask a model when the on-page layers are not confident",
     );
+
+    // Default on, and the label for turning it off says what that means
+    // rather than "disable verification".
+    html += toggle(
+      step,
+      "grounded",
+      "Only keep answers that are actually on the page",
+      { rerender: true },
+    );
+    if (c.grounded === false) {
+      html += `<p style="font-size:11px;color:var(--amber,#d97706);margin:-4px 0 10px;">
+        With this off, a value the model invented is kept and exported like any
+        other. Nothing downstream can tell the difference.</p>`;
+    } else {
+      html += hint(
+        "Every value the model returns is looked for in the page text it was " +
+          "shown; anything that is not there is dropped and named in the log. " +
+          "It rules out invention, not confusion — a real value in the wrong " +
+          "column still passes, which is what the confidence figure is for.",
+      );
+    }
 
     html += `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(99,102,241,0.1);font-size:11px;color:var(--text-dim);">
       <b>Extracted fields:</b> name, price, originalPrice, currency, brand, description, sku, availability, rating, reviewCount, images[]<br>
@@ -3185,20 +3210,19 @@ function memberToggle(step, key, value, label) {
   </div>`;
 }
 
-/** The append switch, which reveals the dataset box, so it must re-render. */
-function appendToggle(step) {
-  const checked = step.config.append ? "checked" : "";
-  return `<div class="toggle-wrap">
-    <input type="checkbox" id="cfg-${step.id}-append" ${checked} data-id="${step.id}" data-key="append" data-rerender="true" class="cfg-bind">
-    <div class="toggle-switch"></div>
-    <span>Add to a dataset instead of a new file</span>
-  </div>`;
-}
-
-function toggle(step, key, label) {
+/**
+ * A checkbox bound to one boolean in the step's config.
+ *
+ * `rerender` is for a switch that reveals or hides something else — the
+ * dataset name, a warning about what turning a check off means. Without it the
+ * box appears only after some unrelated edit redraws the card, which reads as
+ * the toggle not working.
+ */
+function toggle(step, key, label, { rerender = false } = {}) {
   const checked = step.config[key] ? "checked" : "";
+  const redraw = rerender ? ' data-rerender="true"' : "";
   return `<div class="toggle-wrap">
-    <input type="checkbox" id="cfg-${step.id}-${key}" ${checked} data-id="${step.id}" data-key="${key}" class="cfg-bind">
+    <input type="checkbox" id="cfg-${step.id}-${key}" ${checked} data-id="${step.id}" data-key="${key}"${redraw} class="cfg-bind">
     <div class="toggle-switch"></div>
     <span>${label}</span>
   </div>`;

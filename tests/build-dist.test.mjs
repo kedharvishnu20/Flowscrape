@@ -98,6 +98,7 @@ test("nothing that only exists for development is in the package", () => {
     "mcp/", // a separate Node server, not part of the extension
     "docs/", // for contributors, not for a browser
     "scripts/", // including this build script itself
+    "site/", // the registry website; a separate deployment, not the extension
   ]) {
     const shipped = listing.filter((f) => f.startsWith(unwanted));
     assert.deepEqual(shipped, [], `${unwanted} was packaged`);

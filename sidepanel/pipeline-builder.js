@@ -27,6 +27,7 @@ import {
 } from "../exporters/row-formatters.js";
 import { exportRows } from "../exporters/text-exporters.js";
 import { parseListLines } from "../utils/loop-items.js";
+import { analyzePipeline, VERDICT } from "../utils/pipeline-capabilities.js";
 
 const MSG = {
   PIPELINE_START: "pipeline:start",
@@ -936,6 +937,16 @@ function bindGlobalControls() {
       const parsed = JSON.parse(text);
       const normalized = _normalizeImportedPipeline(parsed);
 
+      // The file came from outside this panel, so it is somebody else's
+      // program until proven otherwise. Nothing is written to state until the
+      // review below returns true — and for the one refused combination it
+      // never asks, it just declines.
+      const accepted = await _reviewImport(normalized, file.name);
+      if (!accepted) {
+        logToMonitor("warn-log", `Did not load ${file.name}.`);
+        return;
+      }
+
       _pipeline = normalized;
       _expandedNodeId = null;
       await saveState();
@@ -1188,6 +1199,99 @@ function _removeStepDeep(steps, id) {
 
 function _nextStepId() {
   return `s_${Date.now()}${Math.floor(Math.random() * 1000)}`;
+}
+
+/**
+ * Show what an imported pipeline can do, and get an answer.
+ *
+ * Resolves true only when the person said yes to something they were shown.
+ * A pipeline that reads credentials *and* talks to a site it never declared
+ * resolves false without offering a button at all — that pairing is the shape
+ * of account theft and has no version worth confirming. Everything short of it
+ * is disclosed and left to the reader, because a gate that fires on everything
+ * is one people learn to click through, and then it protects nobody.
+ *
+ * A pipeline with nothing worth saying loads with no interruption.
+ */
+function _reviewImport(pipeline, filename) {
+  const analysis = analyzePipeline(pipeline);
+  if (analysis.verdict === VERDICT.ALLOW) return Promise.resolve(true);
+
+  const overlay = document.getElementById("import-review-overlay");
+  const body = document.getElementById("import-review-body");
+  const title = document.getElementById("import-review-title");
+  const accept = document.getElementById("btn-import-accept");
+  const reject = document.getElementById("btn-import-reject");
+  const close = document.getElementById("btn-import-cancel");
+
+  // No overlay in the document (a stripped test harness) is not a reason to
+  // load an unreviewed pipeline. Fail closed and say why.
+  if (!overlay || !body || !accept) {
+    logToMonitor(
+      "error-log",
+      "Cannot review this import, so it was not loaded.",
+    );
+    return Promise.resolve(false);
+  }
+
+  const blocked = analysis.verdict === VERDICT.BLOCKED;
+  overlay.classList.toggle("blocked", blocked);
+  title.textContent = blocked
+    ? "This pipeline was refused"
+    : "Before you load this";
+
+  const caps = analysis.capabilities
+    .map(
+      (c) =>
+        `<div class="imp-cap imp-${c.severity}">
+           <div class="imp-cap-rule"></div>
+           <div>
+             <div class="imp-cap-title">${esc(c.title)}</div>
+             <div class="imp-cap-detail">${esc(c.detail)}</div>
+           </div>
+         </div>`,
+    )
+    .join("");
+
+  body.innerHTML = blocked
+    ? `<div class="imp-verdict imp-blocked">
+         <b>Refused — not loaded</b>
+         ${esc(analysis.blockedReason)}
+       </div>${caps}`
+    : `<div class="imp-verdict imp-review">
+         <b>Read this first</b>
+         ${esc(filename)} can do the following. None of it is refused, but it is
+         worth agreeing to on purpose.
+       </div>${caps}`;
+
+  // A refused pipeline gets no "load anyway": the whole point is that this one
+  // is not the reader's call to make under a persuasive listing.
+  accept.style.display = blocked ? "none" : "";
+  reject.textContent = blocked ? "Close" : "Don't load";
+
+  overlay.classList.add("open");
+  (blocked ? reject : accept).focus();
+
+  return new Promise((resolve) => {
+    const finish = (result) => {
+      overlay.classList.remove("open", "blocked");
+      accept.removeEventListener("click", onAccept);
+      reject.removeEventListener("click", onReject);
+      close?.removeEventListener("click", onReject);
+      document.removeEventListener("keydown", onKey);
+      resolve(result);
+    };
+    const onAccept = () => finish(!blocked);
+    const onReject = () => finish(false);
+    const onKey = (e) => {
+      if (e.key === "Escape") finish(false);
+    };
+
+    accept.addEventListener("click", onAccept);
+    reject.addEventListener("click", onReject);
+    close?.addEventListener("click", onReject);
+    document.addEventListener("keydown", onKey);
+  });
 }
 
 function _normalizeImportedPipeline(source) {

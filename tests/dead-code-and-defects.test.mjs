@@ -362,3 +362,62 @@ test("round-robin and sticky proxy selection keep separate cursors", async () =>
 
   assert.match(src, /_stickyIndex = 0;/, "and both reset together");
 });
+
+// ── Counts the docs quote ────────────────────────────────────────────────────
+//
+// Both numbers were stale by four steps and two steps respectively, which is
+// what a hand-maintained count does. They are worth stating — a reader wants to
+// know how much of a pipeline survives export — so they are checked here rather
+// than dropped.
+
+test("the README's export count matches the registry", async () => {
+  const { STEP_TYPES } = await import("../utils/step-types.js");
+  const facing = Object.values(STEP_TYPES).filter((t) => t.internal !== true);
+  const unexportable = facing.filter((t) => t.exportable === false);
+
+  const readme = await readFile(
+    new URL("../README.md", import.meta.url),
+    "utf8",
+  );
+  const claim = readme.match(
+    /emitters cover \*\*(\d+) of the (\d+) step types\*\*/,
+  );
+  assert.ok(claim, "the README no longer states an export count");
+  assert.equal(
+    Number(claim[2]),
+    facing.length,
+    "the README's step-type total is stale",
+  );
+  assert.equal(
+    Number(claim[1]),
+    facing.length - unexportable.length,
+    "the README's exportable count is stale",
+  );
+
+  // And every unexportable step has a row saying why, or the table is a list
+  // that quietly lost one.
+  for (const [name, meta] of Object.entries(STEP_TYPES)) {
+    if (meta.internal === true || meta.exportable !== false) continue;
+    assert.ok(
+      readme.includes(`\`${name}\``),
+      `${name} cannot be exported and the README does not say so`,
+    );
+  }
+});
+
+test("the capability review's step count matches the registry", async () => {
+  const { STEP_TYPES } = await import("../utils/step-types.js");
+  const all = Object.values(STEP_TYPES);
+  const internal = all.filter((t) => t.internal === true).length;
+
+  const doc = await readFile(
+    new URL("../docs/CAPABILITY_REVIEW.md", import.meta.url),
+    "utf8",
+  );
+  const claim = doc.match(
+    /(\d+) user-facing step types.*?plus (\d+) internal/s,
+  );
+  assert.ok(claim, "the review no longer states a step count");
+  assert.equal(Number(claim[1]), all.length - internal);
+  assert.equal(Number(claim[2]), internal);
+});

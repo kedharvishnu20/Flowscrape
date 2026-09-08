@@ -349,17 +349,19 @@ pages.
 
 A pipeline can be emitted as a runnable Python or Node script (Playwright).
 
-The emitters cover **19 of the 25 step types**. The other six cannot be
+The emitters cover **21 of the 29 step types**. The other eight cannot be
 expressed standalone:
 
-| Step              | Why                                                                                                                   |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `UPLOAD_ACTIVITY` | Needs file bytes from the storage library                                                                             |
-| `API_SNIFFER`     | Needs the in-page fetch/XHR hook                                                                                      |
-| `PDF_EXTRACTION`  | Playwright drives a browser; it has no PDF text extractor                                                             |
-| `AUTO_EXTRACT`    | Needs the three-layer extractor and a Gemini key                                                                      |
-| `PAGE_JSON`       | A second copy of the DOM walker would drift from the first                                                            |
-| `SOLVE_CAPTCHA`   | A script carries neither the run authorisation nor the domain attestation, so it would be the act without the consent |
+| Step              | Why                                                                                                                                |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `UPLOAD_ACTIVITY` | Needs file bytes from the storage library                                                                                          |
+| `API_SNIFFER`     | Needs the in-page fetch/XHR hook                                                                                                   |
+| `PDF_EXTRACTION`  | Playwright drives a browser; it has no PDF text extractor                                                                          |
+| `AUTO_EXTRACT`    | Needs the three-layer extractor and a Gemini key                                                                                   |
+| `PAGE_JSON`       | A second copy of the DOM walker would drift from the first                                                                         |
+| `SOLVE_CAPTCHA`   | A script carries neither the run authorisation nor the domain attestation, so it would be the act without the consent              |
+| `SESSION`         | The saved state is encrypted in the extension's own storage, and reading a cookie needs a Chrome permission a script does not have |
+| `SET_HEADERS`     | `declarativeNetRequest` is a browser-extension API. A script sets its own headers per request instead                              |
 
 Those emit an explicit `raise NotImplementedError` / `throw`, and are listed in
 the run log before the download. They used to become a `# TODO` comment, so the

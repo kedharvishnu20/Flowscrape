@@ -19,6 +19,19 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Docs — the capability review says what is true
+
+`docs/CAPABILITY_REVIEW.md` recorded gaps, not defects: things that were not
+broken because they had never been built. Every row in it is now closed, and
+the rows are marked rather than deleted — each one names the case that was
+failing, which is what makes the fix checkable.
+
+Two counts in the docs had drifted by four and by two. Both are worth stating —
+a reader wants to know how much of a pipeline survives export — so instead of
+dropping them, a test now reads the registry and fails if either goes stale
+again, and checks that every unexportable step still has a row in the README
+saying why.
+
 ### Added — PDF_EXTRACTION can read the table, not just the text
 
 A PDF has no notion of a table. It has strings, and coordinates to draw them

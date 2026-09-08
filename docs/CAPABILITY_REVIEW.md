@@ -25,7 +25,7 @@ Five things matter more than everything else in this document.
 
 ## 2. Every activity, against what the job actually needs
 
-25 user-facing step types (`utils/step-types.js`), plus 6 internal. Grouped by
+29 user-facing step types (`utils/step-types.js`), plus 9 internal. Grouped by
 how much is missing.
 
 `FILL` gained one thing since this was written that belongs in the "solid"
@@ -43,35 +43,38 @@ named in the log, with no toggle (K-14).
 | `EXTRACT`  | Text, HTML, attribute, count; value transforms; honest row assembly (1 match broadcasts, n matches are positional, misses are `null` not padded)                                                                     |
 | `PAGINATE` | Probes before clicking, so a navigation is expected rather than an error; detects a dead Next control four ways; optional fingerprint check for SPAs                                                                 |
 
-### Gaps worth closing
+### Gaps worth closing — all now closed
 
-| Step              | Missing                                      | Real case it fails on                                                                                                                                                                  |
-| ----------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CLICK`           | Wait-for-navigation-or-XHR after click       | Click "Load more", next step runs before the rows exist. Today you add a WAIT and guess the number                                                                                     |
-| `CLICK`           | Right-click / middle-click / modifier        | Opening results in a new tab; context menus                                                                                                                                            |
-| ~~`SCROLL`~~      | ~~Scroll a specific container~~              | **Closed by K-26.** A `container` selector routes every mode — pixel, percent, infinite/bottom, and item counting — at that element's own `scrollHeight` instead of the document's     |
-| ~~`EXTRACT`~~     | ~~Download a matched file/image~~            | **Closed by K-23.** `DOWNLOAD_FILE` is its own step: point it at the links or images and the files land on disk                                                                        |
-| ~~`EXTRACT`~~     | ~~Regex capture group as a field~~           | **Closed by K-11.** The transform existed but reached only group 1; it now takes a group number and flags                                                                              |
-| ~~`SCREENSHOT`~~  | ~~Per-element scroll-into-view first~~       | **Closed by K-27.** Scroll-into-view already ran; what was missing was clamping the crop and warning when the element is taller than the viewport can show in one shot                 |
-| ~~`API`~~         | ~~Pagination (cursor / page / Link header)~~ | **Closed by K-25.** All three shapes; `maxPages` is a safety cap, never the exit condition, and the same `rowsPath` a single call now uses reaches the run's results across every page |
-| ~~`API`~~         | ~~Retry on 429/5xx with `Retry-After`~~      | **Closed by K-24.** Honours `Retry-After` (seconds or HTTP-date), falls back to backoff when there is none, and both the attempt count and total wait are capped                       |
-| `UPLOAD_ACTIVITY` | Drag-drop upload zones                       | Sites with no `<input type=file>` — increasingly common                                                                                                                                |
-| `IF_ELSE`         | Comparing two extracted values               | "If price < last-seen price". Conditions test one selector against a literal                                                                                                           |
-| `LOOP`            | Loop over a list (an API result, a CSV)      | Iterating 500 product URLs from a file needs a data-source loop. Numbered and URL-pattern paginators are covered now (K-20); a data source is not                                      |
-| `EXPORT`          | Append to an existing file                   | A run per day into one dataset                                                                                                                                                         |
-| `PDF_EXTRACTION`  | Tables                                       | PDF tables come out as a text blob                                                                                                                                                     |
+Kept as a record rather than deleted: each row names the case that was failing,
+which is what makes the fix checkable.
 
-### Missing entirely
+| Step                  | Missing                                      | Real case it fails on                                                                                                                                                                     |
+| --------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ~~`CLICK`~~           | ~~Wait-for-navigation-or-XHR after click~~   | **Closed.** `waitAfter` names the thing to wait for — the page to load, an element to appear or go, the page to settle — instead of a guessed number of milliseconds                      |
+| ~~`CLICK`~~           | ~~Right-click / middle-click / modifier~~    | **Closed,** for what a page handles itself: a custom context menu, ctrl-click multi-select. Chrome keeps its own reactions for real clicks, and the panel says so                         |
+| ~~`SCROLL`~~          | ~~Scroll a specific container~~              | **Closed by K-26.** A `container` selector routes every mode — pixel, percent, infinite/bottom, and item counting — at that element's own `scrollHeight` instead of the document's        |
+| ~~`EXTRACT`~~         | ~~Download a matched file/image~~            | **Closed by K-23.** `DOWNLOAD_FILE` is its own step: point it at the links or images and the files land on disk                                                                           |
+| ~~`EXTRACT`~~         | ~~Regex capture group as a field~~           | **Closed by K-11.** The transform existed but reached only group 1; it now takes a group number and flags                                                                                 |
+| ~~`SCREENSHOT`~~      | ~~Per-element scroll-into-view first~~       | **Closed by K-27.** Scroll-into-view already ran; what was missing was clamping the crop and warning when the element is taller than the viewport can show in one shot                    |
+| ~~`API`~~             | ~~Pagination (cursor / page / Link header)~~ | **Closed by K-25.** All three shapes; `maxPages` is a safety cap, never the exit condition, and the same `rowsPath` a single call now uses reaches the run's results across every page    |
+| ~~`API`~~             | ~~Retry on 429/5xx with `Retry-After`~~      | **Closed by K-24.** Honours `Retry-After` (seconds or HTTP-date), falls back to backoff when there is none, and both the attempt count and total wait are capped                          |
+| ~~`UPLOAD_ACTIVITY`~~ | ~~Drag-drop upload zones~~                   | **Closed.** A drop mode dispatches the real sequence with a `DataTransfer` of real files — and reports a drop nothing handled as a failure, since dispatching at a dead element is silent |
+| ~~`IF_ELSE`~~         | ~~Comparing two extracted values~~           | **Closed.** The right-hand side can be a second selector, read in the same message and through the same number reader as the left                                                         |
+| ~~`LOOP`~~            | ~~Loop over a list (an API result, a CSV)~~  | **Closed.** A `list` mode over pasted lines (delimited, with an optional header) or a dotted path into what the run holds. A pasted list exports; a run-context one refuses, and says so  |
+| ~~`EXPORT`~~          | ~~Append to an existing file~~               | **Closed.** A named dataset the rows accumulate into. The extension rewrites the file each run because `chrome.downloads` cannot read; the exported script appends for real               |
+| ~~`PDF_EXTRACTION`~~  | ~~Tables~~                                   | **Closed.** The grid is reassembled from where the words sit — rows by document order, columns by clustering x — because a PDF has no table structure of its own                          |
 
-| Proposed step                  | Why                                                                                                                                                       |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ~~`DOWNLOAD_FILE`~~            | **Closed by K-23.** A selector, an optional attribute and a filename template; loop-scoped, paced by the rate limiter, and it says what it failed to save |
-| `COOKIES` / `SESSION`          | Save the logged-in state after a manual login and reuse it. Today every run re-logs-in, which is slow and gets accounts flagged                           |
-| `SET_HEADERS`                  | User-agent and `Accept-Language` per run. Fixed values are a fingerprint                                                                                  |
-| ~~`SOLVE_CAPTCHA`~~            | **Closed by K-15,** for what can be answered without paying. See §4                                                                                       |
-| ~~`RETRY` / step-level retry~~ | **Closed by K-12.** Any step takes `retries` and `retryDelayMs`; a retry queues behind the rate limiter like a first attempt                              |
-| `DEDUPE`                       | "Scrape only what is new since last run". Needs a key column and a persisted seen-set                                                                     |
-| ~~`ASSERT`~~                   | **Closed by K-13.** Exists, does not exist, a count comparison, or text equals/contains — and `optional` still lets a run past one                        |
+### Missing entirely — all now built
+
+| Proposed step                  | Why                                                                                                                                                         |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ~~`DOWNLOAD_FILE`~~            | **Closed by K-23.** A selector, an optional attribute and a filename template; loop-scoped, paced by the rate limiter, and it says what it failed to save   |
+| ~~`COOKIES` / `SESSION`~~      | **Closed.** `SESSION` saves and restores a logged-in state, encrypted, behind an optional `cookies` permission — the only way to reach an `HttpOnly` cookie |
+| ~~`SET_HEADERS`~~              | **Closed.** Per-run header rules through `declarativeNetRequest`, scoped to the run's tab and taken back when it ends. See `docs/SESSIONS_AND_HEADERS.md`   |
+| ~~`SOLVE_CAPTCHA`~~            | **Closed by K-15,** for what can be answered without paying. See §4                                                                                         |
+| ~~`RETRY` / step-level retry~~ | **Closed by K-12.** Any step takes `retries` and `retryDelayMs`; a retry queues behind the rate limiter like a first attempt                                |
+| ~~`DEDUPE`~~                   | **Closed.** A key you name, and a bounded seen-set that can persist across runs. A gate rather than a filter, because rows are written as they are read     |
+| ~~`ASSERT`~~                   | **Closed by K-13.** Exists, does not exist, a count comparison, or text equals/contains — and `optional` still lets a run past one                          |
 
 ---
 

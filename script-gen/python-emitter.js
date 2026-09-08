@@ -29,6 +29,7 @@ import { parseFilenameTemplate } from "./pipeline-compiler.js";
 import { EXTRACT_VALUE_JS, PAGINATE_STATE_JS } from "./page-runtime.js";
 
 import { APPENDABLE_FORMATS } from "../exporters/row-formatters.js";
+import { parseListLines } from "../utils/loop-items.js";
 const MODULE = "python-emitter";
 
 /** Mirrors exporters/row-formatters.js — the same six formats, same extensions. */
@@ -538,6 +539,50 @@ const _PY_MODIFIER = {
   command: "Meta",
 };
 
+/**
+ * The variable holding the current item inside a `list` LOOP, or null.
+ * The twin of `_pyScope`, and of `_listItem` in node-emitter.js.
+ */
+let _pyListItem = null;
+
+/**
+ * `{{item.field}}` and `{{loop.index}}`.
+ *
+ * Not global: a global regex carries `lastIndex` between calls, so a `.test()`
+ * leaves it past the first match and the scan that follows starts from there.
+ */
+const _PY_TEMPLATE = /\{\{\s*(item|loop)\.([A-Za-z0-9_$]+)\s*\}\}/;
+
+/**
+ * A config string as Python source.
+ *
+ * Normally a quoted literal. Inside a `list` LOOP, a string mentioning the
+ * item becomes an expression that reads it — a script that fetched
+ * "https://shop/{{item.value}}" five hundred times, braces and all, would be a
+ * script that does not work.
+ *
+ * Concatenation rather than an f-string: a URL can hold a brace, and an
+ * f-string would try to interpret it.
+ */
+function _pyStrExpr(value) {
+  const raw = String(value ?? "");
+  if (!_pyListItem || !_PY_TEMPLATE.test(raw)) return `"${_escStr(raw)}"`;
+
+  const parts = [];
+  let last = 0;
+  for (const m of raw.matchAll(new RegExp(_PY_TEMPLATE.source, "g"))) {
+    if (m.index > last) parts.push(`"${_escStr(raw.slice(last, m.index))}"`);
+    parts.push(
+      m[1] === "item"
+        ? `str(${_pyListItem}.get(${JSON.stringify(m[2])}, ""))`
+        : `str(_loop.get(${JSON.stringify(m[2])}, ""))`,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < raw.length) parts.push(`"${_escStr(raw.slice(last))}"`);
+  return parts.join(" + ");
+}
+
 const _pyLoc = (sel) => `${_pyScope}.locator("${sel}")`;
 
 /**
@@ -620,7 +665,7 @@ function _emitStepBody(step) {
     case "NAVIGATE":
       return [
         `# NAVIGATE: ${config.url ?? ""}`,
-        `await page.goto("${_escStr(config.url ?? "")}", wait_until="load")`,
+        `await page.goto(${_pyStrExpr(config.url)}, wait_until="load")`,
         `await page.wait_for_load_state("networkidle")`,
         "",
       ];
@@ -831,6 +876,34 @@ function _emitStepBody(step) {
             ? `for i, ${elVar} in enumerate(elements[:${config.max ?? 10}]):`
             : `for i, ${elVar} in enumerate(elements):`,
         );
+      } else if (config.type === "list") {
+        if ((config.source || "lines") === "context") {
+          // The items would come from a run context a standalone script does
+          // not have. Refused rather than exported as an empty loop, which
+          // would run, exit 0 and scrape nothing.
+          lines.push(
+            `# UNSUPPORTED: this LOOP reads its list from "${_escStr(String(config.contextPath ?? ""))}",`,
+            `# which is part of a run inside the extension. A pasted list exports fine.`,
+            `raise ValueError("FlowScrape: LOOP over a run-context list is not exportable")`,
+            "",
+          );
+          return lines;
+        }
+        // Baked in at export time: the list is known now, so the script needs
+        // no CSV parser of its own to disagree with ours.
+        const parsed = parseListLines(config.lines, {
+          delimiter: config.delimiter,
+          hasHeader: config.hasHeader === true,
+        });
+        const items =
+          (config.max ?? 0) > 0
+            ? parsed.items.slice(0, Number(config.max))
+            : parsed.items;
+        lines.push(
+          `_items = json.loads(${JSON.stringify(JSON.stringify(items))})`,
+          `for i, _item in enumerate(_items):`,
+          `    _loop = {"index": i + 1, "index0": i, "count": len(_items)}`,
+        );
       } else if (config.type === "paginate-links" && config.selector) {
         // The page's links are the bound, as they are in the run: a numbered
         // paginator has nothing that goes dead to probe, so "how many pages"
@@ -902,9 +975,18 @@ function _emitStepBody(step) {
       }
       const bodyScope =
         config.type === "elements" && config.selector ? elVar : null;
-      for (const child of step.children ?? []) {
-        const emit = () => _emitStep(child).map((l) => "    " + l);
-        lines.push(...(bodyScope ? _pyWithin(bodyScope, emit) : emit()));
+      // `_item` is in scope for a list LOOP's body and nowhere else. Saved and
+      // restored rather than cleared, so a nested loop hands the outer one its
+      // item back.
+      const outerItem = _pyListItem;
+      if (config.type === "list") _pyListItem = "_item";
+      try {
+        for (const child of step.children ?? []) {
+          const emit = () => _emitStep(child).map((l) => "    " + l);
+          lines.push(...(bodyScope ? _pyWithin(bodyScope, emit) : emit()));
+        }
+      } finally {
+        _pyListItem = outerItem;
       }
       if (!step.children || step.children.length === 0) lines.push("    pass");
       if (config.type === "paginate-url" && config.stopWhenEmpty !== false) {

@@ -26,6 +26,7 @@ import {
   APPENDABLE_FORMATS,
 } from "../exporters/row-formatters.js";
 import { exportRows } from "../exporters/text-exporters.js";
+import { parseListLines } from "../utils/loop-items.js";
 
 const MSG = {
   PIPELINE_START: "pipeline:start",
@@ -1762,6 +1763,7 @@ function _configFields(step) {
     <select id="cfg-${step.id}-type" data-id="${step.id}" data-key="type" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
       <option value="elements" ${ltype === "elements" ? "selected" : ""}>Loop through Elements (auto-count)</option>
       <option value="count"    ${ltype === "count" ? "selected" : ""}>Fixed Count (N times)</option>
+      <option value="list"     ${ltype === "list" ? "selected" : ""}>Loop through a list you supply</option>
       <option value="paginate" ${ltype === "paginate" ? "selected" : ""}>Paginate (click Next)</option>
       <option value="paginate-links" ${ltype === "paginate-links" ? "selected" : ""}>Paginate (numbered page links)</option>
       <option value="paginate-url" ${ltype === "paginate-url" ? "selected" : ""}>Paginate (URL pattern)</option>
@@ -1787,6 +1789,68 @@ function _configFields(step) {
         "Repeat N times (at least 1)",
         "number",
         c.max > 0 ? c.max : 10,
+      );
+    } else if (ltype === "list") {
+      const source = c.source || "lines";
+      html += `<div class="step-note">
+        <div class="step-note-title">Walk a list, not the page</div>
+        <p class="prose">Every other mode takes its count from the page. This one takes it from you — 500 product URLs, a column out of a spreadsheet, or the rows an earlier API step returned. Each item reaches the steps below as <code>{{item.value}}</code>, and a delimited paste also gives you <code>{{item.&lt;column&gt;}}</code>.</p>
+      </div>`;
+      html += `<label>Where the list comes from</label>
+      <select id="cfg-${step.id}-source" data-id="${step.id}" data-key="source" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+        <option value="lines"${source === "lines" ? " selected" : ""}>Lines I paste here</option>
+        <option value="context"${source === "context" ? " selected" : ""}>Something an earlier step produced</option>
+      </select>`;
+
+      if (source === "context") {
+        html += field(
+          step,
+          "contextPath",
+          "Where to read it from",
+          "text",
+          c.contextPath || "",
+        );
+        html += hint(
+          "A dotted path into what the run holds: api.rows after an API step, " +
+            "pageData.records after PAGE_DATA. The step that stores it has to " +
+            "run before this loop.",
+        );
+        html += `<p style="font-size:11px;color:var(--amber,#d97706);margin:-4px 0 10px;">This mode cannot be exported as a script: a standalone script has no run to read from. A pasted list exports fine.</p>`;
+      } else {
+        html += `<label>The list, one item per line</label>
+        <textarea id="cfg-${step.id}-lines" data-id="${step.id}" data-key="lines" class="cfg-bind" rows="6" placeholder="https://example.com/p/1&#10;https://example.com/p/2" style="margin-bottom:8px;">${esc(c.lines || "")}</textarea>`;
+        html += field(
+          step,
+          "delimiter",
+          "Split each line on (leave empty for whole lines)",
+          "text",
+          c.delimiter || "",
+        );
+        if (c.delimiter) {
+          html += toggle(step, "hasHeader", "The first line names the columns");
+        }
+
+        // A preview, because a delimiter that splits in the wrong place shifts
+        // every column after it and nothing about the resulting scrape says so.
+        const parsed = parseListLines(c.lines, {
+          delimiter: c.delimiter,
+          hasHeader: c.hasHeader === true,
+        });
+        if (parsed.items.length) {
+          const first = parsed.items[0];
+          const shown = parsed.columns
+            .map((col) => `{{item.${col}}} = ${String(first[col] ?? "")}`)
+            .slice(0, 6)
+            .join("  ·  ");
+          html += `<p style="font-size:11px;color:var(--text-dim);margin:-4px 0 10px;">${parsed.items.length} item${parsed.items.length === 1 ? "" : "s"}. First one: ${esc(shown)}</p>`;
+        }
+      }
+      html += field(
+        step,
+        "max",
+        "Safety max (0 = every item)",
+        "number",
+        c.max ?? 0,
       );
     } else if (ltype === "paginate-links") {
       html += `<div class="step-note">
@@ -3100,7 +3164,12 @@ function _normalizeStepConfig(step, changedKey) {
   if (step.type !== "LOOP") return;
   if (changedKey !== "type" && changedKey !== "max") return;
   const mode = step.config.type || "count";
-  if (mode !== "elements" && !(step.config.max > 0)) step.config.max = 10;
+  // `list` joins `elements` in treating 0 as "every one": both take their
+  // bound from something real — the matches, or the list — so 0 means "do not
+  // cap" rather than "run nothing".
+  if (!["elements", "list"].includes(mode) && !(step.config.max > 0)) {
+    step.config.max = 10;
+  }
 }
 
 /**

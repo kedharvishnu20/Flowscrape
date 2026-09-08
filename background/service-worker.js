@@ -101,6 +101,11 @@ import {
   datasetName,
   MAX_DATASET_ROWS,
 } from "../checkpoint/dataset-store.js";
+import {
+  parseListLines,
+  itemsFromContext,
+  MAX_LIST_ITEMS,
+} from "../utils/loop-items.js";
 import { saveCursor } from "../checkpoint/cursor-store.js";
 import {
   getResumePayload,
@@ -3562,6 +3567,55 @@ async function _executeLoop(step, tabId, runId, parentCtx = {}) {
       );
     }
     iters = limit;
+  } else if (ltype === "list") {
+    // The one mode whose bound is not on the page. Everything else counts what
+    // it matched; this counts what you gave it.
+    const source = step.config.source || "lines";
+    let items = [];
+    let truncated = 0;
+    if (source === "context") {
+      const { items: got, reason } = itemsFromContext(
+        parentCtx,
+        step.config.contextPath,
+      );
+      if (reason) {
+        // Named rather than skipped in silence: a path that holds nothing and
+        // a list that is genuinely empty look the same from the outside, and
+        // the first is a typo the user can fix.
+        _broadcastLog("warn-log", `Loop: ${reason} — skipping.`, runId);
+        return;
+      }
+      items = got;
+    } else {
+      const parsed = parseListLines(step.config.lines, {
+        delimiter: step.config.delimiter,
+        hasHeader: step.config.hasHeader === true,
+      });
+      items = parsed.items;
+      truncated = parsed.truncated;
+    }
+
+    if (items.length === 0) {
+      _broadcastLog("warn-log", "Loop: the list is empty — skipping.", runId);
+      return;
+    }
+    if (truncated > 0) {
+      _broadcastLog(
+        "warn-log",
+        `Loop: the list was cut to ${MAX_LIST_ITEMS} items; ${truncated} were left out.`,
+        runId,
+      );
+    }
+
+    elementsData = items;
+    iters = limit > 0 ? Math.min(items.length, limit) : items.length;
+    _broadcastLog(
+      "info-log",
+      `Loop: ${items.length} item${items.length === 1 ? "" : "s"} in the list` +
+        (iters < items.length ? `, running ${iters}` : "") +
+        ".",
+      runId,
+    );
   } else if (ltype === "elements" && selector) {
     let found = null;
     try {

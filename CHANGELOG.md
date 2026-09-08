@@ -19,6 +19,40 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — LOOP over a list you supply
+
+Every other `LOOP` mode takes its bound from the page: the elements it matched,
+the page links it found, the count you typed. None of them can say "visit these
+500 product URLs", because the list is the input rather than something on
+screen.
+
+Two sources, chosen because neither needs a new permission or a new store.
+**Lines you paste** — one item per line, which is what a spreadsheet column
+becomes when you copy it; give it a delimiter and a header row and it is a
+pasted CSV, with each column reachable as `{{item.<column>}}`. **Something an
+earlier step produced** — a dotted path like `api.rows` or `pageData.records`,
+so the list follows whatever the site returned today instead of a copy taken
+last week.
+
+The splitting is written out rather than done with `split(",")`. A column
+holding `Smith, John` is one field; splitting it shifts every column after it,
+silently, into a scrape that looks like it worked. A quote in the middle of a
+value — `12" pipe` — is part of the value, not the start of a quoted field.
+
+**The items reach the exported script.** This is what makes the mode worth
+having rather than decorative: templates are otherwise resolved by the run and
+merely _reported_ as unresolved on export, so a script fetching
+`https://shop/{{item.value}}` five hundred times, braces and all, would be a
+script that does not work. Because the list is known at export time, both
+emitters bake it in and turn `{{item.field}}` and `{{loop.index}}` into real
+reads of it — as string concatenation rather than a template literal or an
+f-string, since a URL can contain a backtick, a `${`, or a brace.
+
+A list read from the run context refuses to export, and says so in the panel
+before you press Export rather than after: a standalone script has no run to
+read from, and a loop over nothing that exits 0 is the failure this project
+keeps finding.
+
 ### Added — EXPORT can add to a dataset instead of writing a new file
 
 "A run per day into one dataset" produced thirty files, and stitching them

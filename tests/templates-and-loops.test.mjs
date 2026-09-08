@@ -273,7 +273,12 @@ test("switching a loop to count mode does not carry 0 across", () => {
   const fn = panelSrc.match(
     /function _normalizeStepConfig\(step, changedKey\) \{[\s\S]*?\n\}/,
   )[0];
-  assert.match(fn, /mode !== "elements" && !\(step\.config\.max > 0\)/);
+  // The guard grew a second exempt mode when `list` arrived — it takes its
+  // bound from the list the same way `elements` takes it from the matches — so
+  // the assertions name what has to hold rather than one spelling of it.
+  assert.match(fn, /!\(step\.config\.max > 0\)/, `no max guard: ${fn}`);
+  assert.match(fn, /"elements"/, `elements is no longer exempt: ${fn}`);
+  assert.match(fn, /"list"/, `list must be exempt too: ${fn}`);
   assert.match(fn, /step\.config\.max = 10/);
   assert.match(
     panelSrc,

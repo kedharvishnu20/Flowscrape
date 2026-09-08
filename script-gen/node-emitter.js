@@ -17,6 +17,7 @@ import {
   paginationMaxPages,
 } from "../utils/step-types.js";
 import { APPENDABLE_FORMATS } from "../exporters/row-formatters.js";
+import { parseListLines } from "../utils/loop-items.js";
 import { EXTRACT_VALUE_JS, PAGINATE_STATE_JS } from "./page-runtime.js";
 import { parseFilenameTemplate } from "./pipeline-compiler.js";
 const MODULE = "node-emitter";
@@ -407,6 +408,59 @@ const _PW_MODIFIER = {
   command: "Meta",
 };
 
+/**
+ * The variable holding the current item inside a `list` LOOP, or null.
+ *
+ * The twin of `_scope`, and it exists for the same reason: what a config
+ * string means depends on where in the emitted script it lands.
+ */
+let _listItem = null;
+
+/**
+ * `{{item.field}}` and `{{loop.index}}`, the two a list LOOP can fill in.
+ *
+ * Deliberately not global. A global regex carries `lastIndex` between calls,
+ * so `.test()` leaves it past the first match and the `matchAll` below then
+ * starts from there — which resolved the second template in a string and left
+ * the first as literal braces.
+ */
+const _TEMPLATE = /\{\{\s*(item|loop)\.([A-Za-z0-9_$]+)\s*\}\}/;
+
+/**
+ * A config string as source code.
+ *
+ * Normally a quoted literal. Inside a `list` LOOP, a string mentioning the
+ * item becomes an expression that reads it — which is what makes the mode
+ * worth exporting at all: a script that visited `https://shop/{{item.value}}`
+ * five hundred times, braces and all, would be a script that does not work.
+ *
+ * Concatenation rather than a template literal on purpose. A URL can hold a
+ * backtick or a `${`, and getting that escaping wrong produces a script that
+ * either fails to parse or silently interpolates something else.
+ *
+ * Only the steps that carry a URL use this. Everywhere else a template is
+ * still reported as unresolved before the download, exactly as it was — see
+ * findUnresolvedTemplates.
+ */
+function _strExpr(value, esc) {
+  const raw = String(value ?? "");
+  if (!_listItem || !_TEMPLATE.test(raw)) return `'${esc(raw)}'`;
+
+  const parts = [];
+  let last = 0;
+  for (const m of raw.matchAll(new RegExp(_TEMPLATE.source, "g"))) {
+    if (m.index > last) parts.push(`'${esc(raw.slice(last, m.index))}'`);
+    parts.push(
+      m[1] === "item"
+        ? `String(${_listItem}[${JSON.stringify(m[2])}] ?? '')`
+        : `String(_loop[${JSON.stringify(m[2])}] ?? '')`,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < raw.length) parts.push(`'${esc(raw.slice(last))}'`);
+  return parts.join(" + ");
+}
+
 /** The scoped locator for a selector, and the whole point of `_scope`. */
 const _loc = (sel) => `${_scope}.locator('${sel}')`;
 
@@ -496,7 +550,7 @@ function _emitNodeStepBody(step) {
     case "WEBSITE":
     case "NAVIGATE":
       return [
-        `await page.goto('${esc(config.url ?? "")}');`,
+        `await page.goto(${_strExpr(config.url, esc)});`,
         `await page.waitForLoadState('networkidle');`,
         "",
       ];
@@ -813,6 +867,35 @@ function _emitNodeStepBody(step) {
             : `for (let i = 0; i < elements.length; i++) {`,
         );
         lines.push(`  const ${elVar} = elements[i];`);
+      } else if (config.type === "list") {
+        if ((config.source || "lines") === "context") {
+          // The items would come from a run context a standalone script does
+          // not have. Refused rather than exported as an empty loop, which
+          // would run, exit 0 and scrape nothing.
+          lines.push(
+            `// UNSUPPORTED: this LOOP reads its list from '${esc(String(config.contextPath ?? ""))}',`,
+            `// which is part of a run inside the extension. A pasted list exports fine.`,
+            `throw new Error('FlowScrape: LOOP over a run-context list is not exportable');`,
+            "",
+          );
+          return lines;
+        }
+        // Baked in at export time: the list is known now, so the script does
+        // not need a CSV parser of its own to disagree with ours.
+        const parsed = parseListLines(config.lines, {
+          delimiter: config.delimiter,
+          hasHeader: config.hasHeader === true,
+        });
+        const items =
+          (config.max ?? 0) > 0
+            ? parsed.items.slice(0, Number(config.max))
+            : parsed.items;
+        lines.push(
+          `const _items = ${JSON.stringify(items)};`,
+          `for (let i = 0; i < _items.length; i++) {`,
+          `  const _item = _items[i];`,
+          `  const _loop = { index: i + 1, index0: i, count: _items.length };`,
+        );
       } else if (config.type === "paginate-links" && config.selector) {
         // The page's links are the bound, as they are in the run: a numbered
         // paginator has nothing that goes dead to probe, so "how many pages"
@@ -890,9 +973,18 @@ function _emitNodeStepBody(step) {
       // the pagination modes iterate pages, so their bodies stay page-level.
       const bodyScope =
         config.type === "elements" && config.selector ? elVar : null;
-      for (const child of step.children ?? []) {
-        const emit = () => _emitNodeStep(child).map((l) => "  " + l);
-        lines.push(...(bodyScope ? _within(bodyScope, emit) : emit()));
+      // `_item` is in scope for the body of a list LOOP and nowhere else, so
+      // the resolver is turned on and off around it — a nested loop restores
+      // the outer one's item rather than clearing it.
+      const outerItem = _listItem;
+      if (config.type === "list") _listItem = "_item";
+      try {
+        for (const child of step.children ?? []) {
+          const emit = () => _emitNodeStep(child).map((l) => "  " + l);
+          lines.push(...(bodyScope ? _within(bodyScope, emit) : emit()));
+        }
+      } finally {
+        _listItem = outerItem;
       }
       if (config.type === "paginate-url" && config.stopWhenEmpty !== false) {
         lines.push(
@@ -1418,6 +1510,8 @@ function _apiNode(config) {
       : {};
   const mode = String(pagination.mode ?? "none").toLowerCase();
   const url = esc(config.url ?? "");
+  // A list LOOP can supply the URL: {{item.value}} becomes a read of the item.
+  const urlExpr = _strExpr(config.url, esc);
 
   if (mode !== "none" && !["cursor", "page", "link"].includes(mode)) {
     return [
@@ -1458,7 +1552,7 @@ function _apiNode(config) {
 
   if (mode === "none") {
     lines.push(
-      `const apiResp = await fsApiRequest('${url}', ${initExpr}, ${timeout});`,
+      `const apiResp = await fsApiRequest(${urlExpr}, ${initExpr}, ${timeout});`,
       failOnHttp
         ? `if (!apiResp.ok) throw new Error('API failed: ' + apiResp.status + ' ' + apiResp.statusText);`
         : `// failOnHttpError disabled`,
@@ -1491,7 +1585,7 @@ function _apiNode(config) {
       : 1;
   const cursorPath = esc(String(pagination.cursorPath ?? "").trim());
 
-  lines.push(`const apiRows = [];`, `let apiNextUrl = '${url}';`);
+  lines.push(`const apiRows = [];`, `let apiNextUrl = ${urlExpr};`);
   if (mode === "page") {
     lines.push(
       `apiNextUrl = fsAddQueryParam(apiNextUrl, '${pageParam}', ${startPage});`,
@@ -1520,11 +1614,11 @@ function _apiNode(config) {
     lines.push(
       `  const apiCursor = fsDig(apiBody, '${cursorPath}');`,
       `  if (apiCursor === undefined || apiCursor === null || apiCursor === '') break; // the source named no next cursor`,
-      `  apiNextUrl = fsAddQueryParam('${url}', '${cursorParam}', apiCursor);`,
+      `  apiNextUrl = fsAddQueryParam(${urlExpr}, '${cursorParam}', apiCursor);`,
     );
   } else if (mode === "page") {
     lines.push(
-      `  apiNextUrl = fsAddQueryParam('${url}', '${pageParam}', ${startPage} + (apiPage + 1) * ${pageStep});`,
+      `  apiNextUrl = fsAddQueryParam(${urlExpr}, '${pageParam}', ${startPage} + (apiPage + 1) * ${pageStep});`,
     );
   } else if (mode === "link") {
     lines.push(

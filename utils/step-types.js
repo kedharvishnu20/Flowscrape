@@ -186,11 +186,13 @@ export const STEP_TYPES = Object.freeze({
     desc: "Loop / repeat",
     runsIn: "background",
     container: "children",
-    // `type` picks the mode: elements, count, paginate (click a Next control),
-    // paginate-links (walk a set of numbered page links) or paginate-url
-    // (fill a page number into a URL template). The last two exist because a
-    // numbered paginator has no Next control to click and nothing that ever
-    // goes dead — the links simply stop existing.
+    // `type` picks the mode: elements, count, list (walk a list you supply),
+    // paginate (click a Next control), paginate-links (walk a set of numbered
+    // page links) or paginate-url (fill a page number into a URL template).
+    // The pagination pair exist because a numbered paginator has no Next
+    // control to click and nothing that ever goes dead — the links simply stop
+    // existing. `list` exists because every other mode takes its bound from
+    // the page, and "visit these 500 URLs" is not on the page at all.
     def: {
       type: "elements",
       selector: "",
@@ -199,6 +201,15 @@ export const STEP_TYPES = Object.freeze({
       urlTemplate: "",
       startPage: 1,
       pageStep: 1,
+      // list mode: where the items come from. "lines" is a paste — one item
+      // per line, optionally delimited with a header row, which is what a
+      // spreadsheet column becomes when you copy it. "context" is a dotted
+      // path into what the run already has: api.rows, pageData.records.
+      source: "lines",
+      lines: "",
+      delimiter: "",
+      hasHeader: false,
+      contextPath: "",
       // paginate-url only: stop once a page yields no rows. That mode has
       // nothing to probe — the template says where the pages are and `max`
       // says how many — so without this a run asked for 20 pages of a 5-page

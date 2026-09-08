@@ -435,6 +435,12 @@ export const STEP_TYPES = Object.freeze({
       fileId: "",
       maxPages: 50,
       storeAs: "pdf_text",
+      // "text" returns the words; "tables" reassembles the grid from where the
+      // words sit on the page and puts the rows into the run's results. A PDF
+      // has no table structure of its own — the grid is something the reader's
+      // eye assembles — so the two are genuinely different jobs.
+      mode: "text",
+      hasHeader: true,
     },
     // Not expressible in an exported script: Playwright drives a browser and
     // has no PDF text extractor. The extension reads PDFs itself — see

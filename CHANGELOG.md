@@ -19,6 +19,38 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — PDF_EXTRACTION can read the table, not just the text
+
+A PDF has no notion of a table. It has strings, and coordinates to draw them
+at; the grid is something the reader's eye assembles. So a PDF of tabular data
+— which is most of the PDFs anyone wants to scrape — came out as one blob with
+the columns run together.
+
+`PDF_EXTRACTION` now has a table mode. It keeps the positions the text reader
+throws away and reassembles the grid from them, putting the rows into the run's
+results like any other extraction.
+
+Three decisions, each with a way of being wrong that still produces a plausible
+file. **Rows come from y with a tolerance** — a superscript or a font-size
+change is enough to break exact matching, and every cell on its own row still
+looks like a table. **Columns come from clustering x, not from counting cells**
+— a row with an empty cell has fewer cells than its neighbours, and matching by
+index would shift everything after the gap one column left. **A row drawn as one
+padded string is split on runs of two or more spaces**, because a single space
+is inside "New York".
+
+Two things this found. `T*`, the operator that moves to the next line, was
+being matched inside a `\b(...)\b` group — and `\b` cannot follow a `*`, so it
+never fired and a whole page's lines landed at one y. And **which way is up is
+not knowable from the numbers**: PDF's default space has y growing upward, but
+a page can install a matrix that flips it, and Chrome's own print-to-PDF does.
+Sorting rows on y put the header at the bottom and named every column after a
+data value. Rows are now ordered the way the writer emitted them, with y
+deciding only which cells share a row.
+
+A PDF of prose produces no rows and says so, rather than inventing column
+boundaries.
+
 ### Added — UPLOAD_ACTIVITY onto a drop zone, and a fix it uncovered
 
 More and more upload widgets have no `input[type=file]` at all. They listen for

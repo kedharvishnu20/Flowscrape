@@ -279,6 +279,175 @@ function _looksLikeGlyphIndices(s) {
  * @param {Map<string, string>} toUnicode
  * @returns {{ text: string, undecodable: boolean }}
  */
+/**
+ * One string token from a content stream, as text.
+ *
+ * Shared by the plain-text reader and the positioned one, so the two cannot
+ * disagree about what a given PDF says — which they would, eventually, and the
+ * disagreement would show up as a table whose cells did not match the text
+ * beside them.
+ *
+ * @param {string} token - a `(literal)` or `<hex>` operand, brackets included
+ * @param {Map<string, string>} toUnicode
+ * @returns {{text: string, undecodable: boolean}}
+ */
+function _decodeToken(token, toUnicode) {
+  const raw =
+    token[0] === "("
+      ? _decodeLiteral(token.slice(1, -1))
+      : _decodeHex(token.slice(1, -1));
+
+  let decoded = "";
+  let mapped = true;
+  // Try the CMap two bytes at a time, then one, before giving up on it.
+  for (let i = 0; i < raw.length;) {
+    const two = raw.slice(i, i + 2);
+    const one = raw[i];
+    if (toUnicode.has(two)) {
+      decoded += toUnicode.get(two);
+      i += 2;
+    } else if (toUnicode.has(one)) {
+      decoded += toUnicode.get(one);
+      i += 1;
+    } else {
+      mapped = false;
+      break;
+    }
+  }
+
+  if (!mapped && _looksLikeGlyphIndices(raw)) {
+    return { text: "", undecodable: true };
+  }
+  return { text: mapped && decoded ? decoded : raw, undecodable: false };
+}
+
+/**
+ * Text runs with the coordinates the page draws them at.
+ *
+ * A table is a table because of where its cells sit, not because of anything
+ * in the text — PDF has no notion of a table at all, only strings at positions.
+ * So reading one back means keeping the positions the plain-text reader throws
+ * away.
+ *
+ * What is tracked, and what is not. `Tm` sets the text matrix outright, so its
+ * last two numbers are the position. `Td` moves relative to the start of the
+ * current line, `TD` does the same and sets the leading, `T*` drops one
+ * leading. What cannot be tracked without font metrics is how far a *string*
+ * advances the cursor — so two runs shown one after another with no
+ * repositioning between them are reported at the same x. That is not a
+ * problem for the case this exists for: a table is laid out by positioning
+ * each cell, and a row drawn as one string with spaces in it is handled by
+ * splitting on the spaces instead.
+ *
+ * @param {string} content
+ * @param {Map<string, string>} toUnicode
+ * @returns {{items: Array<{x: number, y: number, text: string}>, undecodable: boolean}}
+ */
+function _itemsFromContent(content, toUnicode) {
+  const items = [];
+  let undecodable = false;
+
+  // Numbers, string operands, and the operators that move the cursor.
+  //
+  // `T*` is matched outside the \b group on purpose: `*` is not a word
+  // character, so a trailing \b after it demands one and never matches. Inside
+  // the group it silently never fired, and every T* — the operator that moves
+  // to the next line — was ignored, putting a whole page's lines at one y.
+  const re =
+    /(-?\d*\.?\d+)|(\((?:\\.|[^\\()])*\)|<[0-9A-Fa-f\s]*>)|(T\*)|\b(BT|ET|Tm|Td|TD|TL|TJ|Tj)\b|(')|(")/g;
+
+  let nums = [];
+  let x = 0;
+  let y = 0;
+  let lineX = 0;
+  let lineY = 0;
+  let leading = 0;
+  let pending = "";
+  let pendingX = 0;
+  let pendingY = 0;
+
+  const flush = () => {
+    const text = pending.trim();
+    if (text) items.push({ x: pendingX, y: pendingY, text });
+    pending = "";
+  };
+
+  let m;
+  while ((m = re.exec(content)) !== null) {
+    if (m[1]) {
+      nums.push(Number(m[1]));
+      continue;
+    }
+    if (m[2]) {
+      const { text, undecodable: bad } = _decodeToken(m[2], toUnicode);
+      if (bad) undecodable = true;
+      if (!pending) {
+        pendingX = x;
+        pendingY = y;
+      }
+      pending += text;
+      nums = [];
+      continue;
+    }
+
+    const op = m[3] ?? m[4] ?? (m[5] ? "'" : '"');
+    switch (op) {
+      case "BT":
+        x = y = lineX = lineY = 0;
+        break;
+      case "ET":
+        flush();
+        break;
+      case "Tm":
+        flush();
+        if (nums.length >= 6) {
+          lineX = x = nums[nums.length - 2];
+          lineY = y = nums[nums.length - 1];
+        }
+        break;
+      case "Td":
+        flush();
+        if (nums.length >= 2) {
+          lineX = x = lineX + nums[nums.length - 2];
+          lineY = y = lineY + nums[nums.length - 1];
+        }
+        break;
+      case "TD":
+        flush();
+        if (nums.length >= 2) {
+          leading = -nums[nums.length - 1];
+          lineX = x = lineX + nums[nums.length - 2];
+          lineY = y = lineY + nums[nums.length - 1];
+        }
+        break;
+      case "T*":
+        flush();
+        lineY = y = lineY - leading;
+        x = lineX;
+        break;
+      case "TL":
+        if (nums.length >= 1) leading = nums[nums.length - 1];
+        break;
+      case "'":
+      case '"':
+        // Both show a string on the next line, so the position has already
+        // moved by the time the text lands.
+        flush();
+        lineY = y = lineY - leading;
+        x = lineX;
+        break;
+      default:
+        // Tj / TJ: the run ends here, at the position it started from.
+        flush();
+        break;
+    }
+    nums = [];
+  }
+  flush();
+
+  return { items, undecodable };
+}
+
 function _textFromContent(content, toUnicode) {
   const parts = [];
   let undecodable = false;
@@ -292,32 +461,8 @@ function _textFromContent(content, toUnicode) {
 
   while ((m = re.exec(content)) !== null) {
     if (m[1]) {
-      const token = m[1];
-      const raw =
-        token[0] === "("
-          ? _decodeLiteral(token.slice(1, -1))
-          : _decodeHex(token.slice(1, -1));
-
-      let decoded = "";
-      let mapped = true;
-      // Try the CMap two bytes at a time, then one, before giving up on it.
-      for (let i = 0; i < raw.length;) {
-        const two = raw.slice(i, i + 2);
-        const one = raw[i];
-        if (toUnicode.has(two)) {
-          decoded += toUnicode.get(two);
-          i += 2;
-        } else if (toUnicode.has(one)) {
-          decoded += toUnicode.get(one);
-          i += 1;
-        } else {
-          mapped = false;
-          break;
-        }
-      }
-
-      const text = mapped && decoded ? decoded : raw;
-      if (!mapped && _looksLikeGlyphIndices(raw)) {
+      const { text, undecodable: bad } = _decodeToken(m[1], toUnicode);
+      if (bad) {
         undecodable = true;
         continue;
       }
@@ -341,16 +486,19 @@ function _textFromContent(content, toUnicode) {
 }
 
 /**
- * Extract text from a PDF.
+ * The page content streams a PDF's text lives in.
+ *
+ * Split out so the text reader and the table reader open a file exactly the
+ * same way — the encryption check and the "which streams are pages" rule
+ * especially, because a second copy of either would drift.
  *
  * @param {Uint8Array|ArrayBuffer} input
  * @param {{ maxPages?: number }} [options]
- * @returns {Promise<PdfText>}
+ * @returns {Promise<{contents: object[], toUnicode: Map, pageCount: number, limit: number}>}
  */
-export async function extractPdfText(input, options = {}) {
+async function _openPdf(input, options = {}) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const maxPages = Math.max(1, Number(options.maxPages) || 50);
-  const warnings = [];
 
   const raw = _latin1(bytes);
   if (!raw.startsWith("%PDF-")) {
@@ -375,9 +523,71 @@ export async function extractPdfText(input, options = {}) {
   const contents = streams.filter(
     (s) => /\bBT\b/.test(s.data) && /(Tj|TJ)\b/.test(s.data),
   );
-
   const pageCount = contents.length;
-  const limit = Math.min(pageCount, maxPages);
+  return {
+    contents,
+    toUnicode,
+    pageCount,
+    limit: Math.min(pageCount, maxPages),
+  };
+}
+
+/**
+ * Text runs with their positions, page by page.
+ *
+ * What a table reader needs and the plain-text one throws away. Exported
+ * separately rather than folded into `extractPdfText` because most callers
+ * want the text and nothing else, and positions are several times the size.
+ *
+ * @param {Uint8Array|ArrayBuffer} input
+ * @param {{ maxPages?: number }} [options]
+ * @returns {Promise<{pages: Array<{page: number, items: Array<{x:number,y:number,text:string}>}>, pageCount: number, truncated: boolean, warnings: string[]}>}
+ */
+export async function extractPdfItems(input, options = {}) {
+  const { contents, toUnicode, pageCount, limit } = await _openPdf(
+    input,
+    options,
+  );
+  const warnings = [];
+  const pages = [];
+  let anyUndecodable = false;
+
+  for (let i = 0; i < limit; i++) {
+    const { items, undecodable } = _itemsFromContent(
+      contents[i].data,
+      toUnicode,
+    );
+    if (undecodable) anyUndecodable = true;
+    pages.push({ page: i + 1, items });
+  }
+
+  if (pageCount === 0) {
+    warnings.push(
+      "No text content streams found. A scanned PDF holds images, not text.",
+    );
+  }
+  if (anyUndecodable) {
+    warnings.push(
+      "Some pages use fonts with no /ToUnicode map and could not be decoded.",
+    );
+  }
+
+  return { pages, pageCount, truncated: pageCount > limit, warnings };
+}
+
+/**
+ * Extract text from a PDF.
+ *
+ * @param {Uint8Array|ArrayBuffer} input
+ * @param {{ maxPages?: number }} [options]
+ * @returns {Promise<PdfText>}
+ */
+export async function extractPdfText(input, options = {}) {
+  const warnings = [];
+  const { contents, toUnicode, pageCount, limit } = await _openPdf(
+    input,
+    options,
+  );
   const pages = [];
 
   for (let i = 0; i < limit; i++) {

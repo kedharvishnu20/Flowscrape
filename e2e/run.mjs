@@ -717,6 +717,44 @@ test("PDF_EXTRACTION reads a PDF over HTTP", async () => {
   assert.match(out.text, /42 million/);
 });
 
+test("PDF_EXTRACTION reads a real table back as rows", async () => {
+  // A PDF Chrome itself produced, from an ordinary HTML table — so the
+  // positions are whatever a real layout engine chose rather than the tidy
+  // coordinates a hand-built fixture uses. That is the whole question: the unit
+  // tests prove the grouping is right, and this proves the numbers it is given
+  // are the ones a real writer emits.
+  const page = await env.ctx.newPage();
+  await page.setContent(`
+    <style>table{border-collapse:collapse;font:12px sans-serif}td,th{padding:4px 24px;text-align:left}</style>
+    <table>
+      <tr><th>Product</th><th>Price</th><th>Stock</th></tr>
+      <tr><td>Widget</td><td>10.00</td><td>In stock</td></tr>
+      <tr><td>Gadget</td><td>25.50</td><td>In stock</td></tr>
+      <tr><td>Doohickey</td><td>7.99</td><td>Sold out</td></tr>
+    </table>`);
+  const pdf = await page.pdf({ format: "A4" });
+  await page.close();
+
+  const { extractPdfItems } = await import("../utils/pdf-text.js");
+  const { tablesFromPages } = await import("../utils/pdf-tables.js");
+  const { pages } = await extractPdfItems(new Uint8Array(pdf));
+  const { records } = tablesFromPages(pages);
+
+  assert.equal(
+    records.length,
+    3,
+    `expected three rows, got ${JSON.stringify(records)}`,
+  );
+  assert.deepEqual(
+    records.map((r) => [r.Product, r.Price, r.Stock]),
+    [
+      ["Widget", "10.00", "In stock"],
+      ["Gadget", "25.50", "In stock"],
+      ["Doohickey", "7.99", "Sold out"],
+    ],
+  );
+});
+
 // ── the steps that only a real browser can prove ─────────────────────────────
 
 test("WAIT for an element waits for it to become visible, not merely to exist", async () => {

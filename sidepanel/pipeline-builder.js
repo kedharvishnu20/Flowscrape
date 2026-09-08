@@ -2380,6 +2380,23 @@ function _configFields(step) {
   // ── PDF_EXTRACTION ──
   if (step.type === "PDF_EXTRACTION") {
     const source = c.source || "url";
+    const pdfMode = c.mode === "tables" ? "tables" : "text";
+    html += `<label>What to read out</label>
+    <select id="cfg-${step.id}-mode" data-id="${step.id}" data-key="mode" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="text"${pdfMode === "text" ? " selected" : ""}>The text</option>
+      <option value="tables"${pdfMode === "tables" ? " selected" : ""}>The table, as rows</option>
+    </select>`;
+    if (pdfMode === "tables") {
+      html += toggle(step, "hasHeader", "The first row names the columns");
+      html += hint(
+        "A PDF has no table structure of its own — only words and where they " +
+          "sit — so the grid is reassembled from their positions. Rows come " +
+          "from the vertical position, columns from clustering the horizontal " +
+          "one, so a row with an empty cell keeps its values under the right " +
+          "headings. If the pages hold prose rather than columns, the step says " +
+          "so instead of returning rows that are not there.",
+      );
+    }
     html += `<label>Source Type</label>
     <select id="cfg-${step.id}-source" data-id="${step.id}" data-key="source" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
       <option value="url" ${source === "url" ? "selected" : ""}>PDF URL</option>

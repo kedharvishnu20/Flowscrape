@@ -31,7 +31,8 @@
 
 import { logger } from "../utils/logger.js";
 import { SeenKeys, filterRows, parseFields } from "../utils/row-dedupe.js";
-import { extractPdfText } from "../utils/pdf-text.js";
+import { extractPdfText, extractPdfItems } from "../utils/pdf-text.js";
+import { tablesFromPages } from "../utils/pdf-tables.js";
 import {
   ALL_STEP_TYPES,
   STEP_TYPES,
@@ -1661,6 +1662,62 @@ async function _executePdfExtraction(config = {}, runId) {
     bytes = new Uint8Array(await res.arrayBuffer());
   }
 
+  // A PDF has no notion of a table — only strings and the coordinates to draw
+  // them at — so reading one back means keeping the positions the text reader
+  // throws away. Two modes rather than always doing both: positions are
+  // several times the size of the text, and most PDFs are prose.
+  if (String(config.mode || "text") === "tables") {
+    const positioned = await extractPdfItems(bytes, { maxPages });
+    const { records, perPage } = tablesFromPages(positioned.pages, {
+      hasHeader: config.hasHeader !== false,
+      rowTolerance: Number(config.rowTolerance) || undefined,
+      columnTolerance: Number(config.columnTolerance) || undefined,
+    });
+
+    for (const warning of positioned.warnings) {
+      _broadcastLog("warn-log", `PDF_EXTRACTION: ${warning}`, runId);
+    }
+    if (positioned.truncated) {
+      _broadcastLog(
+        "warn-log",
+        `PDF_EXTRACTION: read ${positioned.pages.length} of ${positioned.pageCount} pages (maxPages is ${maxPages}).`,
+        runId,
+      );
+    }
+    if (records.length === 0) {
+      // Not an error — a PDF of prose has no table in it — but silence here
+      // would look exactly like a successful read of nothing.
+      _broadcastLog(
+        "warn-log",
+        "PDF_EXTRACTION: no table found. The pages have text but nothing laid " +
+          "out in columns, so there is no grid to read.",
+        runId,
+      );
+    } else {
+      const runState = _runStates.get(runId);
+      await _collectRows(runState, runId, records);
+      _broadcastLog(
+        "info-log",
+        `PDF_EXTRACTION: ${records.length} row${records.length === 1 ? "" : "s"} ` +
+          `from ${perPage.filter((p) => p.rows > 0).length} page(s), ` +
+          `columns: ${(perPage.find((p) => p.columns.length)?.columns ?? []).join(", ")}.`,
+        runId,
+      );
+    }
+
+    return {
+      [storeAs]: {
+        mode: "tables",
+        records,
+        perPage,
+        pageCount: positioned.pageCount,
+        truncated: positioned.truncated,
+        warnings: positioned.warnings,
+        source,
+      },
+    };
+  }
+
   // This used to log "use MCP tool pdf_extract_text" and store
   // {status: "pending"} — an instruction the user cannot act on, because there
   // is no bridge from the extension to the MCP server (B-28, G-05). It extracts
@@ -1685,6 +1742,7 @@ async function _executePdfExtraction(config = {}, runId) {
 
   return {
     [storeAs]: {
+      mode: "text",
       text: result.text,
       pages: result.pages,
       pageCount: result.pageCount,

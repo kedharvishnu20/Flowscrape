@@ -30,6 +30,7 @@
  */
 
 import { logger } from "../utils/logger.js";
+import { scanRows, summarizeFindings } from "../ethics/pii-detector.js";
 import {
   listSchedules,
   getSchedule,
@@ -2041,6 +2042,49 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
 }
 
 /**
+ * Say once, per run, if what is being collected carries personal data.
+ *
+ * Not a block. The user asked for these rows and may well be entitled to
+ * them — a directory of businesses is full of email addresses and scraping it
+ * is not by itself a problem. What they should not do is find out afterwards,
+ * from someone else, that the file they exported and shared had personal data
+ * in it.
+ *
+ * Two things it will not do. It will not print the value: a warning about
+ * personal data that puts that data in the log, and from there into a
+ * screenshot in a bug report, has made things worse rather than better. The
+ * detector reports a type, a column and a row index, and that is all that is
+ * passed on. And it will not repeat itself: a 500-row scrape warning 500 times
+ * is the same as not warning at all, so the run stops scanning once it has
+ * said so — which also keeps a long run from paying for a check whose answer
+ * cannot change.
+ */
+function _checkRowsForPii(runState, runId, rows) {
+  if (!runState || runState.piiWarned) return;
+  if (!Array.isArray(rows) || rows.length === 0) return;
+
+  const findings = scanRows(rows);
+  if (findings.length === 0) return;
+
+  runState.piiWarned = true;
+  const columns = [...new Set(findings.map((f) => f.field))];
+  _broadcastLog(
+    "warn-log",
+    `Ethics · PII: these rows contain personal data (${summarizeFindings(findings)}) ` +
+      `in ${columns.length === 1 ? "column" : "columns"} ${columns.join(", ")}. ` +
+      "The run is continuing — this is a note, not a block. Check what you are " +
+      "allowed to keep and share before exporting.",
+    runId,
+  );
+  logger.warn(MODULE, "pii-in-rows", {
+    types: [...new Set(findings.map((f) => f.type))],
+    columns,
+    // Never the values. The detector is built not to carry them and this must
+    // not undo that.
+  });
+}
+
+/**
  * Check the model's selectors in the page, and offer what survives.
  *
  * The page runs them and reports what each found; the judging happens here,
@@ -2841,6 +2885,12 @@ const STORAGE_DEDUPE_PREFIX = "fs_seen_";
  * @returns {Promise<{kept: object[], dropped: number}>}
  */
 async function _collectRows(runState, runId, rows) {
+  // The one place every row passes on its way to storage, whichever step
+  // produced it. Ethics gate 2 used to sit at preflight, filtering for a step
+  // type that does not exist, and could not have worked even spelled
+  // correctly: rows do not exist before the page has been read.
+  _checkRowsForPii(runState, runId, rows);
+
   const dedupe = runState?.dedupe;
   const { kept, dropped } = dedupe
     ? filterRows(rows, dedupe.seen, dedupe.fields)

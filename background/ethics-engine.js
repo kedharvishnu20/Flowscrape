@@ -94,19 +94,6 @@ async function _gate1_robots(targetOrigin, targetPath, bypass) {
   return null;
 }
 
-async function _gate2_pii(pipelineSteps) {
-  // Only scan FORM_FILL data sources
-  const formSteps = _flattenSteps(pipelineSteps).filter(
-    (s) => s.type === "FORM_FILL",
-  );
-  if (!formSteps.length) return null;
-
-  // We can't read the actual file here in SW; PII check deferred to content script
-  // The content script calls pii-detector when file is uploaded
-  // Return null (gate deferred to content side)
-  return null;
-}
-
 /**
  * Steps that actually put a request on the network. A CLICK or an EXTRACT does
  * not; counting them made the estimate meaningless.
@@ -512,8 +499,17 @@ export async function runEthicsGates(opts = {}) {
   const w1 = await _gate1_robots(targetOrigin, targetPath, bypassRobots);
   if (w1) warnings.push(w1);
 
-  // Gate 2: PII (deferred to content)
-  await _gate2_pii(steps);
+  // Gate 2 used to sit here. It filtered the pipeline for steps of type
+  // FORM_FILL — a type the registry does not have; it is FILL — so it matched
+  // nothing on every pipeline ever run, and returned null regardless. The
+  // deeper problem was where it sat rather than what it filtered: rows do not
+  // exist at preflight, because the page has not been read yet, so nothing
+  // here can know whether a scrape will come back carrying personal data.
+  //
+  // The check now runs where the rows are, at `_collectRows()` in the service
+  // worker — the single path every row takes to storage, whatever step
+  // produced it. A gate that reports having run without being able to look at
+  // anything is worse than no gate.
 
   // Gate 3: Rate limit
   const w3 = _gate3_rateLimit(steps, timing);

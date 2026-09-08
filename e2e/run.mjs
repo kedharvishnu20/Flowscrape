@@ -44,6 +44,16 @@ const ARTICLE = `<!doctype html><html><head><title>Court listing</title>
   <span class="court">Chancery Division</span>
 </body></html>`;
 
+// A business directory: the ordinary, legitimate scrape that happens to come
+// back full of personal data. Nobody is doing anything wrong here, which is
+// exactly why the run should mention it before the file is exported and shared.
+const DIRECTORY = `<!doctype html><html><body>
+  <ul>
+    <li class="row"><span class="who">Ada Lovelace</span><span class="mail">ada@example.com</span></li>
+    <li class="row"><span class="who">Grace Hopper</span><span class="mail">grace@example.com</span></li>
+  </ul>
+</body></html>`;
+
 // An upload widget with no file input at all — the shape that made
 // UPLOAD_ACTIVITY fail with "Upload input not found" on a page that was
 // perfectly willing to take the file. It does what a real dropzone must:
@@ -279,6 +289,7 @@ test.before(async () => {
     "/dropzone": DROPZONE,
     "/framed": FRAMED,
     "/framed-inner": FRAMED_INNER,
+    "/directory": DIRECTORY,
   });
   env = await launch();
 });
@@ -820,6 +831,62 @@ test("AUTO_EXTRACT leaves a field nothing answered empty rather than guessing", 
     "a heuristic answering for a field it was never taught is indistinguishable from a real answer",
   );
   await page.close();
+});
+
+test("a scrape that comes back with personal data says so, once", async () => {
+  // Ethics gate 2 filtered the pipeline for a step type that does not exist,
+  // so it never fired on any pipeline. Worse than a no-op: it reported having
+  // run. The check now happens where the rows are.
+  const { tabId, page } = await onSite("/directory");
+  await env.panel.evaluate(() => {
+    globalThis.__fsPii = [];
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (
+        msg?.type === "pipeline:log" &&
+        /Ethics . PII/.test(msg.payload?.message ?? "")
+      ) {
+        globalThis.__fsPii.push(msg.payload.message);
+      }
+    });
+  });
+
+  const started = await env.send("pipeline:start", {
+    tabId,
+    targetOrigin: site.origin,
+    pipeline: {
+      name: "directory",
+      steps: [
+        step("EXTRACT", {
+          fields: [
+            { name: "who", selector: ".who", type: "text" },
+            { name: "mail", selector: ".mail", type: "text" },
+          ],
+        }),
+      ],
+    },
+  });
+  assert.equal(started.ok, true, JSON.stringify(started));
+
+  const runId = started.result.runId;
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 200));
+    const st = await env.send("pipeline:status", { runId });
+    if (st.ok && st.result.known && !st.result.active) break;
+  }
+  await page.close();
+
+  const warnings = await env.panel.evaluate(() => globalThis.__fsPii ?? []);
+  assert.equal(warnings.length, 1, "it should say so exactly once");
+  assert.match(warnings[0], /Email/);
+  assert.match(warnings[0], /mail/, "the column is what makes it actionable");
+  // The rule this whole area has: never the value. A warning that puts an
+  // email address into the log, and from there into a screenshot in a bug
+  // report, has made things worse.
+  assert.ok(
+    !warnings[0].includes("ada@example.com"),
+    "the warning carries the address it was warning about",
+  );
 });
 
 test("a schedule fires and runs the pipeline it was saved with", async () => {

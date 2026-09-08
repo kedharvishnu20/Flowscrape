@@ -121,6 +121,11 @@ import {
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { runLlmLayer } from "./llm-extractor.js";
+import {
+  parseSchema,
+  weightsFor,
+  mapNodeToSchema,
+} from "../utils/extraction-schema.js";
 // Non-secret AI-gateway settings (provider/model/baseUrl). The key itself
 // never lives here — it goes through api-key-manager.js's encrypted,
 // session-only storage under provider id `gateway:<provider>`, same as every
@@ -1771,10 +1776,24 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   // Default on for pipelines saved before the toggle was honoured.
   const useLlm = config.useLlm !== false;
 
+  // What is being asked for. An empty schema is the product default, so every
+  // pipeline saved before schemas existed behaves exactly as it did.
+  const { fields, isDefault, rejected } = parseSchema(config.schema);
+  for (const bad of rejected) {
+    _broadcastLog(
+      "warn-log",
+      `AUTO_EXTRACT: "${bad}" is not usable as a field name and was left out.`,
+      runId,
+    );
+  }
+
   // ── Layer 1 & 2: run in-page smart-extractor ──────────────────────────────
   const l12Resp = await _sendToPage(tabId, {
     type: "AUTO_EXTRACT",
-    config: { confidenceThreshold: threshold },
+    config: {
+      confidenceThreshold: threshold,
+      schema: isDefault ? null : fields,
+    },
   }).catch((err) => ({ ok: false, error: err.message }));
 
   if (!l12Resp?.ok) {
@@ -1784,6 +1803,13 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   }
 
   let extraction = l12Resp.result;
+
+  // A schema of the user's own: the page reported the site's structured-data
+  // keys, and the matching happens here because the matcher is an ES module a
+  // classic content script cannot import.
+  if (!isDefault) {
+    extraction = _applySchema(extraction, fields, threshold, runId);
+  }
 
   // ── Layer 3: LLM fallback if confidence is still low ──────────────────────
   if (extraction.needsLlm && !useLlm) {
@@ -1807,7 +1833,10 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     let llmResult = null;
     let llmError = null;
     try {
-      llmResult = await runLlmLayer(extraction.simplifiedDom);
+      llmResult = await runLlmLayer(extraction.simplifiedDom, {
+        fields,
+        isDefault,
+      });
     } catch (err) {
       llmError = err.message;
     }
@@ -1870,11 +1899,111 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
 }
 
 /**
+ * Fill a user's schema from what the page reported.
+ *
+ * The free layers answer for the fields they were taught. Layer 1's product
+ * normaliser knows `name` and `price`; layer 2's heuristics know the same
+ * seven. A field neither was written for gets **no opinion** rather than a
+ * guess — a heuristic answering for a column it was never taught is exactly
+ * the failure this three-layer arrangement exists to avoid, and it would be
+ * indistinguishable from a real answer in the export.
+ *
+ * What generalises for free is the site's own structured data: a page that
+ * publishes `datePublished` answers a request for `published date` with no
+ * model and no cost. That is why the page now reports the raw node.
+ *
+ * @param {object} extraction - what the page returned
+ * @param {string[]} fields
+ * @param {number} threshold - below this, ask a model
+ * @param {string} runId
+ * @returns {object} the same shape, re-keyed to the schema
+ */
+function _applySchema(extraction, fields, threshold, runId) {
+  const structured = mapNodeToSchema(extraction.structuredNode, fields);
+  const meta = mapNodeToSchema(extraction.metaNode, fields);
+  const product = extraction.result ?? {};
+  const productConf = extraction.perField ?? {};
+
+  const result = {};
+  const perField = {};
+  const from = {};
+
+  for (const field of fields) {
+    // JSON-LD first: a publisher's assertion about its own page beats a meta
+    // tag the CMS filled in, and both beat a guess from the markup.
+    if (structured.values[field] != null) {
+      result[field] = structured.values[field];
+      perField[field] = 95;
+      from[field] = `json-ld:${structured.matchedKeys[field]}`;
+      continue;
+    }
+    if (meta.values[field] != null) {
+      result[field] = meta.values[field];
+      perField[field] = 85;
+      from[field] = `meta:${meta.matchedKeys[field]}`;
+      continue;
+    }
+    // The product heuristics, but only where the field is one they know.
+    const known = Object.prototype.hasOwnProperty.call(product, field);
+    if (known && product[field] != null && product[field] !== "") {
+      result[field] = product[field];
+      perField[field] = productConf[field] ?? 50;
+      from[field] = "heuristic";
+      continue;
+    }
+    result[field] = null;
+    perField[field] = 0;
+    from[field] = "none";
+  }
+
+  const weights = weightsFor(fields, false);
+  let total = 0;
+  let sum = 0;
+  for (const field of fields) {
+    total += weights[field] ?? 1;
+    sum += (perField[field] ?? 0) * (weights[field] ?? 1);
+  }
+  const overallConfidence = total ? Math.round(sum / total) : 0;
+
+  const answered = fields.filter((f) => result[f] != null).length;
+  _broadcastLog(
+    "info-log",
+    `AUTO_EXTRACT: the page answered ${answered} of ${fields.length} field(s) for free` +
+      (answered
+        ? ` (${fields.filter((f) => result[f] != null).join(", ")})`
+        : "") +
+      ".",
+    runId,
+  );
+
+  return {
+    ...extraction,
+    result,
+    perField,
+    from,
+    fields,
+    overallConfidence,
+    // Re-decided here: the page cannot know whether the free layers covered a
+    // schema it has no rules for, so its own needsLlm is about products only.
+    // Either reason is enough: a low score, or a field nothing answered.
+    // A schema of five fields where four came back at 95 still averages well
+    // above the threshold while one column is entirely empty.
+    needsLlm: overallConfidence < threshold || answered < fields.length,
+    method: answered ? "structured+heuristic" : "none",
+  };
+}
+
+/**
  * Field-level merge: for each field, pick whichever source (L1/L2 or LLM)
  * has higher per-field confidence.
  */
 function _mergeLlmOverL12(l12, llm) {
-  const fieldList = [
+  // Whatever was asked for. `l12.fields` is set by _applySchema for a custom
+  // schema; without one it is the product default, which is where the list
+  // used to be spelled out. A merge over a hardcoded list would have dropped
+  // every field a user named for themselves — the model would answer and the
+  // answer would be discarded on the way back.
+  const fieldList = l12.fields ?? [
     "name",
     "price",
     "originalPrice",

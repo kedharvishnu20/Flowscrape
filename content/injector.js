@@ -771,7 +771,7 @@
    * then returns the result including a `simplifiedDom` string if the SW should
    * escalate to the LLM layer.
    *
-   * @param {object} config - { confidenceThreshold?: number }
+   * @param {object} config - { confidenceThreshold?: number, schema?: string[] }
    * @returns {Promise<object>} Extraction result
    */
   async function _stepAutoExtract(config = {}) {
@@ -793,6 +793,10 @@
     // Run synchronously — pure DOM reads, no awaits needed inside
     const result = window.__fsSmartExtract({
       confidenceThreshold: config.confidenceThreshold ?? 70,
+      // Already parsed by the worker: this file forwards it rather than
+      // reading the raw config, so "what counts as a field name" has one
+      // definition and it is not in the page.
+      schema: Array.isArray(config.schema) ? config.schema : null,
     });
 
     return result;

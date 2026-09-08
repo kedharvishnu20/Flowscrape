@@ -19,6 +19,45 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — AUTO_EXTRACT for any schema, not only for products
+
+The step had seven field names hardcoded across two hundred lines of scoring
+rules and spelled out again in its prompt. A page of court listings, job adverts
+or conference talks got a step whose only question was "what is the price".
+
+It now takes a list of field names. Deliberately just names — no types, no
+required flags, no nesting: someone typing `title, author, published date` wants
+three columns, and every further ceremony is a form to fill in before getting
+them. An empty schema is the product default, so nothing saved before this
+changes.
+
+**The page's own structured data answers for free.** A site publishing
+`datePublished` answers a request for "published date" with no model and no
+cost, because the requested names are matched against the site's keys rather
+than compared to them. That matching is `fieldMatchScore()` in
+`utils/levenshtein.js` — written for `content/field-auto-mapper.js`, which
+nothing has ever reached (audit A-07). It finally has a caller, and the caller
+is in the worker, because `smart-extractor.js` is a classic content script that
+cannot import a module. So the page reports the node it found and the worker
+decides what the keys mean: the same split `IF_ELSE` and `ASSERT` already use.
+
+Three rules keep it honest. An exact key match is never second-guessed by a
+similarity score. One key answers one field, or a schema of `price` and
+`originalPrice` reports the same number twice as though the page had said it
+twice. And a key that is merely _nearby_ is not an answer — below the threshold
+the field goes to the next layer rather than being filled with the closest thing
+lying around.
+
+**A heuristic does not answer for a field it was never taught.** Layer 2 knows
+products; asked for "defendant solicitor" it says nothing, and the column stays
+empty. A guess there would be indistinguishable from an answer in the export.
+
+Two fixes fell out of it. The layer-3 merge ran over a hardcoded product list,
+so a model's answer for a user-named field would have been discarded on the way
+back — looking exactly like the model failing. And escalation now triggers on
+_either_ a low score or an unanswered field: four fields at 95 and one empty
+averages well above any threshold while a column is entirely blank.
+
 ### Changed — the AI layer works with a free local model
 
 `AUTO_EXTRACT`'s third layer was a **second HTTP client**. It spoke to Gemini and

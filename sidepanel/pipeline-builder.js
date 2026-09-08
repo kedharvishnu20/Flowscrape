@@ -2452,7 +2452,7 @@ function _configFields(step) {
   // ── AUTO_EXTRACT ──
   if (step.type === "AUTO_EXTRACT") {
     html += `<div class="step-note">
-      <div class="step-note-title">Smart Product Auto-Extractor</div>
+      <div class="step-note-title">Smart Auto-Extractor</div>
       <p class="prose">Product pages. The first layers run in the page and cost nothing; a model is asked only when they cannot answer confidently.</p>
       <ol class="step-note-layers">
         <li>JSON-LD / Schema.org</li>
@@ -2461,6 +2461,24 @@ function _configFields(step) {
         <li>Whichever model you set up under Settings &rarr; AI gateway</li>
       </ol>
     </div>`;
+
+    html += `<label>Fields to look for</label>
+    <textarea id="cfg-${step.id}-schema" data-id="${step.id}" data-key="schema" data-rerender="true" class="cfg-bind" rows="3" placeholder="Leave empty for a product page. Or name your own: title, author, published date" style="margin-bottom:8px;">${esc(c.schema || "")}</textarea>`;
+    if (String(c.schema || "").trim()) {
+      html += hint(
+        "The page's own structured data answers these for free wherever it " +
+          "publishes them — a site that says datePublished answers a request " +
+          "for \u201cpublished date\u201d with no model and no cost. The product " +
+          "heuristics only have an opinion about product fields, so anything " +
+          "else falls to the model, and a field nothing can answer stays empty " +
+          "rather than being guessed at.",
+      );
+    } else {
+      html += hint(
+        "Empty means the product fields: name, price, brand, description, sku, " +
+          "availability, rating, images and the rest.",
+      );
+    }
 
     html += field(
       step,

@@ -27,6 +27,21 @@ const PRODUCTS = `<!doctype html><html><head><title>Shop</title></head><body>
   </script>
 </body></html>`;
 
+// A page that is not a product: the case AUTO_EXTRACT could not express at all
+// before schemas. Its JSON-LD uses the site's own key names, which is what the
+// worker has to match a user's field names against.
+const ARTICLE = `<!doctype html><html><head><title>Court listing</title>
+  <meta property="og:section" content="Chancery Division">
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"Article",
+   "headline":"Acme Ltd v Bloggs",
+   "datePublished":"2026-01-02",
+   "author":{"@type":"Person","name":"Ada Lovelace"},
+   "keywords":["contract","damages"]}
+  </script></head><body>
+  <h1>Acme Ltd v Bloggs</h1><p>Judgment of the court.</p>
+</body></html>`;
+
 // An upload widget with no file input at all — the shape that made
 // UPLOAD_ACTIVITY fail with "Upload input not found" on a page that was
 // perfectly willing to take the file. It does what a real dropzone must:
@@ -258,6 +273,7 @@ test.before(async () => {
     "/apipage": APIPAGE,
     "/api/items": '{"items":[1,2,3]}',
     "/track/px": "ok",
+    "/article": ARTICLE,
     "/dropzone": DROPZONE,
     "/framed": FRAMED,
     "/framed-inner": FRAMED_INNER,
@@ -753,6 +769,55 @@ test("PDF_EXTRACTION reads a real table back as rows", async () => {
       ["Doohickey", "7.99", "Sold out"],
     ],
   );
+});
+
+test("AUTO_EXTRACT answers a schema that has nothing to do with products", async () => {
+  // The whole point of generalising it: a court listing, asked for the fields a
+  // court listing has. The page publishes them as JSON-LD under its own key
+  // names, so the free layer answers and no model is consulted at all.
+  const { tabId, page } = await onSite("/article");
+  const res = await env.send("step:execute", {
+    step: step("AUTO_EXTRACT", {
+      schema: "headline, published date, author, keywords",
+      useLlm: false,
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  const row = res.result;
+  assert.equal(row.headline, "Acme Ltd v Bloggs");
+  assert.equal(
+    row["published date"],
+    "2026-01-02",
+    'the site calls it datePublished; the user called it "published date"',
+  );
+  assert.equal(
+    row.author,
+    "Ada Lovelace",
+    "a nested Person node should give up its name rather than [object Object]",
+  );
+  assert.equal(row.keywords, "contract, damages");
+  await page.close();
+});
+
+test("AUTO_EXTRACT leaves a field nothing answered empty rather than guessing", async () => {
+  const { tabId, page } = await onSite("/article");
+  const res = await env.send("step:execute", {
+    step: step("AUTO_EXTRACT", {
+      schema: "headline, defendant solicitor",
+      useLlm: false,
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.result.headline, "Acme Ltd v Bloggs");
+  assert.equal(
+    res.result["defendant solicitor"],
+    null,
+    "a heuristic answering for a field it was never taught is indistinguishable from a real answer",
+  );
+  await page.close();
 });
 
 // ── the steps that only a real browser can prove ─────────────────────────────

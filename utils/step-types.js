@@ -450,9 +450,18 @@ export const STEP_TYPES = Object.freeze({
   AUTO_EXTRACT: {
     icon: "🤖",
     cat: "Data",
-    desc: "Smart product auto-extract",
+    desc: "Smart auto-extract",
     runsIn: "background",
-    def: { confidenceThreshold: 70, useLlm: true },
+    def: {
+      confidenceThreshold: 70,
+      useLlm: true,
+      // The fields to look for, comma- or newline-separated. Empty means the
+      // product default, so every pipeline saved before this behaves exactly
+      // as it did. Naming your own turns "smart product auto-extract" into
+      // "smart auto-extract" — the structured-data and model layers generalise,
+      // the product heuristics keep their opinion to the fields they know.
+      schema: "",
+    },
     // Not expressible in an exported script: the first two layers are an
     // in-page extractor with no standalone equivalent, and the third asks a
     // model the script has no configuration for.

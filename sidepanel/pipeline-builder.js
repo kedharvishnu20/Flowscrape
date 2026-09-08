@@ -23,6 +23,7 @@ import {
   formatRows,
   formatMeta,
   ROW_FORMATS,
+  APPENDABLE_FORMATS,
 } from "../exporters/row-formatters.js";
 import { exportRows } from "../exporters/text-exporters.js";
 
@@ -2125,12 +2126,35 @@ function _configFields(step) {
 
   // ── EXPORT ──
   if (step.type === "EXPORT") {
-    html += `<label>Format</label><select id="cfg-${step.id}-format" data-id="${step.id}" data-key="format" class="cfg-bind" style="margin-bottom:8px;">
+    html += `<label>Format</label><select id="cfg-${step.id}-format" data-id="${step.id}" data-key="format" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
       ${ROW_FORMATS.map(
         (f) =>
           `<option value="${f}" ${(c.format || "csv") === f ? "selected" : ""}>${esc(formatMeta(f).label)}</option>`,
       ).join("")}
     </select>`;
+
+    const canAppend = APPENDABLE_FORMATS.includes(c.format || "csv");
+    if (canAppend) {
+      html += appendToggle(step);
+    } else if (c.append) {
+      // The toggle is on and the format cannot carry it. Say so here rather
+      // than letting the run fail at the last step, after all the scraping.
+      html += `<p style="font-size:11px;color:var(--red);margin:0 0 8px;">Appending is on, but ${esc(formatMeta(c.format).label)} cannot be added to a file a run at a time — a JSON array, an XML tree and a Markdown table each have to be rewritten whole. Choose ${esc(APPENDABLE_FORMATS.join(", ").toUpperCase())}, or turn appending off.</p>`;
+      html += appendToggle(step);
+    }
+
+    if (canAppend && c.append) {
+      html += field(step, "dataset", "Dataset name", "text", c.dataset || "");
+      html += hint(
+        "Every run adds its rows to this dataset and writes the whole thing out " +
+          "as one file. The file is replaced each time rather than added to — an " +
+          "extension cannot read what is already in your Downloads folder — so " +
+          "anything you edit into it by hand is lost on the next run. The upside " +
+          "is that a page that gains a column mid-week gets that column, which a " +
+          "real append could never do.",
+      );
+    }
+
     html += toggle(
       step,
       "optional",
@@ -3039,6 +3063,16 @@ function memberToggle(step, key, value, label) {
     <input type="checkbox" id="cfg-${step.id}-${key}-${value}" ${checked} data-id="${step.id}" data-key="${key}" data-member="${esc(value)}" class="cfg-bind">
     <div class="toggle-switch"></div>
     <span>${label}</span>
+  </div>`;
+}
+
+/** The append switch, which reveals the dataset box, so it must re-render. */
+function appendToggle(step) {
+  const checked = step.config.append ? "checked" : "";
+  return `<div class="toggle-wrap">
+    <input type="checkbox" id="cfg-${step.id}-append" ${checked} data-id="${step.id}" data-key="append" data-rerender="true" class="cfg-bind">
+    <div class="toggle-switch"></div>
+    <span>Add to a dataset instead of a new file</span>
   </div>`;
 }
 

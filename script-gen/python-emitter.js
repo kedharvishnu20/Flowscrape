@@ -28,6 +28,7 @@ import { parseFilenameTemplate } from "./pipeline-compiler.js";
 
 import { EXTRACT_VALUE_JS, PAGINATE_STATE_JS } from "./page-runtime.js";
 
+import { APPENDABLE_FORMATS } from "../exporters/row-formatters.js";
 const MODULE = "python-emitter";
 
 /** Mirrors exporters/row-formatters.js — the same six formats, same extensions. */
@@ -1461,14 +1462,70 @@ function _emitExport(config) {
       "",
     ];
   }
-  return [
-    `# EXPORT → ${fmt}`,
-    `_out = os.environ.get("FS_OUT_FILE", "export.${FORMAT_EXT[fmt]}")`,
-    `with open(_out, "w", encoding="utf-8", newline="") as _fh:`,
-    `    _fh.write(fs_format_rows(fs_rows, "${fmt}"))`,
-    `print("FlowScrape: wrote {} row(s) to {}{}".format(len(fs_rows), _out, " ({} duplicate(s) dropped)".format(fs_dropped) if fs_dropped else ""), file=sys.stderr)`,
-    "",
+  if (config.append && !APPENDABLE_FORMATS.includes(fmt)) {
+    // A JSON array, an XML tree and a Markdown table each have to be rewritten
+    // whole. Emitting a plain append for them would leave a file no parser
+    // will read, which is the worse failure.
+    return [
+      `# UNSUPPORTED: "${fmt}" cannot be appended to a file a run at a time.`,
+      `raise ValueError("FlowScrape: cannot append ${fmt}; use ${APPENDABLE_FORMATS.join(", ")}")`,
+      "",
+    ];
+  }
+
+  const stem = config.append
+    ? (config.dataset || "dataset").replace(/[^\w. -]/g, "_")
+    : "export";
+  const out = `_out = os.environ.get("FS_OUT_FILE", "${stem}.${FORMAT_EXT[fmt]}")`;
+
+  if (!config.append) {
+    return [
+      `# EXPORT → ${fmt}`,
+      out,
+      `with open(_out, "w", encoding="utf-8", newline="") as _fh:`,
+      `    _fh.write(fs_format_rows(fs_rows, "${fmt}"))`,
+      `print("FlowScrape: wrote {} row(s) to {}{}".format(len(fs_rows), _out, " ({} duplicate(s) dropped)".format(fs_dropped) if fs_dropped else ""), file=sys.stderr)`,
+      "",
+    ];
+  }
+
+  const lines = [
+    `# EXPORT → ${fmt}, added to whatever is already in the file`,
+    out,
+    `_text = fs_format_rows(fs_rows, "${fmt}")`,
+    `_had = os.path.exists(_out) and os.path.getsize(_out) > 0`,
   ];
+  if (fmt === "jsonl") {
+    lines.push(
+      `with open(_out, "a", encoding="utf-8", newline="") as _fh:`,
+      `    _fh.write(_text)`,
+    );
+  } else {
+    lines.push(
+      `_lines = _text.split("\\n")`,
+      // CSV rows end \r\n, so the split leaves a \r on each line. Comparing a
+      // stripped existing header against an unstripped new one would call
+      // every file a mismatch.
+      `_head = _lines[0].rstrip("\\r")`,
+      `if _had:`,
+      `    with open(_out, "r", encoding="utf-8", newline="") as _fh:`,
+      `        _existing = _fh.readline().lstrip("\\ufeff").rstrip("\\r\\n")`,
+      // Appending under a header that does not match would put values in the
+      // wrong columns, and nothing about the resulting file would say so.
+      `    if _existing != _head:`,
+      `        raise ValueError("FlowScrape: {} has different columns ({}) than this run ({}); appending would put values under the wrong headings".format(_out, _existing, _head))`,
+      `    with open(_out, "a", encoding="utf-8", newline="") as _fh:`,
+      `        _fh.write("\\n".join(_lines[1:]))`,
+      `else:`,
+      `    with open(_out, "w", encoding="utf-8", newline="") as _fh:`,
+      `        _fh.write(_text)`,
+    );
+  }
+  lines.push(
+    `print("FlowScrape: added {} row(s) to {}{}".format(len(fs_rows), _out, " ({} duplicate(s) dropped)".format(fs_dropped) if fs_dropped else ""), file=sys.stderr)`,
+    "",
+  );
+  return lines;
 }
 
 /**

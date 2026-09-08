@@ -36,6 +36,21 @@ export const ROW_FORMATS = Object.freeze([
   "markdown",
 ]);
 
+/**
+ * Formats a run can add to an existing file, rather than replacing it.
+ *
+ * A line-oriented format can be added to; a document cannot. A JSON array has
+ * to be reopened to take another element, an XML tree has to be reopened to
+ * take another node, and a Markdown table's alignment row would end up in the
+ * middle of the data. Refusing those is the honest answer: an "append" that
+ * quietly produced a file no parser will read is worse than not offering it.
+ *
+ * The extension has the same list even though its mechanism could manage more
+ * — it re-renders the whole set from stored rows — because a pipeline and the
+ * script exported from it must do the same thing.
+ */
+export const APPENDABLE_FORMATS = Object.freeze(["csv", "tsv", "jsonl"]);
+
 const META = Object.freeze({
   csv: { ext: "csv", mime: "text/csv", label: "CSV" },
   json: { ext: "json", mime: "application/json", label: "JSON" },

@@ -19,6 +19,40 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — EXPORT can add to a dataset instead of writing a new file
+
+"A run per day into one dataset" produced thirty files, and stitching them
+together by hand is where the duplicate rows and the mismatched columns come
+from. `EXPORT` can now keep adding to one.
+
+The two halves do it differently, and the panel says so rather than leaving it
+to be discovered.
+
+**The extension cannot append.** `chrome.downloads` writes and never reads, so
+yesterday's file is not something it can open and add to. It keeps the rows
+instead — in IndexedDB, under a dataset name, outliving the run that produced
+them — and writes the whole set out again under one filename. The file grows a
+run at a time, which is what was wanted; underneath it is a rewrite, which
+matters for one reason: anything edited into the file by hand is lost on the
+next run. The compensation is real, though — because the file is rendered from
+rows every time, a page that gains a column mid-week gets that column, which a
+literal append to a written CSV could never do.
+
+**The exported script appends for real,** with `appendFileSync`. For CSV and
+TSV it writes the header once and then checks, on every later run, that the
+file's existing header still matches this run's columns — appending under a
+header that has changed would put values under the wrong headings, and nothing
+about the resulting file would say so.
+
+Both halves refuse the same three formats. A JSON array has to be reopened to
+take another element, an XML tree to take another node, and a Markdown table's
+alignment row would end up in the middle of the data. The extension's mechanism
+could manage all three; it refuses anyway, because a pipeline and the script
+exported from it have to do the same thing.
+
+The database schema is at version 3. The upgrade adds the `datasets` store and
+touches nothing else.
+
 ### Added — IF_ELSE can compare one element against another
 
 "Only take it if the sale price is under the list price" could not be written

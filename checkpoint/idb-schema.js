@@ -29,12 +29,15 @@ export const DB_NAME = "flowscrape_v3";
  * v1 — original schema (inconsistently created; see module docblock).
  * v2 — schema unified here; guarantees `cursors`, `row_buffer` and `data_rows`
  *      all exist regardless of which module opens the database first.
+ * v3 — `datasets`, which outlive a run: an EXPORT set to append accumulates
+ *      into one named collection so a run per day builds one file.
  */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 export const STORE_CURSORS = "cursors";
 export const STORE_ROW_BUFFER = "row_buffer";
 export const STORE_DATA_ROWS = "data_rows";
+export const STORE_DATASETS = "datasets";
 
 /**
  * Declarative schema. `upgrade` runs only when the store is created.
@@ -53,6 +56,15 @@ const STORES = [
     name: STORE_DATA_ROWS,
     options: { autoIncrement: true },
     indexes: [{ name: "runId", keyPath: "runId", options: { unique: false } }],
+  },
+  {
+    // Keyed by dataset name rather than by run: the whole point is that the
+    // rows survive the run that produced them.
+    name: STORE_DATASETS,
+    options: { autoIncrement: true },
+    indexes: [
+      { name: "dataset", keyPath: "dataset", options: { unique: false } },
+    ],
   },
 ];
 

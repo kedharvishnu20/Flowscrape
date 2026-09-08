@@ -95,6 +95,12 @@ import {
   droppedRowCount,
   readAllRows,
 } from "../checkpoint/row-buffer.js";
+import {
+  appendRows as appendDatasetRows,
+  readDataset,
+  datasetName,
+  MAX_DATASET_ROWS,
+} from "../checkpoint/dataset-store.js";
 import { saveCursor } from "../checkpoint/cursor-store.js";
 import {
   getResumePayload,
@@ -113,6 +119,7 @@ import {
   formatRows,
   formatMeta,
   ROW_FORMATS,
+  APPENDABLE_FORMATS,
 } from "../exporters/row-formatters.js";
 
 const MODULE = "service-worker";
@@ -2038,13 +2045,45 @@ async function _doExport(runId, config) {
   // legitimate 0 or false into an empty cell, and quoted every CSV field.
   const fmt = ROW_FORMATS.includes(config.format) ? config.format : "csv";
   const { mime: dataMime, ext: dataExt } = formatMeta(fmt);
-  const dataContent = formatRows(allRows, fmt);
+
+  // "A run per day into one dataset." The rows are kept between runs and the
+  // whole set is written out again under one name — an extension cannot append
+  // to a file, because chrome.downloads writes and never reads, so yesterday's
+  // file is not something this can open and add to. Rendering from rows has
+  // one advantage over a real append: a page that gains a column mid-week gets
+  // that column, where an append to a written CSV could only drop it.
+  let rowsToWrite = allRows;
+  let stem = `flowscrape_export_${ts}`;
+  if (config.append) {
+    if (!APPENDABLE_FORMATS.includes(fmt)) {
+      throw new Error(
+        `EXPORT: "${fmt}" cannot be added to a file a run at a time — a JSON ` +
+          `array, an XML tree and a Markdown table each have to be rewritten ` +
+          `whole. Use ${APPENDABLE_FORMATS.join(", ")}, or turn appending off.`,
+      );
+    }
+    const name = datasetName(config.dataset);
+    const { added, total, dropped } = await appendDatasetRows(name, allRows);
+    rowsToWrite = await readDataset(name);
+    stem = `flowscrape_${name}`;
+    _broadcastLog(
+      dropped ? "warn-log" : "info-log",
+      `EXPORT: added ${added} row${added === 1 ? "" : "s"} to "${name}" ` +
+        `(${total} in total)` +
+        (dropped
+          ? ` — ${dropped} did not fit; a dataset holds ${MAX_DATASET_ROWS} rows.`
+          : "."),
+      runId,
+    );
+  }
+
+  const dataContent = formatRows(rowsToWrite, fmt);
 
   const networks = runState.networks || [];
   if (screenshots.length > 0 || networks.length > 0) {
     // Bundle everything into a ZIP
     const zipFiles = [];
-    if (allRows.length > 0) {
+    if (rowsToWrite.length > 0) {
       zipFiles.push({
         name: `data.${dataExt}`,
         bytes: enc.encode("\uFEFF" + dataContent),
@@ -2085,24 +2124,28 @@ async function _doExport(runId, config) {
       droppedRowCount(runId);
     _broadcastLog(
       dropped ? "warn-log" : "info-log",
-      `Exported ZIP: ${allRows.length} rows, ${screenshots.length} screens, ${networks.length} APIs` +
+      `Exported ZIP: ${rowsToWrite.length} rows, ${screenshots.length} screens, ${networks.length} APIs` +
         (dropped
           ? ` — ${dropped} capture(s) dropped when the buffer filled.`
           : "."),
       runId,
     );
-  } else if (allRows.length > 0) {
+  } else if (rowsToWrite.length > 0) {
     // The BOM goes through the encoder with the rest of the content, so it is
     // base64 of real UTF-8 bytes rather than a character dropped into a URL and
     // mangled — which is what the original data: URL build got wrong.
     await chrome.downloads.download({
       url: _bytesToDataUrl(enc.encode("\uFEFF" + dataContent), dataMime),
-      filename: `flowscrape_export_${ts}.${dataExt}`,
+      filename: `${stem}.${dataExt}`,
+      // A growing dataset is one file, so each run replaces it rather than
+      // leaving "dataset (3).csv" beside "dataset (2).csv" — which is the pile
+      // of files appending exists to avoid.
+      conflictAction: config.append ? "overwrite" : "uniquify",
       saveAs: false,
     });
     _broadcastLog(
       "info-log",
-      `Exported ${allRows.length} rows as ${fmt.toUpperCase()}.`,
+      `Exported ${rowsToWrite.length} rows as ${fmt.toUpperCase()}.`,
       runId,
     );
   } else {

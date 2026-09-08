@@ -16,6 +16,7 @@ import {
   retryDelayMs,
   paginationMaxPages,
 } from "../utils/step-types.js";
+import { APPENDABLE_FORMATS } from "../exporters/row-formatters.js";
 import { EXTRACT_VALUE_JS, PAGINATE_STATE_JS } from "./page-runtime.js";
 import { parseFilenameTemplate } from "./pipeline-compiler.js";
 const MODULE = "node-emitter";
@@ -633,12 +634,56 @@ function _emitNodeStepBody(step) {
           "",
         ];
       }
+      if (config.append && !APPENDABLE_FORMATS.includes(fmt)) {
+        // A JSON array, an XML tree and a Markdown table each have to be
+        // rewritten whole. Emitting a plain append for them would produce a
+        // file no parser will read, which is the worse failure.
+        return [
+          `// UNSUPPORTED: '${fmt}' cannot be appended to a file a run at a time.`,
+          `throw new Error("FlowScrape: cannot append ${fmt}; use ${APPENDABLE_FORMATS.join(", ")}");`,
+          "",
+        ];
+      }
+      const out = `process.env.FS_OUT_FILE ?? '${config.append ? (config.dataset || "dataset").replace(/[^\w. -]/g, "_") : "export"}.${FORMAT_EXT[fmt]}'`;
+      if (!config.append) {
+        return [
+          `// EXPORT → ${fmt}`,
+          `{`,
+          `  const _out = ${out};`,
+          `  fs.writeFileSync(_out, fsFormatRows(fsRows, '${fmt}'), 'utf8');`,
+          `  console.error(\`FlowScrape: wrote \${fsRows.length} row(s) to \${_out}\${fsDropped ? \` (\${fsDropped} duplicate(s) dropped)\` : ''}\`);`,
+          `}`,
+          "",
+        ];
+      }
       return [
-        `// EXPORT → ${fmt}`,
+        `// EXPORT → ${fmt}, added to whatever is already in the file`,
         `{`,
-        `  const _out = process.env.FS_OUT_FILE ?? 'export.${FORMAT_EXT[fmt]}';`,
-        `  fs.writeFileSync(_out, fsFormatRows(fsRows, '${fmt}'), 'utf8');`,
-        `  console.error(\`FlowScrape: wrote \${fsRows.length} row(s) to \${_out}\${fsDropped ? \` (\${fsDropped} duplicate(s) dropped)\` : ''}\`);`,
+        `  const _out = ${out};`,
+        `  const _had = fs.existsSync(_out) && fs.statSync(_out).size > 0;`,
+        `  const _text = fsFormatRows(fsRows, '${fmt}');`,
+        ...(fmt === "jsonl"
+          ? [`  fs.appendFileSync(_out, _text, 'utf8');`]
+          : [
+              // The header is written once, and only once — but a file whose
+              // header does not match this run's columns cannot be appended to
+              // safely: the rows would land under the wrong names, silently.
+              // CSV lines end \r\n, so the split leaves a \r on each one.
+              // Comparing a stripped existing header against an unstripped new
+              // one would call every file a mismatch.
+              `  const _lines = _text.split('\\n');`,
+              `  const _head = _lines[0].replace(/\\r$/, '');`,
+              `  if (_had) {`,
+              `    const _existing = fs.readFileSync(_out, 'utf8').split('\\n')[0].replace(/^\\uFEFF/, '').replace(/\\r$/, '');`,
+              `    if (_existing !== _head) {`,
+              `      throw new Error(\`FlowScrape: \${_out} has different columns (\${_existing}) than this run (\${_head}); appending would put values under the wrong headings\`);`,
+              `    }`,
+              `    fs.appendFileSync(_out, _lines.slice(1).join('\\n'), 'utf8');`,
+              `  } else {`,
+              `    fs.writeFileSync(_out, _text, 'utf8');`,
+              `  }`,
+            ]),
+        `  console.error(\`FlowScrape: added \${fsRows.length} row(s) to \${_out}\${fsDropped ? \` (\${fsDropped} duplicate(s) dropped)\` : ''}\`);`,
         `}`,
         "",
       ];

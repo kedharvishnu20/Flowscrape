@@ -352,7 +352,14 @@ export const STEP_TYPES = Object.freeze({
     cat: "Data",
     desc: "Export results",
     runsIn: "background",
-    def: { format: "csv" },
+    def: {
+      format: "csv",
+      // "A run per day into one dataset." Off by default: an export that
+      // silently grew an old file would be a surprise, and the surprise would
+      // be discovered as duplicate rows.
+      append: false,
+      dataset: "",
+    },
   },
   API: {
     icon: "🧩",

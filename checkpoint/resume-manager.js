@@ -8,10 +8,10 @@
  * @dependencies cursor-store, logger
  */
 
-import { logger }             from '../utils/logger.js';
-import { listCursors, deleteCursor } from './cursor-store.js';
+import { logger } from "../utils/logger.js";
+import { listCursors, deleteCursor } from "./cursor-store.js";
 
-const MODULE = 'resume-manager';
+const MODULE = "resume-manager";
 
 /**
  * @typedef {Object} ResumeInfo
@@ -27,13 +27,13 @@ const MODULE = 'resume-manager';
  */
 export async function detectIncompleteRuns() {
   const cursors = await listCursors();
-  const incomplete = cursors.filter(c => !c.completed);
-  logger.info(MODULE, 'incomplete-runs', { count: incomplete.length });
-  return incomplete.map(c => ({
-    runId:     c.runId,
-    rowIndex:  c.rowIndex,
+  const incomplete = cursors.filter((c) => !c.completed);
+  logger.info(MODULE, "incomplete-runs", { count: incomplete.length });
+  return incomplete.map((c) => ({
+    runId: c.runId,
+    rowIndex: c.rowIndex,
     stepIndex: c.stepIndex,
-    savedAt:   c.savedAt,
+    savedAt: c.savedAt,
   }));
 }
 
@@ -43,7 +43,7 @@ export async function detectIncompleteRuns() {
  */
 export async function markRunCompleted(runId) {
   await deleteCursor(runId);
-  logger.info(MODULE, 'run-completed', { runId });
+  logger.info(MODULE, "run-completed", { runId });
 }
 
 /**

@@ -1,4 +1,9 @@
-# FlowScrape v3 Master Manual
+# FlowScrape Master Manual
+
+> **Partly stale.** Written against commit b2baae8 and not fully updated since.
+> Where it disagrees with the code, the code is right; where it disagrees with
+> [ISSUE_AUDIT.md](ISSUE_AUDIT.md), the audit is right. Sections 5, 7 and 8
+> describe functions that have since changed.
 
 This is the single authoritative document for FlowScrape v3.
 
@@ -275,6 +280,11 @@ Import normalization rules:
 
 ## 6. Step Registry and Supported Actions
 
+> **Note.** The authoritative list is [`utils/step-types.js`](../utils/step-types.js),
+> which the side panel, the script emitters and the MCP server all read. The
+> list below is a snapshot and was missing `UPLOAD_ACTIVITY`, `PDF_EXTRACTION`
+> and `AUTO_EXTRACT`; a test now keeps the code in step, but not this file.
+
 The side panel step registry includes:
 
 - `WEBSITE`
@@ -444,7 +454,7 @@ Used for nested execution flows. Important behavior:
 - creates `liveCtx` with `extracted` object
 - resolves template values with `_resolveConfig`
 - emits status messages per step
-- executes special cases in SW for `WEBSITE`, `NAVIGATE`, `WAIT`, `SCREENSHOT`, `API`, `EXPORT`, `LOOP`, `IF_ELSE`
+- executes special cases in SW for `WEBSITE`, `NAVIGATE`, `WAIT` (fixed mode only), `PAGINATE`, `SCREENSHOT`, `API`, `EXPORT`, `LOOP`, `IF_ELSE`
 - sends normal steps to content runtime with `step:execute`
 - pushes extraction rows to row buffer
 
@@ -561,24 +571,22 @@ Routes service-worker messages into `_handleEvent(...)`.
 
 `_executeStep(step)` supports:
 
-- `WEBSITE`
-- `NAVIGATE`
+- `WEBSITE` and `NAVIGATE` are rejected here: the service worker drives the tab
 - `CLICK`
-- `SCROLL`
-- `WAIT`
+- `SCROLL` — `pixel`, `percent`, `selector`, and `infinite` (scroll until the page stops growing)
+- `WAIT` — `fixed`, `selector-visible`, `selector-gone`, `DOM-stable`
 - `EXTRACT`
-- `SCREENSHOT`
 - `FILL`
 - `TYPE`
 - `HOVER`
 - `SELECT`
 - `KEYBOARD`
 - `DRAG_DROP`
-- `LOOP`
 - `IF_ELSE`
 - `EXPORT`
-- `API` is rejected here because it belongs to the background runtime
-- `PAGINATE`
+- `SCREENSHOT`, `LOOP` and `API` are rejected here: they belong to the background runtime
+- `PAGINATE` — clicks the Next control and reports whether there was a next page
+- `PAGINATE_PROBE` — inspects the Next control without clicking it
 - `QUERY_COUNT`
 - `QUERY_ELEMENTS`
 

@@ -13,34 +13,34 @@
  * @dependencies logger
  */
 
-import { logger } from '../utils/logger.js';
+import { logger } from "../utils/logger.js";
 
-const MODULE = 'pii-detector';
+const MODULE = "pii-detector";
 
 /** @type {Array<{ name: string, pattern: RegExp }>} */
 const PII_PATTERNS = [
   {
-    name:    'SSN',
+    name: "SSN",
     pattern: /\b\d{3}-\d{2}-\d{4}\b/,
   },
   {
-    name:    'CreditCard-Visa',
+    name: "CreditCard-Visa",
     pattern: /\b4[0-9]{12}(?:[0-9]{3})?\b/,
   },
   {
-    name:    'CreditCard-Mastercard',
+    name: "CreditCard-Mastercard",
     pattern: /\b5[1-5][0-9]{14}\b/,
   },
   {
-    name:    'CreditCard-Amex',
+    name: "CreditCard-Amex",
     pattern: /\b3[47][0-9]{13}\b/,
   },
   {
-    name:    'Email',
+    name: "Email",
     pattern: /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/i,
   },
   {
-    name:    'Phone',
+    name: "Phone",
     pattern: /\b(\+\d{1,3})?[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/,
   },
 ];
@@ -61,8 +61,7 @@ const PII_PATTERNS = [
 export function scanRows(rows, limit = 50) {
   const findings = [];
 
-  outer:
-  for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+  outer: for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
     const row = rows[rowIdx];
     for (const [field, value] of Object.entries(row)) {
       if (value == null) continue;
@@ -70,7 +69,11 @@ export function scanRows(rows, limit = 50) {
       for (const { name, pattern } of PII_PATTERNS) {
         if (pattern.test(str)) {
           findings.push({ type: name, field, rowIndex: rowIdx });
-          logger.warn(MODULE, 'pii-found', { type: name, field, rowIndex: rowIdx });
+          logger.warn(MODULE, "pii-found", {
+            type: name,
+            field,
+            rowIndex: rowIdx,
+          });
           if (findings.length >= limit) break outer;
         }
       }
@@ -87,9 +90,9 @@ export function scanRows(rows, limit = 50) {
  * @returns {Array<{ type: string }>}
  */
 export function scanText(text) {
-  return PII_PATTERNS
-    .filter(({ pattern }) => pattern.test(text))
-    .map(({ name }) => ({ type: name }));
+  return PII_PATTERNS.filter(({ pattern }) => pattern.test(text)).map(
+    ({ name }) => ({ type: name }),
+  );
 }
 
 /**
@@ -114,14 +117,14 @@ export function hasPII(rows) {
  * @returns {string}
  */
 export function summarizeFindings(findings) {
-  if (findings.length === 0) return 'No PII detected.';
+  if (findings.length === 0) return "No PII detected.";
   const byType = {};
   for (const { type } of findings) {
     byType[type] = (byType[type] ?? 0) + 1;
   }
   return Object.entries(byType)
-    .map(([t, n]) => `${t}: ${n} occurrence${n !== 1 ? 's' : ''}`)
-    .join(', ');
+    .map(([t, n]) => `${t}: ${n} occurrence${n !== 1 ? "s" : ""}`)
+    .join(", ");
 }
 
 // === END pii-detector.js ===

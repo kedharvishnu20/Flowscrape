@@ -6,7 +6,31 @@
  */
 
 import { logger } from "../utils/logger.js";
+import {
+  isValidRegex,
+  normalizeRegexFlags,
+  normalizeRegexGroup,
+} from "../utils/value-transforms.js";
+import {
+  retryCount,
+  retryDelayMs,
+  paginationMaxPages,
+} from "../utils/step-types.js";
+import { APPENDABLE_FORMATS } from "../exporters/row-formatters.js";
+import { parseListLines } from "../utils/loop-items.js";
+import { EXTRACT_VALUE_JS, PAGINATE_STATE_JS } from "./page-runtime.js";
+import { parseFilenameTemplate } from "./pipeline-compiler.js";
 const MODULE = "node-emitter";
+
+/** Mirrors exporters/row-formatters.js — the same six formats, same extensions. */
+const FORMAT_EXT = Object.freeze({
+  csv: "csv",
+  json: "json",
+  jsonl: "jsonl",
+  tsv: "tsv",
+  xml: "xml",
+  markdown: "md",
+});
 
 export function emitNode(pipeline) {
   logger.info(MODULE, "emit-start", { name: pipeline.name });
@@ -17,7 +41,6 @@ export function emitNode(pipeline) {
     "import { chromium } from 'playwright';",
     "import fs from 'fs';",
     "import path from 'path';",
-    "import csv from 'csv-parse/sync';",
     "",
     `const TARGET_ORIGIN = '${pipeline.targetOrigin ?? ""}';`,
     `const MIN_DELAY_MS  = 800;`,
@@ -28,11 +51,248 @@ export function emitNode(pipeline) {
     `  password: process.env.FS_PROXY_PASS ?? '',`,
     `} : undefined;`,
     "",
+    `// Credentials are not written into this script. Each one appears as`,
+    `// __FS_ENV__NAME__ and is read from the environment variable NAME at run`,
+    `// time; a name that is not set resolves to an empty string.`,
+    `const fsEnv = s => typeof s === 'string'`,
+    `  ? s.replace(/__FS_ENV__([A-Z0-9_]+)__/g, (_, n) => process.env[n] ?? '')`,
+    `  : s;`,
+    "",
+    `// Value transforms, mirroring utils/value-transforms.js. The pipeline`,
+    `// cleans values as it extracts them; a script that skipped this would run,`,
+    `// produce a file, and fill the number columns with currency symbols.`,
+    `const fsNumber = t => {`,
+    `  const raw = String(t ?? '');`,
+    `  // Scientific notation first, and only where it is unambiguous. Found in`,
+    `  // a real scrape — scrapethissite.com reports Antarctica's area as`,
+    `  // "1.4E7" — where the general pattern below stopped at the E and turned`,
+    `  // fourteen million into 1.4.`,
+    `  const sci = raw.match(/-?\\d+(?:[.,]\\d+)?[eE][+-]?\\d+/);`,
+    `  if (sci) { const n = Number(sci[0].replace(',', '.')); if (Number.isFinite(n)) return n; }`,
+    `  const m = raw.match(/-?\\d[\\d.,\\u00a0\\u202f\\s]*\\d|-?\\d/);`,
+    `  if (!m) return null;`,
+    `  let b = m[0].replace(/[\\u00a0\\u202f\\s]/g, '');`,
+    `  const c = b.lastIndexOf(','), d = b.lastIndexOf('.');`,
+    `  if (c > -1 && d > -1) {`,
+    `    const dec = c > d ? ',' : '.', th = dec === ',' ? '.' : ',';`,
+    `    b = b.split(th).join('').replace(dec, '.');`,
+    `  } else if (c > -1) {`,
+    `    const after = b.length - c - 1, single = b.indexOf(',') === c;`,
+    `    b = single && after > 0 && after <= 2 ? b.replace(',', '.') : b.split(',').join('');`,
+    `  } else if (d > -1) {`,
+    `    const after = b.length - d - 1, single = b.indexOf('.') === d;`,
+    `    if (!(single && after > 0 && after <= 2)) b = b.split('.').join('');`,
+    `  }`,
+    `  const n = Number(b);`,
+    `  return Number.isFinite(n) ? n : null;`,
+    `};`,
+    `const fsUrl = (v, base) => { try { return new URL(String(v ?? '').trim(), base).href; } catch { return v; } };`,
+    `// Group and flags mean here exactly what they mean in the panel: 0 is the`,
+    `// whole match, an absent group is null rather than a quiet fall back to`,
+    `// another one, and only i/m/s are offered because Python has to agree.`,
+    `const fsRegex = (v, p, f = '', g) => {`,
+    `  const m = String(v ?? '').match(new RegExp(p, f));`,
+    `  if (!m) return null;`,
+    `  if (g === 0) return m[0];`,
+    `  const i = Number.isInteger(g) && g > 0 ? g : 1;`,
+    `  if (m[i] !== undefined) return m[i];`,
+    `  return i === 1 && m.length === 1 ? m[0] : null;`,
+    `};`,
+    `const fsTrim = v => String(v ?? '').replace(/\\s+/g, ' ').trim();`,
+    `// Mirrors the in-page transform: tolerant of the URL-safe alphabet and of`,
+    `// missing padding, null rather than a mangled string when it was never`,
+    `// base64 — a plausible wrong answer is worse than an empty cell.`,
+    `const fsB64 = v => {`,
+    `  const raw = String(v ?? '').trim().replace(/-/g, '+').replace(/_/g, '/');`,
+    `  if (raw.length < 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(raw)) return null;`,
+    `  // fatal: true, like the in-page decoder. Buffer.toString('utf8') would`,
+    `  // replace bad bytes with U+FFFD and hand back a mangled string, which is`,
+    `  // a plausible wrong answer where null is an honest empty cell.`,
+    `  try { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(raw, 'base64')); } catch { return null; }`,
+    `};`,
+    "",
+    `// What an IF_ELSE branch reads before it decides. null means "no such`,
+    `// element", which every condition treats as not-matching rather than as`,
+    `// an empty string — the two are different, and conflating them puts every`,
+    `// missing row into the wrong branch.`,
+    `// textContent, not innerText: ASSERT and IF_ELSE compare what the`,
+    `// extension's _stepAssert and _stepIfElse read, and both read textContent.`,
+    `// innerText drops anything CSS has hidden, so an assertion could pass in`,
+    `// the panel and fail in the script for a reason neither would explain.`,
+    `const fsText = async loc => (await loc.count()) > 0 ? fsTrim(await loc.first().evaluate(n => n.textContent)) : null;`,
+    `const fsAttr = async (loc, a) => (await loc.count()) > 0 ? await loc.first().getAttribute(a) : null;`,
+    "",
+    `// An allowlist, mirroring the extension: a filename built from page`,
+    `// content must not be able to name a directory, so both separators fall`,
+    `// outside it and '..' reduces to nothing.`,
+    `const fsSafeSeg = v => String(v ?? '')`,
+    `  .replace(/[^\\p{L}\\p{N} ._()\\[\\]{}@#&+,;'!~=%-]/gu, '_')`,
+    `  .replace(/^[.\\s]+/, '').replace(/[.\\s]+$/, '').slice(0, 100);`,
+    "",
+    `// Every row this run extracts, in order, so an EXPORT step has something`,
+    `// to write. EXTRACT still prints each row as it goes — that is what the`,
+    `// MCP runner reads off stdout — but a printed row is not a file.`,
+    `const fsRows = [];`,
+    "",
+    `// DEDUPE. Null until a DEDUPE step sets it, and from then on every row`,
+    `// the script collects is checked — the same gate the extension applies,`,
+    `// for the same reason: rows are written as they are read, so filtering`,
+    `// afterwards would mean unwriting.`,
+    `let fsDedupe = null;`,
+    `let fsDropped = 0;`,
+    `const fsSeen = new Map();`,
+    `const fsKey = (row, fields) => {`,
+    `  const names = fields.length ? fields : Object.keys(row ?? {}).sort();`,
+    `  return names.map(n => {`,
+    `    const v = (row ?? {})[n];`,
+    `    if (v === undefined) return '\\u001fundef';`,
+    `    if (v === null) return '\\u001fnull';`,
+    `    if (typeof v === 'object') return JSON.stringify(v);`,
+    `    return String(v).replace(/\\s+/g, ' ').trim().toLowerCase();`,
+    `  }).join('\\u001f');`,
+    `};`,
+    `const fsCollect = row => {`,
+    `  if (fsDedupe) {`,
+    `    const k = fsKey(row, fsDedupe.fields);`,
+    `    if (fsSeen.has(k)) { fsDropped++; return false; }`,
+    `    fsSeen.set(k, 1);`,
+    `    // Forget the oldest rather than grow without bound; a Map iterates in`,
+    `    // insertion order, so the first key is the oldest.`,
+    `    if (fsSeen.size > fsDedupe.limit) fsSeen.delete(fsSeen.keys().next().value);`,
+    `  }`,
+    `  fsRows.push(row);`,
+    `  console.log(JSON.stringify(row));`,
+    `  return true;`,
+    `};`,
+    "",
+    `// What an element says, mirroring content/injector.js exactly: an <img>`,
+    `// answers with its src, a bare <a> with its href, a checkbox only when`,
+    `// checked. innerText() for all of it — which is what this used to emit —`,
+    `// is the empty string for a grid of images, on every row.`,
+    `const fsReadEl = (el, f) => el.evaluate(${EXTRACT_VALUE_JS}, f);`,
+    "",
+    `// Mirrors exporters/row-formatters.js. Columns are the union of every`,
+    `// row's keys in first-seen order: Object.keys(rows[0]) would silently drop`,
+    `// any column the first row happens not to have, which for scraped data is`,
+    `// the common case rather than an edge one.`,
+    `const fsCell = v => v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));`,
+    `const fsHeaders = rows => { const out = [], seen = new Set();`,
+    `  for (const r of rows) for (const k of Object.keys(r ?? {})) if (!seen.has(k)) { seen.add(k); out.push(k); }`,
+    `  return out; };`,
+    `const fsFormatRows = (rows, fmt) => {`,
+    `  const safe = Array.isArray(rows) ? rows : [];`,
+    `  if (fmt === 'json') return JSON.stringify(safe, null, 2);`,
+    `  if (fmt === 'jsonl') return safe.map(r => JSON.stringify(r)).join('\\n') + (safe.length ? '\\n' : '');`,
+    `  if (!safe.length) return '';`,
+    `  const h = fsHeaders(safe);`,
+    `  if (fmt === 'csv') {`,
+    `    const q = v => { const t = fsCell(v); return /[",\\r\\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };`,
+    `    return [h.map(q).join(',')].concat(safe.map(r => h.map(k => q(r?.[k])).join(','))).join('\\r\\n') + '\\r\\n';`,
+    `  }`,
+    `  if (fmt === 'tsv') {`,
+    `    const c = v => fsCell(v).replace(/[\\t\\r\\n]/g, ' ');`,
+    `    return [h.map(c).join('\\t')].concat(safe.map(r => h.map(k => c(r?.[k])).join('\\t'))).join('\\n') + '\\n';`,
+    `  }`,
+    `  if (fmt === 'xml') {`,
+    `    const esc = v => fsCell(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);`,
+    `    const tag = n => { const c = String(n).replace(/[^A-Za-z0-9_.-]/g, '_'); return /^[A-Za-z_]/.test(c) ? c : '_' + c; };`,
+    `    const out = ['<?xml version="1.0" encoding="UTF-8"?>', '<rows>'];`,
+    `    for (const r of safe) { out.push('  <row>');`,
+    `      for (const k of h) out.push('    <' + tag(k) + '>' + esc(r?.[k]) + '</' + tag(k) + '>');`,
+    `      out.push('  </row>'); }`,
+    `    out.push('</rows>');`,
+    `    return out.join('\\n') + '\\n';`,
+    `  }`,
+    `  if (fmt === 'markdown') {`,
+    `    const m = v => fsCell(v).replace(/\\|/g, '\\\\|').replace(/\\r?\\n/g, ' ');`,
+    `    return ['| ' + h.map(m).join(' | ') + ' |', '| ' + h.map(() => '---').join(' | ') + ' |']`,
+    `      .concat(safe.map(r => '| ' + h.map(k => m(r?.[k])).join(' | ') + ' |')).join('\\n') + '\\n';`,
+    `  }`,
+    `  throw new Error('Unsupported export format: ' + fmt);`,
+    `};`,
+    `const FS_EXT = { csv: 'csv', json: 'json', jsonl: 'jsonl', tsv: 'tsv', xml: 'xml', markdown: 'md' };`,
+    "",
     `const sleep = ms => new Promise(r => setTimeout(r, ms));`,
     `const jitter = (min, max) => min + Math.random() * (max - min);`,
     "",
+    `// ── API step: pagination and retry (K-24, K-25) ────────────────`,
+    `// A dotted path into a response body — mirrors the worker's _resolvePath,`,
+    `// so a rowsPath or cursorPath configured in the panel means the same`,
+    `// thing here. A miss anywhere along the path is undefined, not a throw.`,
+    `const fsDig = (body, path) => {`,
+    `  let val = body;`,
+    `  for (const part of String(path ?? '').split('.')) {`,
+    `    if (val === undefined || val === null) return undefined;`,
+    `    const m = part.match(/^(.+?)\\[(\\d+)\\]$/);`,
+    `    if (m) { val = val?.[m[1]]; val = Array.isArray(val) ? val[Number(m[2])] : undefined; }`,
+    `    else if (/^\\d+$/.test(part)) { val = Array.isArray(val) ? val[Number(part)] : undefined; }`,
+    `    else { val = val[part]; }`,
+    `  }`,
+    `  return val;`,
+    `};`,
+    `// rowsPath empty means the body itself, if it is an array — the same`,
+    `// rule the worker's rowsPath uses so a single call and a paginated one`,
+    `// shape their rows identically.`,
+    `const fsApiRows = (body, rowsPath) => {`,
+    `  const target = rowsPath ? fsDig(body, rowsPath) : body;`,
+    `  return Array.isArray(target) ? target : [];`,
+    `};`,
+    `const fsAddQueryParam = (url, key, value) => {`,
+    `  try { const u = new URL(url); u.searchParams.set(key, String(value)); return u.toString(); }`,
+    `  catch { return url + (url.includes('?') ? '&' : '?') + encodeURIComponent(key) + '=' + encodeURIComponent(String(value)); }`,
+    `};`,
+    `const fsParseRetryAfterMs = value => {`,
+    `  if (!value) return null;`,
+    `  const t = String(value).trim();`,
+    `  if (/^\\d+$/.test(t)) return Number(t) * 1000;`,
+    `  const at = Date.parse(t);`,
+    `  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());`,
+    `};`,
+    `const fsLinkHeaderNext = (value, baseUrl) => {`,
+    `  if (!value) return null;`,
+    `  for (const part of String(value).split(/,(?=\\s*<)/)) {`,
+    `    const u = part.match(/<([^>]+)>/), rel = part.match(/rel\\s*=\\s*"?([^",;]+)"?/i);`,
+    `    if (!u || !rel || rel[1].toLowerCase() !== 'next') continue;`,
+    `    try { return new URL(u[1], baseUrl).toString(); } catch { return u[1]; }`,
+    `  }`,
+    `  return null;`,
+    `};`,
+    `// 429/5xx get retried in place, honouring Retry-After when the server`,
+    `// names one — anything else falls back to the same exponential shape`,
+    `// the extension uses — and capped so a chatty server cannot stall the`,
+    `// script for an hour.`,
+    `const fsApiFetch = async (url, init) => {`,
+    `  const maxAttempts = 4, maxTotalWaitMs = 60000, fallbackBaseMs = 1000;`,
+    `  let attempt = 0, waitedMs = 0;`,
+    `  for (;;) {`,
+    `    const resp = await fetch(url, init);`,
+    `    attempt += 1;`,
+    `    const retryable = resp.status === 429 || (resp.status >= 500 && resp.status <= 599);`,
+    `    if (!retryable || attempt >= maxAttempts || waitedMs >= maxTotalWaitMs) return resp;`,
+    `    const headerWaitMs = fsParseRetryAfterMs(resp.headers.get('retry-after'));`,
+    `    const backoffMs = fallbackBaseMs * 2 ** (attempt - 1);`,
+    `    const waitMs = Math.max(0, Math.min(headerWaitMs ?? backoffMs, maxTotalWaitMs - waitedMs));`,
+    `    waitedMs += waitMs;`,
+    `    await sleep(waitMs);`,
+    `  }`,
+    `};`,
+    `const fsApiRequest = async (url, init, timeoutMs) => {`,
+    `  const controller = new AbortController();`,
+    `  const timer = setTimeout(() => controller.abort(), timeoutMs);`,
+    `  try { return await fsApiFetch(url, { ...init, signal: controller.signal }); }`,
+    `  finally { clearTimeout(timer); }`,
+    `};`,
+    "",
     `(async () => {`,
-    `  const browser = await chromium.launch({ proxy: PROXY });`,
+    `  // FS_BROWSER_PATH names a browser binary to use instead of the one`,
+    `  // Playwright downloaded. Headless Playwright reaches for its separate`,
+    `  // "headless shell" build by default, so a machine that has full Chromium`,
+    `  // but not that variant fails at launch with a message about installing`,
+    `  // browsers — this is the way out that needs no second download.`,
+    `  const browser = await chromium.launch({`,
+    `    proxy: PROXY,`,
+    `    ...(process.env.FS_BROWSER_PATH ? { executablePath: process.env.FS_BROWSER_PATH } : {}),`,
+    `  });`,
     `  const context = await browser.newContext();`,
     `  const page    = await context.newPage();`,
     `  try {`,
@@ -46,96 +306,1166 @@ export function emitNode(pipeline) {
   return lines.join("\n");
 }
 
+/**
+ * One IF_ELSE condition as a JavaScript expression over `_loc`.
+ *
+ * Mirrors utils/conditions.js, which is where the extension's copy lives; the
+ * pair is held together by a test that emits every condition in the registry
+ * and fails on any that comes back stubbed.
+ *
+ * @returns {string|null} null when the condition cannot be expressed
+ */
+function _conditionNode(condition, config, esc) {
+  const value = esc(String(config.value ?? ""));
+  const attr = esc(String(config.attr ?? ""));
+  const num = Number(String(config.value ?? "").trim());
+
+  // The right-hand side is either a literal baked into the expression or
+  // `_rhs`, a value the emitted block reads from a second element just before
+  // the test. Written once, so the two forms cannot diverge condition by
+  // condition — which is exactly how a comparison ends up right for text and
+  // wrong for numbers.
+  const fromSelector = config.compareTo === "selector";
+  const str = fromSelector ? "_rhs" : `'${value}'`;
+  const numRhs = fromSelector
+    ? "fsNumber(_rhs)"
+    : Number.isFinite(num)
+      ? String(num)
+      : null;
+
+  const numeric = (op) =>
+    numRhs === null
+      ? null
+      : `((a, b) => a !== null && b !== null && a ${op} b)(fsNumber(await fsText(_loc)), ${numRhs})`;
+
+  switch (condition) {
+    case "exists":
+      return `(await _loc.count()) > 0`;
+    case "not-exists":
+      return `(await _loc.count()) === 0`;
+    case "is-empty":
+      return `((t => t === null || t === '')(await fsText(_loc)))`;
+    case "not-empty":
+      return `((t => t !== null && t !== '')(await fsText(_loc)))`;
+    case "text-equals":
+      return `(await fsText(_loc)) === fsTrim(${str})`;
+    case "text-contains":
+      return `((t => t !== null && t.includes(fsTrim(${str})))(await fsText(_loc)))`;
+    case "text-matches":
+      // A pattern read off the page cannot be checked here; a bad one throws
+      // at run time, which is what the extension does with it too.
+      if (!fromSelector && !isValidRegex(config.value ?? "")) return null;
+      return `((t => t !== null && new RegExp(${fromSelector ? "_rhs" : `'${value.replace(/\\/g, "\\\\")}'`}).test(t))(await fsText(_loc)))`;
+    case "attr-equals":
+      return `((a => a !== null && a.trim() === String(${str}).trim())(await fsAttr(_loc, '${attr}')))`;
+    case "attr-contains":
+      return `((a => a !== null && a.includes(${str}))(await fsAttr(_loc, '${attr}')))`;
+    case "attr-exists":
+      return `(await fsAttr(_loc, '${attr}')) !== null`;
+    case "number-equals":
+      return numeric("===");
+    case "number-gt":
+      return numeric(">");
+    case "number-lt":
+      return numeric("<");
+    default:
+      return null;
+  }
+}
+
+/**
+ * One step, wrapped in the retry the step asked for.
+ *
+ * A generated script that gave up where the run would have tried again is a
+ * script that does something else, which is the objection to any silent
+ * difference between the two.
+ */
+/**
+ * What a selector resolves against, right here in the emitted script.
+ *
+ * At run time a selector inside an `elements` LOOP is resolved against that
+ * iteration's element — `_queryScoped` in content/injector.js takes the loop's
+ * current record as its root. The emitted script did not: every step inside a
+ * loop body searched the whole page, so "for each product card, extract the
+ * title" exported as a script that extracts *every* title on the page, once per
+ * card. It ran, it produced a file, and it meant something the pipeline never
+ * said (K-28).
+ *
+ * Only `elements` mode has an element to scope to. `count` has no element at
+ * all, and the three pagination modes iterate pages rather than records, so
+ * their bodies stay page-level — which is correct, not an omission.
+ */
+let _scope = "page";
+
+/** Playwright spells its modifier keys out; the panel collects short names. */
+const _PW_MODIFIER = {
+  ctrl: "Control",
+  control: "Control",
+  shift: "Shift",
+  alt: "Alt",
+  meta: "Meta",
+  cmd: "Meta",
+  command: "Meta",
+};
+
+/**
+ * The variable holding the current item inside a `list` LOOP, or null.
+ *
+ * The twin of `_scope`, and it exists for the same reason: what a config
+ * string means depends on where in the emitted script it lands.
+ */
+let _listItem = null;
+
+/**
+ * `{{item.field}}` and `{{loop.index}}`, the two a list LOOP can fill in.
+ *
+ * Deliberately not global. A global regex carries `lastIndex` between calls,
+ * so `.test()` leaves it past the first match and the `matchAll` below then
+ * starts from there — which resolved the second template in a string and left
+ * the first as literal braces.
+ */
+const _TEMPLATE = /\{\{\s*(item|loop)\.([A-Za-z0-9_$]+)\s*\}\}/;
+
+/**
+ * A config string as source code.
+ *
+ * Normally a quoted literal. Inside a `list` LOOP, a string mentioning the
+ * item becomes an expression that reads it — which is what makes the mode
+ * worth exporting at all: a script that visited `https://shop/{{item.value}}`
+ * five hundred times, braces and all, would be a script that does not work.
+ *
+ * Concatenation rather than a template literal on purpose. A URL can hold a
+ * backtick or a `${`, and getting that escaping wrong produces a script that
+ * either fails to parse or silently interpolates something else.
+ *
+ * Only the steps that carry a URL use this. Everywhere else a template is
+ * still reported as unresolved before the download, exactly as it was — see
+ * findUnresolvedTemplates.
+ */
+function _strExpr(value, esc) {
+  const raw = String(value ?? "");
+  if (!_listItem || !_TEMPLATE.test(raw)) return `'${esc(raw)}'`;
+
+  const parts = [];
+  let last = 0;
+  for (const m of raw.matchAll(new RegExp(_TEMPLATE.source, "g"))) {
+    if (m.index > last) parts.push(`'${esc(raw.slice(last, m.index))}'`);
+    parts.push(
+      m[1] === "item"
+        ? `String(${_listItem}[${JSON.stringify(m[2])}] ?? '')`
+        : `String(_loop[${JSON.stringify(m[2])}] ?? '')`,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < raw.length) parts.push(`'${esc(raw.slice(last))}'`);
+  return parts.join(" + ");
+}
+
+/** The scoped locator for a selector, and the whole point of `_scope`. */
+const _loc = (sel) => `${_scope}.locator('${sel}')`;
+
+/**
+ * A verb, spelled the way a reader of the script would write it.
+ *
+ * At the top level that is Playwright's page shortcut — `page.click('.x')` —
+ * because an exported script should look like one somebody wrote. Inside a loop
+ * the shortcut cannot express "within this element", so the locator form is
+ * used there and only there.
+ */
+const _verb = (sel, pageForm, scopedForm) =>
+  _scope === "page" ? `page.${pageForm}` : `${_loc(sel)}.${scopedForm}`;
+
+/** Emit `fn()` with selectors resolving against `name` instead of the page. */
+function _within(name, fn) {
+  const outer = _scope;
+  _scope = name;
+  try {
+    return fn();
+  } finally {
+    _scope = outer;
+  }
+}
+
 function _emitNodeStep(step) {
+  const body = _emitNodeStepBody(step);
+  const tries = retryCount(step.config);
+  if (tries === 0) return body;
+
+  const delay = retryDelayMs(step.config);
+  return [
+    `// Retry: up to ${tries} further attempt(s), ${delay}ms apart.`,
+    `for (let _attempt = 0; ; _attempt++) {`,
+    `  try {`,
+    ...body.map((l) => (l ? "    " + l : l)),
+    `    break;`,
+    `  } catch (_err) {`,
+    `    if (_attempt >= ${tries}) throw _err;`,
+    "    console.warn(`Retry ${_attempt + 1} of " +
+      tries +
+      ": ${_err.message}`);",
+    `    await sleep(${delay});`,
+    `  }`,
+    `}`,
+    "",
+  ];
+}
+
+/**
+ * One ASSERT as a JavaScript expression over `_count` and `_text`.
+ *
+ * Mirrors utils/assertions.js, and is held to it by a test that emits every
+ * assertion in the registry and fails on any that comes back stubbed.
+ *
+ * @returns {string|null} null when the assertion cannot be expressed
+ */
+function _assertionNode(assertion, config, esc) {
+  const value = esc(String(config.value ?? ""));
+  const n = Number(String(config.count ?? "").trim());
+  const counted = (op) => (Number.isFinite(n) ? `_count ${op} ${n}` : null);
+
+  switch (assertion) {
+    case "exists":
+      return `_count > 0`;
+    case "not-exists":
+      return `_count === 0`;
+    case "count-equals":
+      return counted("===");
+    case "count-at-least":
+      return counted(">=");
+    case "count-at-most":
+      return counted("<=");
+    case "text-contains":
+      return `_text !== null && _text.includes(fsTrim('${value}'))`;
+    case "text-equals":
+      return `_text !== null && _text === fsTrim('${value}')`;
+    default:
+      return null;
+  }
+}
+
+function _emitNodeStepBody(step) {
   const { type, config = {} } = step;
   const esc = (s) => String(s ?? "").replace(/'/g, "\\'");
   switch (type) {
     case "WEBSITE":
     case "NAVIGATE":
       return [
-        `await page.goto('${esc(config.url ?? "")}');`,
+        `await page.goto(${_strExpr(config.url, esc)});`,
         `await page.waitForLoadState('networkidle');`,
         "",
       ];
     case "API":
       return _apiNode(config);
-    case "CLICK":
-      return [`await page.click('${esc(config.selector ?? "")}');`, ""];
-    case "WAIT":
-      if (config.mode === "selector-visible")
+    case "CLICK": {
+      // Playwright takes the button and the modifiers as options, so the
+      // script says what the pipeline says. Its `modifiers` are capitalised
+      // key names; ours are the lower-case ones a person types.
+      const opts = [];
+      const btn = String(config.button || "left").toLowerCase();
+      if (btn !== "left") opts.push(`button: '${btn}'`);
+      const mods = (Array.isArray(config.modifiers) ? config.modifiers : [])
+        .map((m) => _PW_MODIFIER[String(m).toLowerCase()])
+        .filter(Boolean);
+      if (mods.length) {
+        opts.push(`modifiers: [${mods.map((m) => `'${m}'`).join(", ")}]`);
+      }
+      const clickArgs = opts.length ? `{ ${opts.join(", ")} }` : "";
+      const clickSel = esc(_sel(config.selector ?? ""));
+      const lines = [
+        `await ${_verb(
+          clickSel,
+          `click('${clickSel}'${clickArgs ? `, ${clickArgs}` : ""})`,
+          `click(${clickArgs})`,
+        )};`,
+      ];
+      // Whatever the click was supposed to cause. The extension waits for the
+      // same thing, so a script that carried straight on where the pipeline
+      // waited would read the page one state too early — the drift this whole
+      // family of steps is written to avoid.
+      const after = config.waitAfter ?? "none";
+      const t =
+        Number(config.waitTimeoutMs) > 0 ? Number(config.waitTimeoutMs) : 15000;
+      const waitSel = esc(_sel(config.waitSelector ?? ""));
+      if (after === "load") {
+        lines.push(`await page.waitForLoadState('load', { timeout: ${t} });`);
+      } else if (after === "selector" && waitSel) {
+        lines.push(
+          _scope === "page"
+            ? `await page.waitForSelector('${waitSel}', { state: 'visible', timeout: ${t} });`
+            : `await ${_loc(waitSel)}.first().waitFor({ state: 'visible', timeout: ${t} });`,
+        );
+      } else if (after === "selector-gone" && waitSel) {
+        lines.push(
+          _scope === "page"
+            ? `await page.waitForSelector('${waitSel}', { state: 'hidden', timeout: ${t} });`
+            : `await ${_loc(waitSel)}.first().waitFor({ state: 'hidden', timeout: ${t} });`,
+        );
+      } else if (after === "settle") {
+        // Same substitution the DOM-stable WAIT mode makes: Playwright has no
+        // "the DOM stopped changing", and network idle is what the mode is
+        // used for in practice.
+        lines.push(
+          `await page.waitForLoadState('networkidle', { timeout: ${t} });`,
+        );
+      }
+      lines.push("");
+      return lines;
+    }
+    case "WAIT": {
+      const timeout = Number(config.timeout) || 15000;
+      if (config.mode === "selector-visible") {
         return [
-          `await page.waitForSelector('${esc(config.selector ?? "")}');`,
+          _scope === "page"
+            ? `await page.waitForSelector('${esc(_sel(config.selector ?? ""))}', { state: 'visible', timeout: ${timeout} });`
+            : `await ${_loc(esc(_sel(config.selector ?? "")))}.first().waitFor({ state: 'visible', timeout: ${timeout} });`,
           "",
         ];
+      }
+      if (config.mode === "selector-gone") {
+        return [
+          _scope === "page"
+            ? `await page.waitForSelector('${esc(_sel(config.selector ?? ""))}', { state: 'hidden', timeout: ${timeout} });`
+            : `await ${_loc(esc(_sel(config.selector ?? "")))}.first().waitFor({ state: 'hidden', timeout: ${timeout} });`,
+          "",
+        ];
+      }
+      if (config.mode === "DOM-stable") {
+        // Playwright has no "the DOM stopped changing"; network idle is the
+        // closest thing it offers, and is what the mode is used for in
+        // practice — waiting out a search or a filter.
+        return [
+          `await page.waitForLoadState('networkidle', { timeout: ${timeout} });`,
+          "",
+        ];
+      }
       return [`await sleep(${config.ms ?? 1000});`, ""];
+    }
     case "EXTRACT":
       return _extractNode(config);
     case "FORM_FILL":
       return _formFillNode(config);
-    case "EXPORT":
-      return [
-        `// EXPORT → ${config.format ?? "csv"} (implement write here)`,
-        "",
-      ];
-    case "SCROLL":
-      return [
-        `await page.evaluate(() => window.scrollBy(0, ${config.value ?? 300}));`,
-        "",
-      ];
-    case "LOOP": {
+    case "DEDUPE": {
+      const fields = String(config.fields ?? "")
+        .split(",")
+        .map((f) => f.trim())
+        .filter(Boolean);
+      const limit = Number(config.limit) > 0 ? Number(config.limit) : 100000;
       const lines = [
-        `// LOOP: ${config.type || 'count'} (max: ${config.max ?? 10})`,
+        `// DEDUPE: ${fields.length ? fields.join(", ") : "every field"}`,
+        `fsDedupe = { fields: ${JSON.stringify(fields)}, limit: ${limit} };`,
       ];
-      if (config.type === 'elements' && config.selector) {
-        lines.push(`const elements = await page.locator('${esc(config.selector)}').all();`);
-        lines.push(`for (let i = 0; i < Math.min(elements.length, ${config.max ?? 10}); i++) {`);
-        lines.push(`  const el = elements[i];`);
+      if (config.scope === "forever") {
+        // The script's equivalent of the extension's stored keys: a file it
+        // reads at the start and rewrites at the end. Named, and next to the
+        // output, so it is obvious what to delete to start over.
+        lines.push(
+          `const _seenFile = process.env.FS_SEEN_FILE ?? '.fs-seen.json';`,
+          `if (fs.existsSync(_seenFile)) {`,
+          `  try {`,
+          `    for (const k of JSON.parse(fs.readFileSync(_seenFile, 'utf8'))) fsSeen.set(k, 1);`,
+          `  } catch (err) {`,
+          `    console.error(\`DEDUPE: could not read \${_seenFile} (\${err.message}); starting fresh.\`);`,
+          `  }`,
+          `}`,
+          `process.on('exit', () => {`,
+          `  try { fs.writeFileSync(_seenFile, JSON.stringify([...fsSeen.keys()])); }`,
+          `  catch (err) { console.error(\`DEDUPE: could not save \${_seenFile} (\${err.message}).\`); }`,
+          `});`,
+        );
+      }
+      lines.push("");
+      return lines;
+    }
+    case "EXPORT": {
+      // It used to emit a comment saying "implement write here", which is a
+      // script that runs, exits 0, and leaves no file — the failure this whole
+      // project keeps finding: something that looks finished and is not.
+      const fmt = String(config.format ?? "csv");
+      if (!Object.prototype.hasOwnProperty.call(FORMAT_EXT, fmt)) {
+        return [
+          `// UNSUPPORTED: export format '${fmt}'.`,
+          `throw new Error("FlowScrape: unknown export format '${fmt}'");`,
+          "",
+        ];
+      }
+      if (config.append && !APPENDABLE_FORMATS.includes(fmt)) {
+        // A JSON array, an XML tree and a Markdown table each have to be
+        // rewritten whole. Emitting a plain append for them would produce a
+        // file no parser will read, which is the worse failure.
+        return [
+          `// UNSUPPORTED: '${fmt}' cannot be appended to a file a run at a time.`,
+          `throw new Error("FlowScrape: cannot append ${fmt}; use ${APPENDABLE_FORMATS.join(", ")}");`,
+          "",
+        ];
+      }
+      const out = `process.env.FS_OUT_FILE ?? '${config.append ? (config.dataset || "dataset").replace(/[^\w. -]/g, "_") : "export"}.${FORMAT_EXT[fmt]}'`;
+      if (!config.append) {
+        return [
+          `// EXPORT → ${fmt}`,
+          `{`,
+          `  const _out = ${out};`,
+          `  fs.writeFileSync(_out, fsFormatRows(fsRows, '${fmt}'), 'utf8');`,
+          `  console.error(\`FlowScrape: wrote \${fsRows.length} row(s) to \${_out}\${fsDropped ? \` (\${fsDropped} duplicate(s) dropped)\` : ''}\`);`,
+          `}`,
+          "",
+        ];
+      }
+      return [
+        `// EXPORT → ${fmt}, added to whatever is already in the file`,
+        `{`,
+        `  const _out = ${out};`,
+        `  const _had = fs.existsSync(_out) && fs.statSync(_out).size > 0;`,
+        `  const _text = fsFormatRows(fsRows, '${fmt}');`,
+        ...(fmt === "jsonl"
+          ? [`  fs.appendFileSync(_out, _text, 'utf8');`]
+          : [
+              // The header is written once, and only once — but a file whose
+              // header does not match this run's columns cannot be appended to
+              // safely: the rows would land under the wrong names, silently.
+              // CSV lines end \r\n, so the split leaves a \r on each one.
+              // Comparing a stripped existing header against an unstripped new
+              // one would call every file a mismatch.
+              `  const _lines = _text.split('\\n');`,
+              `  const _head = _lines[0].replace(/\\r$/, '');`,
+              `  if (_had) {`,
+              `    const _existing = fs.readFileSync(_out, 'utf8').split('\\n')[0].replace(/^\\uFEFF/, '').replace(/\\r$/, '');`,
+              `    if (_existing !== _head) {`,
+              `      throw new Error(\`FlowScrape: \${_out} has different columns (\${_existing}) than this run (\${_head}); appending would put values under the wrong headings\`);`,
+              `    }`,
+              `    fs.appendFileSync(_out, _lines.slice(1).join('\\n'), 'utf8');`,
+              `  } else {`,
+              `    fs.writeFileSync(_out, _text, 'utf8');`,
+              `  }`,
+            ]),
+        `  console.error(\`FlowScrape: added \${fsRows.length} row(s) to \${_out}\${fsDropped ? \` (\${fsDropped} duplicate(s) dropped)\` : ''}\`);`,
+        `}`,
+        "",
+      ];
+    }
+    case "SCROLL": {
+      // config.amount is what the UI writes; `value` was read here, so every
+      // exported scroll used the hardcoded default.
+      const amount = config.amount ?? config.value ?? 300;
+      // A named container is a `div` with its own scrollbar, not the document —
+      // an infinite feed inside one never grows document.documentElement, so
+      // every mode below has to reach into the container's own scrollHeight.
+      // locator.evaluate() runs in the page for the container element itself.
+      const container = config.container ? esc(_sel(config.container)) : "";
+      if (config.mode === "selector" && config.selector) {
+        return [
+          `await page.locator('${esc(_sel(config.selector))}').scrollIntoViewIfNeeded();`,
+          "",
+        ];
+      }
+      if (config.mode === "percent") {
+        if (container) {
+          return [
+            `await page.locator('${container}').evaluate((el) => el.scrollTo(0, el.scrollHeight * ${Number(amount) / 100}));`,
+            `await sleep(500);`,
+            "",
+          ];
+        }
+        return [
+          `await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight * ${Number(amount) / 100}));`,
+          `await sleep(500);`,
+          "",
+        ];
+      }
+      if (config.mode === "infinite" || config.mode === "bottom") {
+        const maxScrolls = Number(config.maxScrolls) || 50;
+        const settle = Number(config.settleMs) || 1200;
+        if (container) {
+          return [
+            `// Scroll the container until it stops growing, or ${maxScrolls} scrolls.`,
+            `const _container = page.locator('${container}');`,
+            `let _lastHeight = 0;`,
+            `for (let i = 0; i < ${maxScrolls}; i++) {`,
+            `  await _container.evaluate((el) => el.scrollTo(0, el.scrollHeight));`,
+            `  await sleep(${settle});`,
+            `  const _h = await _container.evaluate((el) => el.scrollHeight);`,
+            `  if (_h === _lastHeight) break;`,
+            `  _lastHeight = _h;`,
+            `}`,
+            "",
+          ];
+        }
+        return [
+          `// Scroll until the page stops growing, or ${maxScrolls} scrolls.`,
+          `let _lastHeight = 0;`,
+          `for (let i = 0; i < ${maxScrolls}; i++) {`,
+          `  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));`,
+          `  await sleep(${settle});`,
+          `  const _h = await page.evaluate(() => document.documentElement.scrollHeight);`,
+          `  if (_h === _lastHeight) break;`,
+          `  _lastHeight = _h;`,
+          `}`,
+          "",
+        ];
+      }
+      if (container) {
+        return [
+          `await ${_loc(container)}.evaluate((el) => el.scrollBy(0, ${Number(amount)}));`,
+          `await sleep(500);`,
+          "",
+        ];
+      }
+      return [
+        `await page.evaluate(() => window.scrollBy(0, ${amount}));`,
+        `await sleep(500);`,
+        "",
+      ];
+    }
+    case "ASSERT": {
+      const assertion = config.assertion || "exists";
+      const sel = esc(_sel(config.selector ?? ""));
+      const test = _assertionNode(assertion, config, esc);
+      if (test === null) {
+        // A number box left empty, or an assertion this emitter does not know.
+        // Refused rather than emitted as `if (false)`, which would export a
+        // guard that never fires — worse than no guard at all.
+        return [
+          `// UNSUPPORTED: assertion '${assertion}' cannot be expressed here.`,
+          `throw new Error("FlowScrape: ASSERT '${assertion}' is not exportable");`,
+          "",
+        ];
+      }
+      return [
+        `// ASSERT: ${assertion} - ${sel}`,
+        `{`,
+        `  const _loc = ${_loc(sel)};`,
+        `  const _count = await _loc.count();`,
+        `  const _text = await fsText(_loc);`,
+        `  if (!(${test})) {`,
+        config.optional === true
+          ? `    console.warn('ASSERT (${assertion}) failed on ${sel} - optional, continuing');`
+          : "    throw new Error(`FlowScrape ASSERT (" +
+            assertion +
+            ") failed on " +
+            sel +
+            ": ${_count} match(es)`);",
+        `  }`,
+        `}`,
+        "",
+      ];
+    }
+    case "LOOP": {
+      // Named by nesting depth rather than always `el`, so a loop inside a loop
+      // reads as two different elements instead of shadowing one name.
+      const elVar = _scope === "page" ? "el" : `${_scope}_child`;
+      const lines = [
+        `// LOOP: ${config.type || "count"} (max: ${config.max ?? 10})`,
+      ];
+      if (config.type === "elements" && config.selector) {
+        lines.push(
+          `const elements = await ${_loc(esc(_sel(config.selector)))}.all();`,
+        );
+        // 0 means "every one", as the panel says and as _executeLoop does;
+        // Math.min against 0 ran the loop zero times instead.
+        lines.push(
+          (config.max ?? 10) > 0
+            ? `for (let i = 0; i < Math.min(elements.length, ${config.max ?? 10}); i++) {`
+            : `for (let i = 0; i < elements.length; i++) {`,
+        );
+        lines.push(`  const ${elVar} = elements[i];`);
+      } else if (config.type === "list") {
+        if ((config.source || "lines") === "context") {
+          // The items would come from a run context a standalone script does
+          // not have. Refused rather than exported as an empty loop, which
+          // would run, exit 0 and scrape nothing.
+          lines.push(
+            `// UNSUPPORTED: this LOOP reads its list from '${esc(String(config.contextPath ?? ""))}',`,
+            `// which is part of a run inside the extension. A pasted list exports fine.`,
+            `throw new Error('FlowScrape: LOOP over a run-context list is not exportable');`,
+            "",
+          );
+          return lines;
+        }
+        // Baked in at export time: the list is known now, so the script does
+        // not need a CSV parser of its own to disagree with ours.
+        const parsed = parseListLines(config.lines, {
+          delimiter: config.delimiter,
+          hasHeader: config.hasHeader === true,
+        });
+        const items =
+          (config.max ?? 0) > 0
+            ? parsed.items.slice(0, Number(config.max))
+            : parsed.items;
+        lines.push(
+          `const _items = ${JSON.stringify(items)};`,
+          `for (let i = 0; i < _items.length; i++) {`,
+          `  const _item = _items[i];`,
+          `  const _loop = { index: i + 1, index0: i, count: _items.length };`,
+        );
+      } else if (config.type === "paginate-links" && config.selector) {
+        // The page's links are the bound, as they are in the run: a numbered
+        // paginator has nothing that goes dead to probe, so "how many pages"
+        // is "how many links".
+        lines.push(
+          `const _pages = await page.locator('${esc(_sel(config.selector))}').all();`,
+          `const _hrefs = (await Promise.all(_pages.map((a) => a.getAttribute('href'))))`,
+          `  ${config.max > 0 ? `.slice(0, ${config.max})` : "// every link the page offers"};`,
+          `for (let i = 0; i < _hrefs.length; i++) {`,
+          `  if (i > 0 && _hrefs[i]) {`,
+          `    await page.goto(new URL(_hrefs[i], page.url()).href);`,
+          `    await page.waitForLoadState('networkidle');`,
+          `  }`,
+        );
+      } else if (config.type === "paginate-url") {
+        const tpl = String(config.urlTemplate ?? "");
+        if (!tpl.includes("{page}")) {
+          lines.push(
+            `// UNSUPPORTED: this LOOP is set to "URL pattern" but its template`,
+            `// has no {page} in it, so every iteration would open the same page.`,
+            `throw new Error('FlowScrape: LOOP url template has no {page}');`,
+            "",
+          );
+          return lines;
+        }
+        const start = Number.isFinite(Number(config.startPage))
+          ? Number(config.startPage)
+          : 1;
+        const stride =
+          Number.isFinite(Number(config.pageStep)) && Number(config.pageStep)
+            ? Number(config.pageStep)
+            : 1;
+        const n = config.max > 0 ? Number(config.max) : 5;
+        lines.push(
+          `for (let i = 0; i < ${n}; i++) {`,
+          `  const _url = '${esc(tpl)}'.split('{page}').join(String(${start} + i * ${stride}));`,
+          `  await page.goto(_url);`,
+          `  await page.waitForLoadState('networkidle');`,
+          // This mode has nothing to probe, so a run asked for 20 pages of a
+          // 5-page site fetched 15 empty ones — and a site that clamps
+          // ?page=99 to the last page served the same rows 15 times instead.
+          `  const _rowsBefore = fsRows.length;`,
+        );
       } else {
         lines.push(`for (let i = 0; i < ${config.max ?? 10}; i++) {`);
       }
-      for (const child of step.children ?? []) {
-        lines.push(..._emitNodeStep(child).map(l => "  " + l));
+      if (config.type === "paginate" && config.selector) {
+        // The emitted loop used to ignore paginate mode entirely: it ran the
+        // body N times without ever clicking Next, so an exported script
+        // scraped page one N times over. Then it asked only "does it exist and
+        // is it enabled", which misses every other way a paginator says "last
+        // page" — the same reasons the extension checks, now checked here from
+        // the same source.
+        lines.push(
+          `  if (i > 0) {`,
+          `    const _next = page.locator('${esc(_sel(config.selector))}').first();`,
+          `    const _st = (await _next.count()) ? await _next.evaluate(${PAGINATE_STATE_JS}) : null;`,
+          `    if (!_st || _st.dead) {`,
+          `      console.error(\`Pagination: stopped after \${i} page(s) — \${_st ? _st.dead : 'no Next control on the page'}.\`);`,
+          `      break;`,
+          `    }`,
+          `    if (_st.newTab && _st.href) {`,
+          `      // target="_blank": clicking would load the next page in a tab`,
+          `      // this script is not reading, and the loop would re-scrape`,
+          `      // this one until the count ran out.`,
+          `      await page.goto(new URL(_st.href, page.url()).href);`,
+          `    } else {`,
+          `      await _next.click();`,
+          `    }`,
+          `    await page.waitForLoadState('networkidle');`,
+          `  }`,
+        );
+      }
+      // Only `elements` mode binds an element to scope to; `count` has none and
+      // the pagination modes iterate pages, so their bodies stay page-level.
+      const bodyScope =
+        config.type === "elements" && config.selector ? elVar : null;
+      // `_item` is in scope for the body of a list LOOP and nowhere else, so
+      // the resolver is turned on and off around it — a nested loop restores
+      // the outer one's item rather than clearing it.
+      const outerItem = _listItem;
+      if (config.type === "list") _listItem = "_item";
+      try {
+        for (const child of step.children ?? []) {
+          const emit = () => _emitNodeStep(child).map((l) => "  " + l);
+          lines.push(...(bodyScope ? _within(bodyScope, emit) : emit()));
+        }
+      } finally {
+        _listItem = outerItem;
+      }
+      if (config.type === "paginate-url" && config.stopWhenEmpty !== false) {
+        lines.push(
+          // The same rule the run applies: only after a page that produced
+          // something, so a pipeline whose first page is genuinely empty is
+          // not cut off at page one.
+          `  if (_rowsBefore > 0 && fsRows.length === _rowsBefore) {`,
+          `    console.error(\`Pagination: stopped after \${i + 1} page(s) — that page produced no rows.\`);`,
+          `    break;`,
+          `  }`,
+        );
       }
       lines.push(`}`, "");
       return lines;
     }
     case "IF_ELSE": {
-      const condition = config.condition || 'exists';
+      const condition = config.condition || "exists";
       const lines = [
-        `// IF_ELSE: ${condition} - ${esc(config.selector ?? '')}`,
+        `// IF_ELSE: ${condition} - ${esc(_sel(config.selector ?? ""))}`,
       ];
-      if (condition === 'exists') {
-        lines.push(`if (await page.locator('${esc(config.selector ?? '')}').count() > 0) {`);
+      const test = _conditionNode(condition, config, esc);
+      if (test === null) {
+        // Emitted as a refusal rather than as `if (true)`, which is what this
+        // used to do for every condition but `exists`: the script ran, produced
+        // a file, and had silently ignored its own branching.
+        lines.push(
+          `// UNSUPPORTED: condition '${condition}' cannot be expressed here.`,
+          `throw new Error("FlowScrape: IF_ELSE condition '${condition}' is not exportable");`,
+          "",
+        );
+        return lines;
+      }
+      // Braced: two sibling branches in the same scope would otherwise both
+      // declare `_loc`, and the script would not parse. Caught by the check
+      // that compiles the emitted output rather than pattern-matching it.
+      lines.push(
+        `{`,
+        `  const _loc = ${_loc(esc(_sel(config.selector ?? "")))};`,
+      );
+      if (config.compareTo === "selector") {
+        // Read once, before the test, and both sides in the same moment — the
+        // extension reads them in one message for the same reason.
+        const otherLoc = _loc(esc(_sel(config.valueSelector ?? "")));
+        lines.push(
+          `  const _loc2 = ${otherLoc};`,
+          config.attr
+            ? `  const _rhs = await fsAttr(_loc2, '${esc(String(config.attr))}');`
+            : `  const _rhs = await fsText(_loc2);`,
+          // Nothing matched the other side, so there is nothing to compare
+          // with and the ELSE branch is taken. Without this guard an empty
+          // left side would "equal" a missing right side.
+          `  if (_rhs !== null && ${test}) {`,
+        );
       } else {
-        lines.push(`if (true) { // TODO: impl extended condition ${condition}`);
+        lines.push(`  if (${test}) {`);
       }
       for (const child of step.ifBranch ?? []) {
-        lines.push(..._emitNodeStep(child).map(l => "  " + l));
+        lines.push(..._emitNodeStep(child).map((l) => "    " + l));
       }
-      lines.push(`} else {`);
+      lines.push(`  } else {`);
       for (const child of step.elseBranch ?? []) {
-        lines.push(..._emitNodeStep(child).map(l => "  " + l));
+        lines.push(..._emitNodeStep(child).map((l) => "    " + l));
       }
-      lines.push(`}`, "");
+      lines.push(`  }`, `}`, "");
       return lines;
     }
+    case "FILL":
+    case "TYPE":
+      return _emitNodeFill(config, esc);
+
+    case "HOVER":
+      return [
+        `await ${_verb(esc(_sel(config.selector)), `hover('${esc(_sel(config.selector))}')`, "hover()")};`,
+        "",
+      ];
+
+    case "SELECT":
+      return [
+        `await ${_verb(esc(_sel(config.selector)), `selectOption('${esc(_sel(config.selector))}', '${esc(config.value)}')`, `selectOption('${esc(config.value)}')`)};`,
+        "",
+      ];
+
+    case "KEYBOARD":
+      return [
+        `await page.keyboard.press('${esc(_playwrightKey(config.key))}');`,
+        "",
+      ];
+
+    case "DOWNLOAD_FILE":
+      return _downloadNode(config, esc);
+
+    case "SCREENSHOT":
+      return [
+        `await page.screenshot({ path: \`screenshot_\${Date.now()}.png\` });`,
+        "",
+      ];
+
+    case "PAGE_DATA": {
+      // JSON-LD and the page's meta tags carry over cleanly. The microdata
+      // reader does not: it is a hundred lines of DOM walking in
+      // content/page-data.js, and a second, compact implementation here would
+      // drift from it. So the script reads what it can and says loudly when it
+      // finds nothing — the pipeline would have fallen back to microdata there,
+      // and a silent difference is exactly what the audit was about.
+      const wantType = esc(config.type ?? "");
+      const flat = config.flatten !== false;
+      return [
+        `{`,
+        `  const pageData = await page.evaluate(() => {`,
+        `    const abs = v => { try { return new URL(String(v ?? '').trim(), location.href).href; } catch { return v; } };`,
+        `    const records = [];`,
+        `    const walk = (d, depth = 0) => {`,
+        `      if (!d || depth > 6) return;`,
+        `      if (Array.isArray(d)) return d.forEach(x => walk(x, depth + 1));`,
+        `      if (typeof d !== 'object') return;`,
+        `      if (Array.isArray(d['@graph'])) {`,
+        `        d['@graph'].forEach(x => walk(x, depth + 1));`,
+        `        if (Object.keys(d).filter(k => k !== '@graph' && k !== '@context').length === 0) return;`,
+        `      }`,
+        `      records.push(d);`,
+        `    };`,
+        `    for (const el of document.querySelectorAll('script[type="application/ld+json"]')) {`,
+        `      try { walk(JSON.parse(el.textContent || '')); } catch {}`,
+        `    }`,
+        `    const meta = {};`,
+        `    for (const el of document.querySelectorAll('meta[content]')) {`,
+        `      const k = el.getAttribute('property') || el.getAttribute('name');`,
+        `      if (!k) continue;`,
+        `      if (!/^(og|twitter|product|article|book|music|video|profile):/.test(k) &&`,
+        `          !['description','keywords','author','robots'].includes(k)) continue;`,
+        `      const v = el.getAttribute('content');`,
+        `      meta[k] = /(?:^|:)(?:url|image|video|audio|player)$/.test(k) ? abs(v) : String(v ?? '').replace(/\\s+/g, ' ').trim();`,
+        `    }`,
+        `    return { records, meta, url: location.href, title: document.title };`,
+        `  });`,
+        ...(wantType
+          ? [
+              `  pageData.records = pageData.records.filter(r => {`,
+              `    const t = Array.isArray(r['@type']) ? r['@type'] : [r['@type']];`,
+              `    return t.some(x => String(x ?? '').toLowerCase() === '${wantType.toLowerCase()}');`,
+              `  });`,
+            ]
+          : []),
+        `  if (pageData.records.length === 0) {`,
+        `    console.warn('PAGE_DATA: no JSON-LD found. The extension would also try microdata here;');`,
+        `    console.warn('           this script does not carry that reader, so the result may differ.');`,
+        `  }`,
+        ...(flat
+          ? [
+              `  const flat = (v, p = '', out = {}, depth = 0, seen = new Set()) => {`,
+              `    if (v == null) return out;`,
+              `    if (Array.isArray(v)) {`,
+              `      if (v.every(x => x === null || typeof x !== 'object')) out[p || 'value'] = v.join(', ');`,
+              `      else v.forEach((x, i) => flat(x, p ? p + '.' + i : String(i), out, depth + 1, seen));`,
+              `      return out;`,
+              `    }`,
+              `    if (typeof v === 'object') {`,
+              `      if (depth >= 6 || seen.has(v)) return out;`,
+              `      seen.add(v);`,
+              `      for (const [k, val] of Object.entries(v)) flat(val, p ? p + '.' + k : k, out, depth + 1, seen);`,
+              `      seen.delete(v);`,
+              `      return out;`,
+              `    }`,
+              `    out[p || 'value'] = v;`,
+              `    return out;`,
+              `  };`,
+              `  pageData.records = pageData.records.map(r => flat(r));`,
+            ]
+          : []),
+        `  for (const record of pageData.records) console.log(JSON.stringify(record));`,
+        `}`,
+        "",
+      ];
+    }
+
+    case "PAGINATE": {
+      // A bare click was what this emitted. Past the last page it clicks
+      // nothing and reports success — the same defect the extension's PAGINATE
+      // step had. `break` is not emitted here because a top-level PAGINATE has
+      // no loop to break out of; a paginating LOOP emits its own (see below).
+      const sel = esc(_sel(config.selector ?? ""));
+      return [
+        `{`,
+        `  const _next = page.locator('${sel}').first();`,
+        `  if ((await _next.count()) > 0 && (await _next.isEnabled())) {`,
+        `    await _next.click();`,
+        `    await page.waitForLoadState('networkidle');`,
+        `  } else {`,
+        `    console.log('Pagination: no further pages.');`,
+        `  }`,
+        `}`,
+        "",
+      ];
+    }
+
+    case "DRAG_DROP":
+      return [
+        _scope === "page"
+          ? `await page.dragAndDrop('${esc(_sel(config.source))}', '${esc(_sel(config.target))}');`
+          : `await ${_loc(esc(_sel(config.source)))}.dragTo(${_loc(esc(_sel(config.target)))});`,
+        "",
+      ];
+
     default:
-      return [`// TODO: ${type}`, ""];
+      // Not silently dropped: emitUnsupported collects these and the caller
+      // reports them, so an exported script cannot quietly do less than the
+      // pipeline it came from.
+      return [
+        `// UNSUPPORTED: '${type}' has no equivalent in a standalone script.`,
+        `throw new Error('FlowScrape step ${type} is not exportable');`,
+        "",
+      ];
   }
 }
 
-function _extractNode(config) {
-  const lines = ["const extracted = {};"];
-  for (const { name, selector, attribute } of config.fields ?? []) {
-    if (attribute) {
-      lines.push(
-        `extracted['${name}'] = await page.getAttribute('${selector}', '${attribute}');`,
-      );
-    } else {
-      lines.push(`extracted['${name}'] = await page.innerText('${selector}');`);
+/**
+ * DOWNLOAD_FILE, through Playwright's request API rather than through a click.
+ *
+ * `context.request` carries the context's cookies, so a file behind a login
+ * downloads for the same reason it does in the extension. The click-and-catch
+ * path Playwright also offers does not fit: an `<img>` cannot be clicked into a
+ * download, and a gallery of forty would become forty navigations.
+ */
+function _downloadNode(config, esc) {
+  const { segments, unsupported } = parseFilenameTemplate(
+    String(config.filename ?? "") || "flowscrape/{{file.name}}",
+  );
+  if (unsupported.length > 0) {
+    return [
+      `// UNSUPPORTED: the filename template uses ${unsupported.join(", ")}, which`,
+      `// comes from the run's context and is not available to a standalone script.`,
+      `throw new Error('FlowScrape: DOWNLOAD_FILE filename template is not exportable');`,
+      "",
+    ];
+  }
+
+  const VARS = {
+    "file.name": "_name",
+    "file.stem": "_stem",
+    "file.ext": "_ext",
+    "file.index": "String(_i)",
+    "file.host": "_host",
+  };
+  const pathExpr = segments.length
+    ? segments
+        .map(
+          (parts) =>
+            `fsSafeSeg([${parts
+              .map((p) =>
+                p.lit !== undefined ? `'${esc(p.lit)}'` : VARS[p.var],
+              )
+              .join(", ")}].join(''))`,
+        )
+        .join(", ")
+    : "fsSafeSeg(_name)";
+
+  const literal = String(config.url ?? "").trim();
+  const max = Number(config.max) > 0 ? Number(config.max) : 25;
+  // Braced, like ASSERT and IF_ELSE: two DOWNLOAD_FILE steps in one pipeline
+  // would otherwise redeclare _urls at the same scope and refuse to parse.
+  const lines = ["// DOWNLOAD_FILE", "{"];
+
+  if (literal) {
+    lines.push(`const _urls = ['${esc(literal)}'];`);
+  } else {
+    lines.push(
+      `const _els = (await ${_loc(esc(_sel(config.selector ?? "")))}.all()).slice(0, ${max});`,
+      `const _urls = [];`,
+      `for (const _el of _els) {`,
+      // The same order the content script reads: what the browser actually
+      // loaded, then the markup, then the data- attribute a lazy loader leaves
+      // the real URL in.
+      `  const _raw = await _el.evaluate(e => e.currentSrc || e.getAttribute('href') || e.getAttribute('src') || e.getAttribute('data-src') || '');`,
+      `  if (_raw) _urls.push(new URL(_raw, page.url()).href);`,
+      `}`,
+      `if (!_urls.length) console.log('DOWNLOAD_FILE: nothing matched ${esc(_sel(config.selector ?? ""))} — no files.');`,
+    );
+  }
+
+  lines.push(
+    `let _saved = 0, _failed = 0;`,
+    `for (let _i = 1; _i <= _urls.length; _i++) {`,
+    `  const _u = _urls[_i - 1];`,
+    `  if (!/^https?:/i.test(_u)) { _failed++; console.log('DOWNLOAD_FILE: skipped ' + _u.slice(0, 120) + ' — only http(s) URLs are fetched here'); continue; }`,
+    `  const _url = new URL(_u);`,
+    `  const _host = _url.hostname;`,
+    `  const _name = decodeURIComponent(_url.pathname.split('/').filter(Boolean).pop() || '') || ('file-' + _i);`,
+    `  const _dot = _name.lastIndexOf('.');`,
+    `  const _stem = _dot > 0 ? _name.slice(0, _dot) : _name;`,
+    `  const _ext  = _dot > 0 ? _name.slice(_dot + 1) : '';`,
+    `  let _path = path.join('downloads', ${pathExpr});`,
+    `  if (_ext && !_path.toLowerCase().endsWith('.' + _ext.toLowerCase())) _path += '.' + _ext;`,
+    `  fs.mkdirSync(path.dirname(_path), { recursive: true });`,
+    `  try {`,
+    `    const _resp = await page.context().request.get(_u);`,
+    `    if (!_resp.ok()) throw new Error('HTTP ' + _resp.status());`,
+    `    fs.writeFileSync(_path, await _resp.body());`,
+    `    _saved++;`,
+    `  } catch (err) {`,
+    `    _failed++;`,
+    `    console.log('DOWNLOAD_FILE: ' + _u.slice(0, 120) + ' — ' + err.message);`,
+    `  }`,
+    `  await sleep(MIN_DELAY_MS);`,
+    `}`,
+    `console.log(\`DOWNLOAD_FILE: saved \${_saved}, failed \${_failed}\`);`,
+    // The rule the extension applies: files were found and none arrived, which
+    // is a failure however cheerfully the rest of the script would continue.
+    `if (_urls.length && _saved === 0) throw new Error('FlowScrape: DOWNLOAD_FILE saved none of the files it found');`,
+    "}",
+    "",
+  );
+  return lines;
+}
+
+/** Playwright key names differ slightly from the panel's combo strings. */
+function _playwrightKey(key) {
+  return String(key ?? "Enter")
+    .split("+")
+    .map((part) => (part === "Ctrl" ? "Control" : part))
+    .join("+");
+}
+
+function _emitNodeFill(config, esc) {
+  const lines = [];
+  const fields =
+    config.mode === "multi" &&
+    Array.isArray(config.fields) &&
+    config.fields.length
+      ? config.fields
+      : [{ selector: config.selector, value: config.text }];
+
+  for (const field of fields) {
+    if (!field?.selector) continue;
+    lines.push(
+      `await ${_verb(esc(_sel(field.selector)), `fill('${esc(_sel(field.selector))}', fsEnv('${esc(field.value ?? "")}'))`, `fill(fsEnv('${esc(field.value ?? "")}'))`)};`,
+    );
+  }
+  if (config.submitSelector) {
+    lines.push(
+      `await ${_verb(esc(_sel(config.submitSelector)), `click('${esc(_sel(config.submitSelector))}')`, "click()")};`,
+    );
+    lines.push(`await page.waitForLoadState('networkidle');`);
+  }
+  lines.push("");
+  return lines;
+}
+
+/**
+ * Wrap a read in the transforms the field carries, innermost first.
+ * @returns {string|null} null when a transform cannot be emitted faithfully
+ */
+function _transformNode(expr, field) {
+  let out = expr;
+  for (const name of field.transform ?? []) {
+    if (name === "number") out = `fsNumber(${out})`;
+    else if (name === "trim") out = `fsTrim(${out})`;
+    else if (name === "url") out = `fsUrl(${out}, page.url())`;
+    else if (name === "lower") out = `String(${out} ?? '').toLowerCase()`;
+    else if (name === "upper") out = `String(${out} ?? '').toUpperCase()`;
+    // Same contract as the in-page transform: not-base64 becomes null rather
+    // than a mangled string, so a script and a run agree on what failed.
+    else if (name === "base64") out = `fsB64(${out})`;
+    else if (name === "regex") {
+      const raw = String(field.regexPattern ?? "");
+      const flags = normalizeRegexFlags(field.regexFlags);
+      if (!isValidRegex(raw, flags)) return null; // the caller emits a refusal
+      // A regex is full of backslashes, and the quote-escaper alone turned
+      // `\\S` into a bare `S` inside the emitted literal, so the pattern
+      // silently matched nothing. Backslashes first, then quotes.
+      const pattern = raw.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      const group = normalizeRegexGroup(field.regexGroup);
+      const extra =
+        group === null
+          ? flags
+            ? `, '${flags}'`
+            : ""
+          : `, '${flags}', ${group}`;
+      out = `fsRegex(${out}, '${pattern}'${extra})`;
     }
   }
-  lines.push(`console.log(JSON.stringify(extracted));`, "");
+  return out;
+}
+
+/**
+ * Translate FlowScrape's piercing combinator into Playwright's.
+ *
+ * CSS cannot cross a shadow boundary, so a selector for an element inside a web
+ * component is written `app-root >>> .price` here. Playwright spells the same
+ * idea `>>` — find the left side, then search the right side within it — and
+ * its CSS engine pierces open shadow roots, so the two mean exactly the same
+ * thing. Without this the emitted script carries a selector Playwright reads as
+ * malformed CSS and matches nothing.
+ */
+function _sel(selector) {
+  return String(selector ?? "")
+    .split(">>>")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" >> ");
+}
+
+/**
+ * EXTRACT, with the same row assembly the extension does.
+ *
+ * This used to read `.first()` for every field and print one object, so a
+ * pipeline that extracted a grid of thirty products exported a script that
+ * returned one — the single most consequential difference between running a
+ * pipeline and running its script.
+ *
+ * The rules are `_stepExtract`'s, and worth stating because they are not
+ * obvious: a field matching exactly one element is a page-level value and is
+ * repeated on every row; a field matching n > 1 is positional and rows past n
+ * get null; a field matching nothing is null throughout. Padding a short field
+ * with its first match — which an earlier version of the extension did — puts
+ * data on rows it was never read from, and it looks completely real.
+ */
+function _extractNode(config) {
+  const fields = [];
+  const lines = [];
+  for (const field of config.fields ?? []) {
+    const { name, selector, attribute, countSelector } = field;
+    if (field.type === "count" && !countSelector) {
+      lines.push(
+        `// INVALID: field '${name}' is set to Count but names nothing to count.`,
+        `throw new Error("FlowScrape field '${name}': Count needs a selector");`,
+      );
+      continue;
+    }
+    if (field.type === "attribute" && !attribute) {
+      // The extension throws for this at run time rather than falling through
+      // to the text, because a successful-looking extraction of the wrong
+      // thing is the worst outcome. Refused here, before the file is written.
+      lines.push(
+        `// INVALID: field '${name}' is set to Attr but has no attribute name.`,
+        `throw new Error("FlowScrape field '${name}': Attr needs an attribute name");`,
+      );
+      continue;
+    }
+    // Only what the reader looks at, so the generated line stays readable.
+    const spec = JSON.stringify({
+      type: field.type ?? "text",
+      attribute: attribute ?? "",
+      countSelector: countSelector ?? "",
+    });
+    const expr = _transformNode(`await fsReadEl(_el, ${spec})`, field);
+    if (expr === null) {
+      lines.push(
+        `// INVALID: field '${name}' has a pattern JavaScript will not accept.`,
+        `throw new Error("FlowScrape field '${name}': invalid regex pattern");`,
+      );
+      continue;
+    }
+    fields.push({ name, selector, expr });
+  }
+
+  if (!fields.length) {
+    lines.push("");
+    return lines;
+  }
+
+  lines.push("{", "  const _cols = {};");
+  for (const f of fields) {
+    lines.push(
+      `  _cols['${f.name}'] = await Promise.all(`,
+      `    (await ${_loc(_sel(f.selector))}.all()).map(async _el => (${f.expr})),`,
+      `  );`,
+    );
+  }
+  lines.push(
+    `  const _n = Math.max(1, ...Object.values(_cols).map(v => v.length));`,
+    `  for (let _i = 0; _i < _n; _i++) {`,
+    `    const row = {};`,
+    `    for (const [_k, _v] of Object.entries(_cols)) {`,
+    `      // ?? not ||: "0", "" and false are real extracted values.`,
+    `      row[_k] = (_v.length === 1 ? _v[0] : (_i < _v.length ? _v[_i] : null)) ?? null;`,
+    `    }`,
+    `    fsCollect(row);`,
+    `  }`,
+    "}",
+    "",
+  );
   return lines;
 }
 
@@ -146,11 +1476,11 @@ function _formFillNode(config) {
   ];
   for (const m of config.fieldMappings ?? []) {
     lines.push(
-      `  await page.fill('${m.selector ?? ""}', row['${m.column ?? ""}'] ?? '');`,
+      `  await page.fill('${_sel(m.selector ?? "")}', row['${m.column ?? ""}'] ?? '');`,
     );
   }
   if (config.submitSelector)
-    lines.push(`  await page.click('${config.submitSelector}');`);
+    lines.push(`  await page.click('${_sel(config.submitSelector)}');`);
   lines.push(
     `  await sleep(jitter(${config.interRowDelay?.min ?? 1200}, ${config.interRowDelay?.max ?? 3000}));`,
   );
@@ -158,6 +1488,14 @@ function _formFillNode(config) {
   return lines;
 }
 
+/**
+ * One API step. `fsApiFetch` carries the 429/5xx retry (K-24) for every
+ * request it makes, paginated or not. Pagination (K-25) is only emitted when
+ * it can actually stop on its own — a cursor mode with nowhere to read the
+ * cursor from, or any pagination with no rowsPath to say what an empty page
+ * is, refuses rather than exporting a script that loops forever or never
+ * advances.
+ */
 function _apiNode(config) {
   const esc = (s) => String(s ?? "").replace(/'/g, "\\'");
   const method = String(config.method ?? "GET").toUpperCase();
@@ -165,29 +1503,138 @@ function _apiNode(config) {
   const body = config.body ?? "";
   const timeout = Number(config.timeoutMs ?? 15000);
   const failOnHttp = config.failOnHttpError !== false;
+  const rowsPath = String(config.rowsPath ?? "").trim();
+  const pagination =
+    config.pagination && typeof config.pagination === "object"
+      ? config.pagination
+      : {};
+  const mode = String(pagination.mode ?? "none").toLowerCase();
+  const url = esc(config.url ?? "");
+  // A list LOOP can supply the URL: {{item.value}} becomes a read of the item.
+  const urlExpr = _strExpr(config.url, esc);
 
-  return [
-    `const apiController = new AbortController();`,
-    `const apiTimer = setTimeout(() => apiController.abort(), ${timeout});`,
+  if (mode !== "none" && !["cursor", "page", "link"].includes(mode)) {
+    return [
+      `// UNSUPPORTED: API pagination mode '${mode}' is not one this exporter knows.`,
+      `throw new Error("FlowScrape: API pagination mode '${esc(mode)}' is not exportable");`,
+      "",
+    ];
+  }
+  if (mode !== "none" && !rowsPath) {
+    return [
+      "// UNSUPPORTED: API pagination needs rowsPath — a dotted path to the",
+      "// array of records in each page's body — so the script knows what an",
+      "// empty page is.",
+      `throw new Error('FlowScrape: API pagination needs rowsPath');`,
+      "",
+    ];
+  }
+  if (mode === "cursor" && !String(pagination.cursorPath ?? "").trim()) {
+    return [
+      `// UNSUPPORTED: API pagination is set to 'cursor' but has no cursorPath.`,
+      `throw new Error('FlowScrape: API cursor pagination needs cursorPath');`,
+      "",
+    ];
+  }
+
+  const bodyExpr = `('${esc(body)}' ? fsEnv('${esc(body)}') : undefined)`;
+  const initExpr = `{ method: '${esc(method)}', headers: apiHeaders, body: ${bodyExpr} }`;
+
+  // Braced: two API steps in the same pipeline would otherwise both declare
+  // apiHeaders/apiResp/etc. in the same top-level scope, and the emitted
+  // script would not parse. The same reason IF_ELSE and ASSERT above brace
+  // their own bodies.
+  const lines = [
+    `{`,
     `let apiHeaders = {};`,
-    `try { apiHeaders = JSON.parse('${esc(headers)}'); } catch { apiHeaders = {}; }`,
-    `const apiResp = await fetch('${esc(config.url ?? "")}', {`,
-    `  method: '${esc(method)}',`,
-    `  headers: apiHeaders,`,
-    `  body: '${esc(body)}' ? '${esc(body)}' : undefined,`,
-    `  signal: apiController.signal,`,
-    `});`,
-    `clearTimeout(apiTimer);`,
-    failOnHttp
-      ? `if (!apiResp.ok) throw new Error('API failed: ' + apiResp.status + ' ' + apiResp.statusText);`
-      : `// failOnHttpError disabled`,
-    `const apiText = await apiResp.text();`,
-    `let apiBody = apiText;`,
-    `try { apiBody = JSON.parse(apiText); } catch {}`,
-    `const apiResult = { status: apiResp.status, ok: apiResp.ok, body: apiBody };`,
-    `console.log('API_RESULT', JSON.stringify(apiResult));`,
-    "",
+    `try { apiHeaders = JSON.parse(fsEnv('${esc(headers)}')); } catch { apiHeaders = {}; }`,
   ];
+
+  if (mode === "none") {
+    lines.push(
+      `const apiResp = await fsApiRequest(${urlExpr}, ${initExpr}, ${timeout});`,
+      failOnHttp
+        ? `if (!apiResp.ok) throw new Error('API failed: ' + apiResp.status + ' ' + apiResp.statusText);`
+        : `// failOnHttpError disabled`,
+      `const apiText = await apiResp.text();`,
+      `let apiBody = apiText;`,
+      `try { apiBody = JSON.parse(apiText); } catch {}`,
+      `const apiRows = fsApiRows(apiBody, '${esc(rowsPath)}');`,
+      `const apiResult = { status: apiResp.status, ok: apiResp.ok, body: apiBody, rows: apiRows };`,
+      `console.log('API_RESULT', JSON.stringify(apiResult));`,
+      `}`,
+      "",
+    );
+    return lines;
+  }
+
+  const maxPages = paginationMaxPages(pagination);
+  const pageParam = esc(
+    String(pagination.pageParam || "page").trim() || "page",
+  );
+  const cursorParam = esc(
+    String(pagination.cursorParam || "cursor").trim() || "cursor",
+  );
+  const startPage = Number.isFinite(Number(pagination.startPage))
+    ? Number(pagination.startPage)
+    : 1;
+  const pageStep =
+    Number.isFinite(Number(pagination.pageStep)) &&
+    Number(pagination.pageStep) !== 0
+      ? Number(pagination.pageStep)
+      : 1;
+  const cursorPath = esc(String(pagination.cursorPath ?? "").trim());
+
+  lines.push(`const apiRows = [];`, `let apiNextUrl = ${urlExpr};`);
+  if (mode === "page") {
+    lines.push(
+      `apiNextUrl = fsAddQueryParam(apiNextUrl, '${pageParam}', ${startPage});`,
+    );
+  }
+  lines.push(
+    `let apiResp, apiBody, apiPage = 0;`,
+    `for (; apiPage < ${maxPages}; apiPage++) {`,
+    `  apiResp = await fsApiRequest(apiNextUrl, ${initExpr}, ${timeout});`,
+  );
+  if (failOnHttp) {
+    lines.push(
+      `  if (apiPage === 0) { if (!apiResp.ok) throw new Error('API failed: ' + apiResp.status + ' ' + apiResp.statusText); }`,
+      `  else if (!apiResp.ok) break; // a later page failing keeps the rows already collected`,
+    );
+  }
+  lines.push(
+    `  const apiText = await apiResp.text();`,
+    `  apiBody = apiText;`,
+    `  try { apiBody = JSON.parse(apiText); } catch {}`,
+    `  const apiPageRows = fsApiRows(apiBody, '${esc(rowsPath)}');`,
+    `  apiRows.push(...apiPageRows);`,
+    `  if (apiPageRows.length === 0) break; // an empty page is the exit condition, not just the count`,
+  );
+  if (mode === "cursor") {
+    lines.push(
+      `  const apiCursor = fsDig(apiBody, '${cursorPath}');`,
+      `  if (apiCursor === undefined || apiCursor === null || apiCursor === '') break; // the source named no next cursor`,
+      `  apiNextUrl = fsAddQueryParam(${urlExpr}, '${cursorParam}', apiCursor);`,
+    );
+  } else if (mode === "page") {
+    lines.push(
+      `  apiNextUrl = fsAddQueryParam(${urlExpr}, '${pageParam}', ${startPage} + (apiPage + 1) * ${pageStep});`,
+    );
+  } else if (mode === "link") {
+    lines.push(
+      `  const apiNextLink = fsLinkHeaderNext(apiResp.headers.get('link'), apiResp.url);`,
+      `  if (!apiNextLink) break; // no rel="next" in the Link header`,
+      `  apiNextUrl = apiNextLink;`,
+    );
+  }
+  lines.push(
+    `}`,
+    `const apiResult = { status: apiResp.status, ok: true, body: apiBody, rows: apiRows, paginated: true, pages: apiPage + 1 };`,
+    `console.log('API_RESULT', JSON.stringify(apiResult));`,
+    `}`,
+    "",
+  );
+  return lines;
 }
 
 // === END node-emitter.js ===

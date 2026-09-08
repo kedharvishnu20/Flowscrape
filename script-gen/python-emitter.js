@@ -3,7 +3,8 @@
  * @module python-emitter
  * @description Converts a pipeline JSON AST to Python 3.11 script
  *   using playwright (browser automation) + requests (HTTP).
- *   Secrets are always redacted in output — replaced with environment variable references.
+ *   Credentials detected by pipeline-compiler.js are replaced with __FS_ENV__NAME__
+ *   markers and resolved from the environment at run time by fs_env().
  *
  *   Design decision: We emit Python rather than Playwright-specific code because
  *   Python is the most common scripting language for automation. The output is
@@ -13,8 +14,33 @@
  */
 
 import { logger } from "../utils/logger.js";
+import {
+  isValidRegex,
+  normalizeRegexFlags,
+  normalizeRegexGroup,
+} from "../utils/value-transforms.js";
+import {
+  retryCount,
+  retryDelayMs,
+  paginationMaxPages,
+} from "../utils/step-types.js";
+import { parseFilenameTemplate } from "./pipeline-compiler.js";
 
+import { EXTRACT_VALUE_JS, PAGINATE_STATE_JS } from "./page-runtime.js";
+
+import { APPENDABLE_FORMATS } from "../exporters/row-formatters.js";
+import { parseListLines } from "../utils/loop-items.js";
 const MODULE = "python-emitter";
+
+/** Mirrors exporters/row-formatters.js — the same six formats, same extensions. */
+const FORMAT_EXT = Object.freeze({
+  csv: "csv",
+  json: "json",
+  jsonl: "jsonl",
+  tsv: "tsv",
+  xml: "xml",
+  markdown: "md",
+});
 
 /**
  * @typedef {Object} PipelineAST
@@ -40,9 +66,320 @@ export function emitPython(pipeline) {
     `# Pipeline: ${_escStr(pipeline.name ?? "Untitled")}`,
     `# Generated: ${new Date().toISOString()}`,
     "",
-    "import asyncio, os, json, csv, time, random",
+    "import asyncio, os, re, sys, io, json, csv, time, random, base64, atexit",
     "from playwright.async_api import async_playwright",
     "import requests",
+    "from requests.adapters import HTTPAdapter",
+    "from urllib3.util.retry import Retry",
+    "",
+    "",
+    "def fs_env(s):",
+    '    """Resolve credential markers left by FlowScrape against the environment.',
+    "",
+    "    Credentials are not written into this script. Each one appears as",
+    "    __FS_ENV__NAME__ and is read from the environment variable NAME when the",
+    "    script runs; a name that is not set resolves to an empty string.",
+    '    """',
+    "    if not isinstance(s, str):",
+    "        return s",
+    '    return re.sub(r"__FS_ENV__([A-Z0-9_]+)__", lambda m: os.environ.get(m.group(1), ""), s)',
+    "",
+    "",
+    "# ── Value transforms ─────────────────────────────────────────",
+    "# Mirrors utils/value-transforms.js. The pipeline cleans values as it",
+    "# extracts them; a script that skipped this would run, produce a file, and",
+    "# fill the number columns with currency symbols.",
+    "from urllib.parse import urljoin, urlparse, unquote",
+    "",
+    "",
+    "def fs_number(t):",
+    '    raw = str(t or "")',
+    "    # Scientific notation first, and only where it is unambiguous. Found in",
+    "    # a real scrape: scrapethissite.com reports Antarctica's area as",
+    '    # "1.4E7", where the general pattern below stopped at the E and turned',
+    "    # fourteen million into 1.4.",
+    '    sci = re.search(r"-?\\d+(?:[.,]\\d+)?[eE][+-]?\\d+", raw)',
+    "    if sci:",
+    "        try:",
+    '            n = float(sci.group(0).replace(",", "."))',
+    "            return int(n) if n.is_integer() else n",
+    "        except ValueError:",
+    "            pass",
+    '    m = re.search(r"-?\\d[\\d.,\\u00a0\\u202f\\s]*\\d|-?\\d", raw)',
+    "    if not m:",
+    "        return None",
+    '    b = re.sub(r"[\\u00a0\\u202f\\s]", "", m.group(0))',
+    '    c, d = b.rfind(","), b.rfind(".")',
+    "    if c > -1 and d > -1:",
+    '        dec, th = (",", ".") if c > d else (".", ",")',
+    '        b = b.replace(th, "").replace(dec, ".")',
+    "    elif c > -1:",
+    '        after, single = len(b) - c - 1, b.find(",") == c',
+    '        b = b.replace(",", ".") if single and 0 < after <= 2 else b.replace(",", "")',
+    "    elif d > -1:",
+    '        after, single = len(b) - d - 1, b.find(".") == d',
+    "        if not (single and 0 < after <= 2):",
+    '            b = b.replace(".", "")',
+    "    try:",
+    "        n = float(b)",
+    "    except ValueError:",
+    "        return None",
+    "    return int(n) if n.is_integer() else n",
+    "",
+    "",
+    "def fs_url(v, base):",
+    '    return urljoin(base, str(v or "").strip()) if v else v',
+    "",
+    "",
+    "# Group and flags mean here exactly what they mean in the panel: 0 is the",
+    "# whole match, an absent group is None rather than a quiet fall back to",
+    "# another one, and only i/m/s are offered because JavaScript has to agree.",
+    'def fs_regex(v, p, flags="", group=None):',
+    "    f = 0",
+    '    for ch, bit in (("i", re.I), ("m", re.M), ("s", re.S)):',
+    "        if ch in flags:",
+    "            f |= bit",
+    '    m = re.search(p, str(v or ""), f)',
+    "    if not m:",
+    "        return None",
+    "    if group == 0:",
+    "        return m.group(0)",
+    "    idx = group if isinstance(group, int) and group > 0 else 1",
+    "    if idx <= len(m.groups()):",
+    "        return m.group(idx)",
+    "    return m.group(0) if idx == 1 and not m.groups() else None",
+    "",
+    "",
+    "def fs_trim(v):",
+    '    return re.sub(r"\\s+", " ", str(v or "")).strip()',
+    "",
+    "",
+    "# Mirrors the in-page transform: tolerant of the URL-safe alphabet and of",
+    "# missing padding, and None rather than a mangled string when the input was",
+    "# never base64 — a plausible wrong answer is worse than an empty cell.",
+    "def fs_b64(v):",
+    '    raw = str(v or "").strip().replace("-", "+").replace("_", "/")',
+    '    if len(raw) < 4 or not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", raw):',
+    "        return None",
+    '    raw += "=" * ((4 - len(raw) % 4) % 4)',
+    "    try:",
+    '        return base64.b64decode(raw).decode("utf-8")',
+    "    except Exception:",
+    "        return None",
+    "",
+    "",
+    "# Every row this run extracts, in order, so an EXPORT step has something",
+    "# to write. EXTRACT still prints each row as it goes — that is what the",
+    "# MCP runner reads off stdout — but a printed row is not a file.",
+    "fs_rows = []",
+    "",
+    "# DEDUPE. None until a DEDUPE step sets it, and from then on every row the",
+    "# script collects is checked — the same gate the extension applies, for the",
+    "# same reason: rows are written as they are read, so filtering afterwards",
+    "# would mean unwriting.",
+    "fs_dedupe = None",
+    "fs_dropped = 0",
+    "fs_seen = {}",
+    "",
+    "",
+    "def fs_key(row, fields):",
+    "    names = fields if fields else sorted((row or {}).keys())",
+    "    parts = []",
+    "    for n in names:",
+    "        v = (row or {}).get(n, KeyError)",
+    "        if v is KeyError:",
+    '            parts.append("\\u001fundef")',
+    "        elif v is None:",
+    '            parts.append("\\u001fnull")',
+    "        elif isinstance(v, (dict, list)):",
+    '            parts.append(json.dumps(v, separators=(",", ":")))',
+    "        else:",
+    '            parts.append(re.sub(r"\\s+", " ", str(v)).strip().lower())',
+    '    return "\\u001f".join(parts)',
+    "",
+    "",
+    "def fs_collect(row):",
+    "    global fs_dropped",
+    "    if fs_dedupe:",
+    '        k = fs_key(row, fs_dedupe["fields"])',
+    "        if k in fs_seen:",
+    "            fs_dropped += 1",
+    "            return False",
+    "        fs_seen[k] = 1",
+    "        # Forget the oldest rather than grow without bound; a dict keeps",
+    "        # insertion order, so the first key is the oldest.",
+    '        if len(fs_seen) > fs_dedupe["limit"]:',
+    "            del fs_seen[next(iter(fs_seen))]",
+    "    fs_rows.append(row)",
+    "    print(json.dumps(row))",
+    "    return True",
+    "",
+    "",
+    "# What an element says, mirroring content/injector.js exactly: an <img>",
+    "# answers with its src, a bare <a> with its href, a checkbox only when",
+    "# checked. inner_text() for all of it — which is what this used to emit —",
+    "# is the empty string for a grid of images, on every row. The rule lives",
+    "# in one place, as JavaScript, and both emitted scripts send the same text",
+    "# into the page.",
+    `FS_READ_JS = """${EXTRACT_VALUE_JS}"""`,
+    `FS_PAGINATE_JS = """${PAGINATE_STATE_JS}"""`,
+    "",
+    "",
+    "async def fs_read_el(el, f):",
+    "    return await el.evaluate(FS_READ_JS, f)",
+    "",
+    "",
+    "# Mirrors exporters/row-formatters.js. Columns are the union of every",
+    "# row's keys in first-seen order: the first row's keys alone would silently",
+    "# drop any column it happens not to have, which for scraped data is the",
+    "# common case rather than an edge one.",
+    "def fs_cell(v):",
+    "    if v is None:",
+    '        return ""',
+    "    if isinstance(v, bool):",
+    '        return "true" if v else "false"',
+    "    if isinstance(v, (dict, list)):",
+    '        return json.dumps(v, separators=(",", ":"))',
+    "    return str(v)",
+    "",
+    "",
+    "def fs_headers(rows):",
+    "    out, seen = [], set()",
+    "    for r in rows:",
+    "        for k in (r or {}).keys():",
+    "            if k not in seen:",
+    "                seen.add(k)",
+    "                out.append(k)",
+    "    return out",
+    "",
+    "",
+    "def fs_format_rows(rows, fmt):",
+    "    safe = rows or []",
+    '    if fmt == "json":',
+    "        return json.dumps(safe, indent=2)",
+    '    if fmt == "jsonl":',
+    "        # separators, or Python spaces its JSON where JavaScript does not",
+    "        # and the same rows come out as different bytes.",
+    '        return "".join(json.dumps(r, separators=(",", ":")) + "\\n" for r in safe)',
+    "    if not safe:",
+    '        return ""',
+    "    h = fs_headers(safe)",
+    '    if fmt == "csv":',
+    "        buf = io.StringIO()",
+    '        w = csv.writer(buf, lineterminator="\\r\\n")',
+    "        w.writerow(h)",
+    "        for r in safe:",
+    "            w.writerow([fs_cell((r or {}).get(k)) for k in h])",
+    "        return buf.getvalue()",
+    '    if fmt == "tsv":',
+    '        clean = lambda v: re.sub(r"[\\t\\r\\n]", " ", fs_cell(v))',
+    '        out = ["\\t".join(clean(k) for k in h)]',
+    '        out += ["\\t".join(clean((r or {}).get(k)) for k in h) for r in safe]',
+    '        return "\\n".join(out) + "\\n"',
+    '    if fmt == "xml":',
+    "        def esc(v):",
+    "            t = fs_cell(v)",
+    '            for a, b in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), (chr(34), "&quot;"), ("\'", "&apos;")):',
+    "                t = t.replace(a, b)",
+    "            return t",
+    "        def tag(n):",
+    '            c = re.sub(r"[^A-Za-z0-9_.-]", "_", str(n))',
+    '            return c if re.match(r"^[A-Za-z_]", c) else "_" + c',
+    '        out = [\'<?xml version="1.0" encoding="UTF-8"?>\', "<rows>"]',
+    "        for r in safe:",
+    '            out.append("  <row>")',
+    "            for k in h:",
+    '                out.append("    <{0}>{1}</{0}>".format(tag(k), esc((r or {}).get(k))))',
+    '            out.append("  </row>")',
+    '        out.append("</rows>")',
+    '        return "\\n".join(out) + "\\n"',
+    '    if fmt == "markdown":',
+    '        md = lambda v: re.sub(r"\\r?\\n", " ", fs_cell(v).replace("|", "\\\\|"))',
+    '        out = ["| " + " | ".join(md(k) for k in h) + " |",',
+    '               "| " + " | ".join("---" for _ in h) + " |"]',
+    '        out += ["| " + " | ".join(md((r or {}).get(k)) for k in h) + " |" for r in safe]',
+    '        return "\\n".join(out) + "\\n"',
+    '    raise ValueError("Unsupported export format: " + str(fmt))',
+    "",
+    "",
+    '# What an IF_ELSE branch reads before it decides. None means "no such',
+    '# element", which every condition treats as not-matching rather than as an',
+    "# empty string — the two are different, and conflating them puts every",
+    "# missing row into the wrong branch.",
+    "# text_content, not inner_text: ASSERT and IF_ELSE compare what the",
+    "# extension's _stepAssert and _stepIfElse read, and both read textContent.",
+    "# inner_text drops anything CSS has hidden, so an assertion could pass in",
+    "# the panel and fail in the script for a reason neither would explain.",
+    "async def fs_text(loc):",
+    "    return fs_trim(await loc.first.text_content()) if await loc.count() > 0 else None",
+    "",
+    "",
+    "async def fs_attr(loc, a):",
+    "    return await loc.first.get_attribute(a) if await loc.count() > 0 else None",
+    "",
+    "",
+    "# ── Downloads ────────────────────────────────────────────────",
+    "# An allowlist, mirroring the extension: a filename built from page content",
+    "# must not be able to name a directory, so both separators fall outside it",
+    '# and ".." reduces to nothing.',
+    "def fs_safe_seg(v):",
+    '    s = re.sub(r"[^\\w .()\\[\\]{}@#&+,;\'!~=%-]", "_", str(v or ""), flags=re.UNICODE)',
+    '    return re.sub(r"[.\\s]+$", "", re.sub(r"^[.\\s]+", "", s))[:100]',
+    "",
+    "",
+    "def fs_file_name(url, index):",
+    '    name = unquote(urlparse(url).path.rstrip("/").split("/")[-1]) if url else ""',
+    '    return name or "file-{}".format(index)',
+    "# ── API step: pagination and retry (K-24, K-25) ────────────────",
+    "# A dotted path into a response body — mirrors the worker's _resolvePath,",
+    "# so a rowsPath or cursorPath configured in the panel means the same thing",
+    "# here. A miss anywhere along the path is None, not an exception.",
+    "def fs_dig(body, path):",
+    "    val = body",
+    "    for part in str(path or '').split('.'):",
+    "        if val is None:",
+    "            return None",
+    "        m = re.match(r'^(.+?)\\[(\\d+)\\]$', part)",
+    "        if m:",
+    "            val = val.get(m.group(1)) if isinstance(val, dict) else None",
+    "            val = val[int(m.group(2))] if isinstance(val, list) and int(m.group(2)) < len(val) else None",
+    "        elif part.isdigit():",
+    "            val = val[int(part)] if isinstance(val, list) and int(part) < len(val) else None",
+    "        else:",
+    "            val = val.get(part) if isinstance(val, dict) else None",
+    "    return val",
+    "",
+    "",
+    "# rowsPath empty means the body itself, if it is an array — the same rule",
+    "# the worker's rowsPath uses so a single call and a paginated one shape",
+    "# their rows identically.",
+    "def fs_api_rows(body, rows_path):",
+    "    target = fs_dig(body, rows_path) if rows_path else body",
+    "    return target if isinstance(target, list) else []",
+    "",
+    "",
+    "def fs_add_query_param(url, key, value):",
+    "    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode",
+    "    parts = urlsplit(url)",
+    "    q = dict(parse_qsl(parts.query))",
+    "    q[key] = str(value)",
+    "    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))",
+    "",
+    "",
+    "def fs_api_session():",
+    "    # 429/5xx get retried in place, honouring Retry-After when the server",
+    "    # names one — urllib3 parses both the seconds and the HTTP-date form —",
+    "    # and capped so a chatty server cannot stall the script for an hour.",
+    "    s = requests.Session()",
+    "    retry = Retry(",
+    "        total=3,",
+    "        backoff_factor=1,",
+    "        status_forcelist=[429, 500, 502, 503, 504],",
+    "        respect_retry_after_header=True,",
+    "    )",
+    "    s.mount('http://', HTTPAdapter(max_retries=retry))",
+    "    s.mount('https://', HTTPAdapter(max_retries=retry))",
+    "    return s",
     "",
     "# ── Config ────────────────────────────────────────────────────",
     `TARGET_ORIGIN = "${pipeline.targetOrigin ?? ""}"`,
@@ -58,7 +395,14 @@ export function emitPython(pipeline) {
     "",
     "async def run_pipeline():",
     "    async with async_playwright() as pw:",
-    "        browser = await pw.chromium.launch(proxy=PROXY)",
+    "        # FS_BROWSER_PATH names a browser to use instead of the one",
+    "        # Playwright downloaded: headless Playwright reaches for a",
+    "        # separate headless-shell build by default, and a machine with",
+    "        # full Chromium but not that variant fails at launch.",
+    '        _exe = os.environ.get("FS_BROWSER_PATH")',
+    "        browser = await pw.chromium.launch(",
+    '            proxy=PROXY, **({"executable_path": _exe} if _exe else {})',
+    "        )",
     "        context = await browser.new_context()",
     "        page    = await context.new_page()",
     "",
@@ -90,107 +434,929 @@ export function emitPython(pipeline) {
  * @param {object} step
  * @returns {string[]}
  */
+/**
+ * One IF_ELSE condition as a Python expression over `_loc`.
+ *
+ * Mirrors utils/conditions.js. Held to it by a test that emits every condition
+ * in the registry and fails on any that comes back stubbed.
+ *
+ * @returns {string|null} null when the condition cannot be expressed
+ */
+function _conditionPy(condition, config) {
+  const value = _escStr(String(config.value ?? ""));
+  const attr = _escStr(String(config.attr ?? ""));
+  const num = Number(String(config.value ?? "").trim());
+
+  // Either a literal baked into the expression, or `_rhs` — a value the block
+  // reads from a second element just before the test. The twin of the same
+  // choice in node-emitter.js, written once per language so the forms cannot
+  // diverge condition by condition.
+  const fromSelector = config.compareTo === "selector";
+  const str = fromSelector ? "_rhs" : `"${value}"`;
+  const numRhs = fromSelector
+    ? "fs_number(_rhs)"
+    : Number.isFinite(num)
+      ? String(num)
+      : null;
+
+  const numeric = (op) =>
+    numRhs === null
+      ? null
+      : `(lambda a, b: a is not None and b is not None and a ${op} b)(fs_number(await fs_text(_loc)), ${numRhs})`;
+
+  switch (condition) {
+    case "exists":
+      return `await _loc.count() > 0`;
+    case "not-exists":
+      return `await _loc.count() == 0`;
+    case "is-empty":
+      return `(lambda t: t is None or t == "")(await fs_text(_loc))`;
+    case "not-empty":
+      return `(lambda t: t is not None and t != "")(await fs_text(_loc))`;
+    case "text-equals":
+      return `await fs_text(_loc) == fs_trim(${str})`;
+    case "text-contains":
+      return `(lambda t: t is not None and fs_trim(${str}) in t)(await fs_text(_loc))`;
+    case "text-matches": {
+      // A pattern read off the page cannot be checked here; a bad one raises
+      // at run time, which is what the extension does with it too.
+      if (fromSelector) {
+        return `(lambda t: t is not None and re.search(_rhs, t) is not None)(await fs_text(_loc))`;
+      }
+      const raw = String(config.value ?? "");
+      // A raw literal cannot end in a backslash, and such a pattern is not
+      // valid anyway — refuse rather than trim it into something else.
+      if (!isValidRegex(raw) || /\\$/.test(raw)) return null;
+      return `(lambda t: t is not None and re.search(r"${raw.replace(/"/g, '\\"')}", t) is not None)(await fs_text(_loc))`;
+    }
+    case "attr-equals":
+      return `(lambda a: a is not None and a.strip() == str(${str}).strip())(await fs_attr(_loc, "${attr}"))`;
+    case "attr-contains":
+      return `(lambda a: a is not None and ${str} in a)(await fs_attr(_loc, "${attr}"))`;
+    case "attr-exists":
+      return `await fs_attr(_loc, "${attr}") is not None`;
+    case "number-equals":
+      return numeric("==");
+    case "number-gt":
+      return numeric(">");
+    case "number-lt":
+      return numeric("<");
+    default:
+      return null;
+  }
+}
+
+/**
+ * One step, wrapped in the retry the step asked for.
+ *
+ * A generated script that gave up where the run would have tried again is a
+ * script that does something else, which is the objection to any silent
+ * difference between the two.
+ */
+/**
+ * What a selector resolves against, right here in the emitted script.
+ *
+ * The twin of the same idea in node-emitter.js, and for the same reason: at run
+ * time a selector inside an `elements` LOOP resolves against that iteration's
+ * element, and the emitted script used to search the whole page instead — so
+ * "for each card, extract the title" exported as a script that extracts every
+ * title on the page, once per card (K-28).
+ *
+ * Only `elements` mode has an element to scope to. `count` has none, and the
+ * pagination modes iterate pages rather than records.
+ */
+let _pyScope = "page";
+
+/** The scoped locator for a selector. */
+/** Playwright spells its modifier keys out; the panel collects short names. */
+const _PY_MODIFIER = {
+  ctrl: "Control",
+  control: "Control",
+  shift: "Shift",
+  alt: "Alt",
+  meta: "Meta",
+  cmd: "Meta",
+  command: "Meta",
+};
+
+/**
+ * The variable holding the current item inside a `list` LOOP, or null.
+ * The twin of `_pyScope`, and of `_listItem` in node-emitter.js.
+ */
+let _pyListItem = null;
+
+/**
+ * `{{item.field}}` and `{{loop.index}}`.
+ *
+ * Not global: a global regex carries `lastIndex` between calls, so a `.test()`
+ * leaves it past the first match and the scan that follows starts from there.
+ */
+const _PY_TEMPLATE = /\{\{\s*(item|loop)\.([A-Za-z0-9_$]+)\s*\}\}/;
+
+/**
+ * A config string as Python source.
+ *
+ * Normally a quoted literal. Inside a `list` LOOP, a string mentioning the
+ * item becomes an expression that reads it — a script that fetched
+ * "https://shop/{{item.value}}" five hundred times, braces and all, would be a
+ * script that does not work.
+ *
+ * Concatenation rather than an f-string: a URL can hold a brace, and an
+ * f-string would try to interpret it.
+ */
+function _pyStrExpr(value) {
+  const raw = String(value ?? "");
+  if (!_pyListItem || !_PY_TEMPLATE.test(raw)) return `"${_escStr(raw)}"`;
+
+  const parts = [];
+  let last = 0;
+  for (const m of raw.matchAll(new RegExp(_PY_TEMPLATE.source, "g"))) {
+    if (m.index > last) parts.push(`"${_escStr(raw.slice(last, m.index))}"`);
+    parts.push(
+      m[1] === "item"
+        ? `str(${_pyListItem}.get(${JSON.stringify(m[2])}, ""))`
+        : `str(_loop.get(${JSON.stringify(m[2])}, ""))`,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < raw.length) parts.push(`"${_escStr(raw.slice(last))}"`);
+  return parts.join(" + ");
+}
+
+const _pyLoc = (sel) => `${_pyScope}.locator("${sel}")`;
+
+/**
+ * A verb, spelled the way a reader of the script would write it: Playwright's
+ * page shortcut at the top level, the locator form only where "within this
+ * element" has to be said.
+ */
+const _pyVerb = (sel, pageForm, scopedForm) =>
+  _pyScope === "page" ? `page.${pageForm}` : `${_pyLoc(sel)}.${scopedForm}`;
+
+/** Emit `fn()` with selectors resolving against `name` instead of the page. */
+function _pyWithin(name, fn) {
+  const outer = _pyScope;
+  _pyScope = name;
+  try {
+    return fn();
+  } finally {
+    _pyScope = outer;
+  }
+}
+
 function _emitStep(step) {
+  const body = _emitStepBody(step);
+  const tries = retryCount(step.config);
+  if (tries === 0) return body;
+
+  const delay = retryDelayMs(step.config) / 1000;
+  return [
+    `# Retry: up to ${tries} further attempt(s), ${delay}s apart.`,
+    `for _attempt in range(${tries + 1}):`,
+    `    try:`,
+    ...body.map((l) => (l ? "        " + l : l)),
+    `        break`,
+    `    except Exception as _err:`,
+    `        if _attempt == ${tries}:`,
+    `            raise`,
+    `        print(f"Retry {_attempt + 1} of ${tries} after: {_err}")`,
+    `        await asyncio.sleep(${delay})`,
+    "",
+  ];
+}
+
+/**
+ * One ASSERT as a Python expression over `_count` and `_text`.
+ *
+ * Mirrors utils/assertions.js, and is held to it by a test that emits every
+ * assertion in the registry and fails on any that comes back stubbed.
+ *
+ * @returns {string|null} null when the assertion cannot be expressed
+ */
+function _assertionPy(assertion, config) {
+  const value = _escStr(String(config.value ?? ""));
+  const n = Number(String(config.count ?? "").trim());
+  const counted = (op) => (Number.isFinite(n) ? `_count ${op} ${n}` : null);
+
+  switch (assertion) {
+    case "exists":
+      return `_count > 0`;
+    case "not-exists":
+      return `_count == 0`;
+    case "count-equals":
+      return counted("==");
+    case "count-at-least":
+      return counted(">=");
+    case "count-at-most":
+      return counted("<=");
+    case "text-contains":
+      return `_text is not None and fs_trim("${value}") in _text`;
+    case "text-equals":
+      return `_text is not None and _text == fs_trim("${value}")`;
+    default:
+      return null;
+  }
+}
+
+function _emitStepBody(step) {
   const { type, config = {} } = step;
   switch (type) {
     case "WEBSITE":
     case "NAVIGATE":
       return [
         `# NAVIGATE: ${config.url ?? ""}`,
-        `await page.goto("${_escStr(config.url ?? "")}", wait_until="load")`,
+        `await page.goto(${_pyStrExpr(config.url)}, wait_until="load")`,
         `await page.wait_for_load_state("networkidle")`,
         "",
       ];
     case "API":
       return _emitApi(config);
-    case "CLICK":
-      return [
+    case "CLICK": {
+      const kw = [];
+      const btn = String(config.button || "left").toLowerCase();
+      if (btn !== "left") kw.push(`button="${btn}"`);
+      const mods = (Array.isArray(config.modifiers) ? config.modifiers : [])
+        .map((m) => _PY_MODIFIER[String(m).toLowerCase()])
+        .filter(Boolean);
+      if (mods.length) {
+        kw.push(`modifiers=[${mods.map((m) => `"${m}"`).join(", ")}]`);
+      }
+      const clickSel = _escStr(_sel(config.selector ?? ""));
+      const tail = kw.length ? `, ${kw.join(", ")}` : "";
+      const lines = [
         `# CLICK: ${config.selector ?? ""}`,
-        `await page.click("${_escStr(config.selector ?? "")}")`,
-        `await page.wait_for_load_state("networkidle")`,
-        "",
+        `await ${_pyVerb(
+          clickSel,
+          `click("${clickSel}"${tail})`,
+          `click(${kw.join(", ")})`,
+        )}`,
       ];
-    case "WAIT":
+      // This used to wait for network idle after every click, unconditionally.
+      // Neither the extension nor the Node script did, so the same pipeline
+      // read the page at two different moments depending on which language you
+      // exported — and on a page with a long-poll open, the Python script hung
+      // on a click that had already finished. The wait is now the one the step
+      // asks for, and nothing when it asks for none.
+      const after = config.waitAfter ?? "none";
+      const t =
+        Number(config.waitTimeoutMs) > 0 ? Number(config.waitTimeoutMs) : 15000;
+      const waitSel = _escStr(_sel(config.waitSelector ?? ""));
+      if (after === "load") {
+        lines.push(`await page.wait_for_load_state("load", timeout=${t})`);
+      } else if (after === "selector" && waitSel) {
+        lines.push(
+          _pyScope === "page"
+            ? `await page.wait_for_selector("${waitSel}", state="visible", timeout=${t})`
+            : `await ${_pyLoc(waitSel)}.first.wait_for(state="visible", timeout=${t})`,
+        );
+      } else if (after === "selector-gone" && waitSel) {
+        lines.push(
+          _pyScope === "page"
+            ? `await page.wait_for_selector("${waitSel}", state="hidden", timeout=${t})`
+            : `await ${_pyLoc(waitSel)}.first.wait_for(state="hidden", timeout=${t})`,
+        );
+      } else if (after === "settle") {
+        lines.push(
+          `await page.wait_for_load_state("networkidle", timeout=${t})`,
+        );
+      }
+      lines.push("");
+      return lines;
+    }
+    case "WAIT": {
+      const timeout = Number(config.timeout) || 15000;
       if (config.mode === "selector-visible") {
         return [
-          `await page.wait_for_selector("${_escStr(config.selector ?? "")}")`,
+          _pyScope === "page"
+            ? `await page.wait_for_selector("${_escStr(_sel(config.selector ?? ""))}", state="visible", timeout=${timeout})`
+            : `await ${_pyLoc(_escStr(_sel(config.selector ?? "")))}.first.wait_for(state="visible", timeout=${timeout})`,
+          "",
+        ];
+      }
+      if (config.mode === "selector-gone") {
+        return [
+          _pyScope === "page"
+            ? `await page.wait_for_selector("${_escStr(_sel(config.selector ?? ""))}", state="hidden", timeout=${timeout})`
+            : `await ${_pyLoc(_escStr(_sel(config.selector ?? "")))}.first.wait_for(state="hidden", timeout=${timeout})`,
+          "",
+        ];
+      }
+      if (config.mode === "DOM-stable") {
+        // Playwright has no "the DOM stopped changing"; network idle is the
+        // closest equivalent, and what the mode is used for in practice.
+        return [
+          `await page.wait_for_load_state("networkidle", timeout=${timeout})`,
           "",
         ];
       }
       return [`await asyncio.sleep(${(config.ms ?? 1000) / 1000})`, ""];
+    }
     case "EXTRACT":
       return _emitExtract(config);
     case "FORM_FILL":
       return _emitFormFill(config);
+    case "DEDUPE":
+      return _emitDedupe(config);
     case "EXPORT":
       return _emitExport(config);
-    case "SCROLL":
+    case "SCROLL": {
+      // config.amount is what the UI writes; `value` was read here, so every
+      // exported scroll used the hardcoded default of 300px.
+      const amount = config.amount ?? config.value ?? 300;
+      // A named container is a `div` with its own scrollbar, not the document —
+      // an infinite feed inside one never grows document.documentElement, so
+      // every mode below has to reach into the container's own scrollHeight.
+      // locator.evaluate() runs in the page for the container element itself.
+      const container = config.container ? _escStr(_sel(config.container)) : "";
+      if (config.mode === "selector" && config.selector) {
+        return [
+          `await ${_pyLoc(_escStr(_sel(config.selector)))}.scroll_into_view_if_needed()`,
+          "",
+        ];
+      }
+      if (config.mode === "percent") {
+        if (container) {
+          return [
+            `await ${_pyLoc(container)}.evaluate("(el, pct) => el.scrollTo(0, el.scrollHeight * pct)", ${Number(amount) / 100})`,
+            `await asyncio.sleep(0.5)`,
+            "",
+          ];
+        }
+        return [
+          `await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight * ${Number(amount) / 100})")`,
+          `await asyncio.sleep(0.5)`,
+          "",
+        ];
+      }
+      if (config.mode === "infinite" || config.mode === "bottom") {
+        const maxScrolls = Number(config.maxScrolls) || 50;
+        const settle = (Number(config.settleMs) || 1200) / 1000;
+        if (container) {
+          return [
+            `# Scroll the container until it stops growing, or ${maxScrolls} scrolls.`,
+            `_container = ${_pyLoc(container)}`,
+            `_last_height = 0`,
+            `for _ in range(${maxScrolls}):`,
+            `    await _container.evaluate("el => el.scrollTo(0, el.scrollHeight)")`,
+            `    await asyncio.sleep(${settle})`,
+            `    _h = await _container.evaluate("el => el.scrollHeight")`,
+            `    if _h == _last_height:`,
+            `        break`,
+            `    _last_height = _h`,
+            "",
+          ];
+        }
+        return [
+          `# Scroll until the page stops growing, or ${maxScrolls} scrolls.`,
+          `_last_height = 0`,
+          `for _ in range(${maxScrolls}):`,
+          `    await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")`,
+          `    await asyncio.sleep(${settle})`,
+          `    _h = await page.evaluate("document.documentElement.scrollHeight")`,
+          `    if _h == _last_height:`,
+          `        break`,
+          `    _last_height = _h`,
+          "",
+        ];
+      }
+      if (container) {
+        return [
+          `await ${_pyLoc(container)}.evaluate("(el, amt) => el.scrollBy(0, amt)", ${Number(amount)})`,
+          `await asyncio.sleep(0.5)`,
+          "",
+        ];
+      }
       return [
-        `await page.evaluate("window.scrollBy(0, ${config.value ?? 300})")`,
+        `await page.evaluate("window.scrollBy(0, ${amount})")`,
         `await asyncio.sleep(0.5)`,
         "",
       ];
-    case "LOOP": {
-      const lines = [
-        `# LOOP: ${config.type || 'count'} (max: ${config.max ?? 10})`,
+    }
+    case "ASSERT": {
+      const assertion = config.assertion || "exists";
+      const sel = _escStr(_sel(config.selector ?? ""));
+      const test = _assertionPy(assertion, config);
+      if (test === null) {
+        // A number box left empty, or an assertion this emitter does not know.
+        // Refused rather than emitted as `if False:`, which would export a
+        // guard that never fires — worse than no guard at all.
+        return [
+          `# UNSUPPORTED: assertion "${assertion}" cannot be expressed here.`,
+          `raise ValueError("FlowScrape: ASSERT '${assertion}' is not exportable")`,
+          "",
+        ];
+      }
+      return [
+        `# ASSERT: ${assertion} - ${sel}`,
+        `_loc = ${_pyLoc(sel)}`,
+        `_count = await _loc.count()`,
+        `_text = await fs_text(_loc)`,
+        `if not (${test}):`,
+        config.optional === true
+          ? `    print("ASSERT (${assertion}) failed on ${sel} - optional, continuing")`
+          : `    raise AssertionError("FlowScrape ASSERT (${assertion}) failed on ${sel}: {} match(es)".format(_count))`,
+        "",
       ];
-      if (config.type === 'elements' && config.selector) {
-        lines.push(`elements = await page.locator("${_escStr(config.selector)}").all()`);
-        lines.push(`for i, el in enumerate(elements[:${config.max ?? 10}]):`);
+    }
+    case "LOOP": {
+      // Named by nesting depth rather than always `el`, so a loop inside a loop
+      // reads as two different elements instead of rebinding one name.
+      const elVar = _pyScope === "page" ? "el" : `${_pyScope}_child`;
+      const lines = [
+        `# LOOP: ${config.type || "count"} (max: ${config.max ?? 10})`,
+      ];
+      if (config.type === "elements" && config.selector) {
+        lines.push(
+          `elements = await ${_pyLoc(_escStr(_sel(config.selector)))}.all()`,
+        );
+        // 0 means "every one", as the panel says and as _executeLoop does;
+        // elements[:0] is the empty list, so the loop ran zero times instead.
+        lines.push(
+          (config.max ?? 10) > 0
+            ? `for i, ${elVar} in enumerate(elements[:${config.max ?? 10}]):`
+            : `for i, ${elVar} in enumerate(elements):`,
+        );
+      } else if (config.type === "list") {
+        if ((config.source || "lines") === "context") {
+          // The items would come from a run context a standalone script does
+          // not have. Refused rather than exported as an empty loop, which
+          // would run, exit 0 and scrape nothing.
+          lines.push(
+            `# UNSUPPORTED: this LOOP reads its list from "${_escStr(String(config.contextPath ?? ""))}",`,
+            `# which is part of a run inside the extension. A pasted list exports fine.`,
+            `raise ValueError("FlowScrape: LOOP over a run-context list is not exportable")`,
+            "",
+          );
+          return lines;
+        }
+        // Baked in at export time: the list is known now, so the script needs
+        // no CSV parser of its own to disagree with ours.
+        const parsed = parseListLines(config.lines, {
+          delimiter: config.delimiter,
+          hasHeader: config.hasHeader === true,
+        });
+        const items =
+          (config.max ?? 0) > 0
+            ? parsed.items.slice(0, Number(config.max))
+            : parsed.items;
+        lines.push(
+          `_items = json.loads(${JSON.stringify(JSON.stringify(items))})`,
+          `for i, _item in enumerate(_items):`,
+          `    _loop = {"index": i + 1, "index0": i, "count": len(_items)}`,
+        );
+      } else if (config.type === "paginate-links" && config.selector) {
+        // The page's links are the bound, as they are in the run: a numbered
+        // paginator has nothing that goes dead to probe, so "how many pages"
+        // is "how many links".
+        lines.push(
+          `_pages = await page.locator("${_escStr(_sel(config.selector))}").all()`,
+          `_hrefs = [await a.get_attribute("href") for a in _pages]`,
+          `${config.max > 0 ? `_hrefs = _hrefs[:${config.max}]` : "# every link the page offers"}`,
+          `for i, _href in enumerate(_hrefs):`,
+          `    if i > 0 and _href:`,
+          `        await page.goto(urljoin(page.url, _href))`,
+          `        await page.wait_for_load_state("networkidle")`,
+        );
+      } else if (config.type === "paginate-url") {
+        const tpl = String(config.urlTemplate ?? "");
+        if (!tpl.includes("{page}")) {
+          lines.push(
+            `# UNSUPPORTED: this LOOP is set to "URL pattern" but its template`,
+            `# has no {page} in it, so every iteration would open the same page.`,
+            `raise ValueError("FlowScrape: LOOP url template has no {page}")`,
+            "",
+          );
+          return lines;
+        }
+        const start = Number.isFinite(Number(config.startPage))
+          ? Number(config.startPage)
+          : 1;
+        const stride =
+          Number.isFinite(Number(config.pageStep)) && Number(config.pageStep)
+            ? Number(config.pageStep)
+            : 1;
+        const n = config.max > 0 ? Number(config.max) : 5;
+        lines.push(
+          `for i in range(${n}):`,
+          `    _url = "${_escStr(tpl)}".replace("{page}", str(${start} + i * ${stride}))`,
+          `    await page.goto(_url)`,
+          `    await page.wait_for_load_state("networkidle")`,
+          // Nothing to probe in this mode, so a run asked for 20 pages of a
+          // 5-page site fetched 15 empty ones.
+          `    _rows_before = len(fs_rows)`,
+        );
       } else {
         lines.push(`for i in range(${config.max ?? 10}):`);
       }
-      for (const child of step.children ?? []) {
-        lines.push(..._emitStep(child).map(l => "    " + l));
+      if (config.type === "paginate" && config.selector) {
+        // The emitted loop ignored paginate mode entirely: it ran the body N
+        // times without ever clicking Next, so the script scraped page one N
+        // times over.
+        // Then it asked only "does it exist and is it enabled", which misses
+        // every other way a paginator says "last page". FS_PAGINATE_JS is the
+        // extension's own reasons, sent into the page from the same source the
+        // Node script uses.
+        lines.push(
+          `    if i > 0:`,
+          `        _next = page.locator("${_escStr(_sel(config.selector))}").first`,
+          `        _st = await _next.evaluate(FS_PAGINATE_JS) if await _next.count() else None`,
+          `        if not _st or _st["dead"]:`,
+          `            print("Pagination: stopped after {} page(s) — {}".format(i, _st["dead"] if _st else "no Next control on the page"), file=sys.stderr)`,
+          `            break`,
+          `        if _st["newTab"] and _st["href"]:`,
+          `            # target="_blank": clicking would load the next page in a`,
+          `            # tab this script is not reading, and the loop would`,
+          `            # re-scrape this one until the count ran out.`,
+          `            await page.goto(urljoin(page.url, _st["href"]))`,
+          `        else:`,
+          `            await _next.click()`,
+          `        await page.wait_for_load_state("networkidle")`,
+        );
+      }
+      const bodyScope =
+        config.type === "elements" && config.selector ? elVar : null;
+      // `_item` is in scope for a list LOOP's body and nowhere else. Saved and
+      // restored rather than cleared, so a nested loop hands the outer one its
+      // item back.
+      const outerItem = _pyListItem;
+      if (config.type === "list") _pyListItem = "_item";
+      try {
+        for (const child of step.children ?? []) {
+          const emit = () => _emitStep(child).map((l) => "    " + l);
+          lines.push(...(bodyScope ? _pyWithin(bodyScope, emit) : emit()));
+        }
+      } finally {
+        _pyListItem = outerItem;
       }
       if (!step.children || step.children.length === 0) lines.push("    pass");
+      if (config.type === "paginate-url" && config.stopWhenEmpty !== false) {
+        // The same rule the run applies: only after a page that produced
+        // something, so a first page that is genuinely empty is not cut off.
+        lines.push(
+          `    if _rows_before > 0 and len(fs_rows) == _rows_before:`,
+          `        print("Pagination: stopped after {} page(s) — that page produced no rows.".format(i + 1), file=sys.stderr)`,
+          `        break`,
+        );
+      }
       lines.push("");
       return lines;
     }
     case "IF_ELSE": {
-      const condition = config.condition || 'exists';
+      const condition = config.condition || "exists";
       const lines = [
-        `# IF_ELSE: ${condition} - ${_escStr(config.selector ?? '')}`,
+        `# IF_ELSE: ${condition} - ${_escStr(_sel(config.selector ?? ""))}`,
       ];
-      if (condition === 'exists') {
-        lines.push(`if await page.locator("${_escStr(config.selector ?? '')}").count() > 0:`);
+      const test = _conditionPy(condition, config);
+      if (test === null) {
+        // Emitted as a refusal rather than as `if True:`, which is what this
+        // used to do for every condition but `exists`: the script ran, produced
+        // a file, and had silently ignored its own branching.
+        lines.push(
+          `# UNSUPPORTED: condition "${condition}" cannot be expressed here.`,
+          `raise ValueError("FlowScrape: IF_ELSE condition '${condition}' is not exportable")`,
+          "",
+        );
+        return lines;
+      }
+      lines.push(`_loc = ${_pyLoc(_escStr(_sel(config.selector ?? "")))}`);
+      if (config.compareTo === "selector") {
+        lines.push(
+          `_loc2 = ${_pyLoc(_escStr(_sel(config.valueSelector ?? "")))}`,
+          config.attr
+            ? `_rhs = await fs_attr(_loc2, "${_escStr(String(config.attr))}")`
+            : `_rhs = await fs_text(_loc2)`,
+          // Nothing matched the other side, so there is nothing to compare
+          // with and the else branch is taken. Without this guard an empty
+          // left side would "equal" a missing right side.
+          `if _rhs is not None and ${test}:`,
+        );
       } else {
-        lines.push(`if True:  # TODO: impl extended condition ${condition}`);
+        lines.push(`if ${test}:`);
       }
       for (const child of step.ifBranch ?? []) {
-        lines.push(..._emitStep(child).map(l => "    " + l));
+        lines.push(..._emitStep(child).map((l) => "    " + l));
       }
       if (!step.ifBranch || step.ifBranch.length === 0) lines.push("    pass");
       lines.push(`else:`);
       for (const child of step.elseBranch ?? []) {
-        lines.push(..._emitStep(child).map(l => "    " + l));
+        lines.push(..._emitStep(child).map((l) => "    " + l));
       }
-      if (!step.elseBranch || step.elseBranch.length === 0) lines.push("    pass");
+      if (!step.elseBranch || step.elseBranch.length === 0)
+        lines.push("    pass");
       lines.push("");
       return lines;
     }
+    case "FILL":
+    case "TYPE":
+      return _emitFill(config);
+
+    case "HOVER":
+      return [
+        `# HOVER: ${config.selector ?? ""}`,
+        `await ${_pyVerb(_escStr(_sel(config.selector ?? "")), `hover("${_escStr(_sel(config.selector ?? ""))}")`, "hover()")}`,
+        "",
+      ];
+
+    case "SELECT":
+      return [
+        `# SELECT: ${config.selector ?? ""}`,
+        `await ${_pyVerb(_escStr(_sel(config.selector ?? "")), `select_option("${_escStr(_sel(config.selector ?? ""))}", "${_escStr(config.value ?? "")}")`, `select_option("${_escStr(config.value ?? "")}")`)}`,
+        "",
+      ];
+
+    case "KEYBOARD":
+      return [
+        `# KEYBOARD: ${config.key ?? "Enter"}`,
+        `await page.keyboard.press("${_escStr(_playwrightKey(config.key))}")`,
+        "",
+      ];
+
+    case "DOWNLOAD_FILE":
+      return _emitDownload(config);
+
+    case "SCREENSHOT":
+      return [
+        "# SCREENSHOT",
+        `await page.screenshot(path=f"screenshot_{int(time.time() * 1000)}.png")`,
+        "",
+      ];
+
+    case "PAGE_DATA": {
+      // The same subset the Node emitter carries, for the same reason: JSON-LD
+      // and meta tags travel cleanly; a second microdata reader here would
+      // drift from content/page-data.js. The script says so when it finds
+      // nothing, rather than differing in silence.
+      const wantType = String(config.type ?? "").toLowerCase();
+      const flat = config.flatten !== false;
+      const js = [
+        "() => {",
+        "  const abs = v => { try { return new URL(String(v ?? '').trim(), location.href).href; } catch { return v; } };",
+        "  const records = [];",
+        "  const walk = (d, depth = 0) => {",
+        "    if (!d || depth > 6) return;",
+        "    if (Array.isArray(d)) return d.forEach(x => walk(x, depth + 1));",
+        "    if (typeof d !== 'object') return;",
+        "    if (Array.isArray(d['@graph'])) {",
+        "      d['@graph'].forEach(x => walk(x, depth + 1));",
+        "      if (Object.keys(d).filter(k => k !== '@graph' && k !== '@context').length === 0) return;",
+        "    }",
+        "    records.push(d);",
+        "  };",
+        // Double quotes inside the JS, on purpose: the snippet is embedded in a
+        // Python \"\"\"…\"\"\" literal, where a backslash-escaped single quote is
+        // resolved by Python before the browser ever sees it — leaving the JS
+        // string unterminated. A double quote needs no escape in either.
+        "  for (const el of document.querySelectorAll('script[type=\"application/ld+json\"]')) {",
+        "    try { walk(JSON.parse(el.textContent || '')); } catch {}",
+        "  }",
+        "  const meta = {};",
+        "  for (const el of document.querySelectorAll('meta[content]')) {",
+        "    const k = el.getAttribute('property') || el.getAttribute('name');",
+        "    if (!k) continue;",
+        "    if (!/^(og|twitter|product|article|book|music|video|profile):/.test(k) &&",
+        "        !['description','keywords','author','robots'].includes(k)) continue;",
+        "    const v = el.getAttribute('content');",
+        "    meta[k] = /(?:^|:)(?:url|image|video|audio|player)$/.test(k) ? abs(v) : String(v ?? '').replace(/\\s+/g, ' ').trim();",
+        "  }",
+        "  return { records, meta, url: location.href, title: document.title };",
+        "}",
+      ].join(" ");
+
+      const lines = [
+        "# PAGE_DATA — the page's own structured data, no selectors",
+        `page_data = await page.evaluate("""${js}""")`,
+      ];
+      if (wantType) {
+        lines.push(
+          `page_data["records"] = [r for r in page_data["records"]`,
+          `    if ${JSON.stringify(wantType)} in [str(t).lower() for t in (r.get("@type") if isinstance(r.get("@type"), list) else [r.get("@type")])]]`,
+        );
+      }
+      lines.push(
+        'if not page_data["records"]:',
+        '    print("PAGE_DATA: no JSON-LD found. The extension would also try microdata here;")',
+        '    print("           this script does not carry that reader, so the result may differ.")',
+      );
+      if (flat) {
+        lines.push(
+          "",
+          "def _fs_flat(v, p='', out=None, depth=0):",
+          "    out = {} if out is None else out",
+          "    if v is None:",
+          "        return out",
+          "    if isinstance(v, list):",
+          "        if all(not isinstance(x, (dict, list)) for x in v):",
+          "            out[p or 'value'] = ', '.join(str(x) for x in v)",
+          "        else:",
+          "            for i, x in enumerate(v):",
+          "                _fs_flat(x, f'{p}.{i}' if p else str(i), out, depth + 1)",
+          "        return out",
+          "    if isinstance(v, dict):",
+          "        if depth >= 6:",
+          "            return out",
+          "        for k, val in v.items():",
+          "            _fs_flat(val, f'{p}.{k}' if p else k, out, depth + 1)",
+          "        return out",
+          "    out[p or 'value'] = v",
+          "    return out",
+          "",
+          'page_data["records"] = [_fs_flat(r) for r in page_data["records"]]',
+        );
+      }
+      lines.push(
+        'for record in page_data["records"]:',
+        "    print(json.dumps(record))",
+        "",
+      );
+      return lines;
+    }
+
+    case "PAGINATE": {
+      // A bare click was what this emitted, so past the last page the script
+      // carried on believing it had turned one. `break` is not emitted here:
+      // a top-level PAGINATE has no loop to leave. A paginating LOOP emits
+      // its own.
+      const sel = _escStr(_sel(config.selector ?? ""));
+      return [
+        `# PAGINATE: ${config.selector ?? ""}`,
+        `_next = page.locator("${sel}").first`,
+        `if await _next.count() > 0 and await _next.is_enabled():`,
+        `    await _next.click()`,
+        `    await page.wait_for_load_state("networkidle")`,
+        `else:`,
+        `    print("Pagination: no further pages.")`,
+        "",
+      ];
+    }
+
+    case "DRAG_DROP":
+      return [
+        `# DRAG_DROP: ${config.source ?? ""} -> ${config.target ?? ""}`,
+        _pyScope === "page"
+          ? `await page.drag_and_drop("${_escStr(_sel(config.source ?? ""))}", "${_escStr(_sel(config.target ?? ""))}")`
+          : `await ${_pyLoc(_escStr(_sel(config.source ?? "")))}.drag_to(${_pyLoc(_escStr(_sel(config.target ?? "")))})`,
+        "",
+      ];
+
     default:
-      return [`# TODO: implement step type "${type}"`, ""];
+      // Not silently dropped: emitUnsupported collects these and the caller
+      // reports them, so an exported script cannot quietly do less than the
+      // pipeline it came from.
+      return [
+        `# UNSUPPORTED: "${type}" has no equivalent in a standalone script.`,
+        `raise NotImplementedError("FlowScrape step ${type} is not exportable")`,
+        "",
+      ];
   }
 }
 
-function _emitExtract(config) {
-  const lines = ["# EXTRACT"];
-  const fields = config.fields ?? config.schema ?? [];
-  if (fields.length === 0) return ["# EXTRACT: no fields defined", ""];
-  lines.push("extracted = {}");
-  for (const { name, selector, attribute } of fields) {
-    if (attribute) {
-      lines.push(
-        `extracted["${name}"] = await page.get_attribute("${_escStr(selector)}", "${attribute}")`,
-      );
-    } else {
-      lines.push(
-        `extracted["${name}"] = await page.inner_text("${_escStr(selector)}")`,
-      );
+/** Playwright key names differ slightly from the panel's combo strings. */
+function _playwrightKey(key) {
+  return String(key ?? "Enter")
+    .split("+")
+    .map((part) => (part === "Ctrl" ? "Control" : part))
+    .join("+");
+}
+
+function _emitFill(config) {
+  const lines = ["# FILL"];
+  const fields =
+    config.mode === "multi" &&
+    Array.isArray(config.fields) &&
+    config.fields.length
+      ? config.fields
+      : [{ selector: config.selector, value: config.text }];
+
+  for (const field of fields) {
+    if (!field?.selector) continue;
+    lines.push(
+      `await ${_pyVerb(_escStr(_sel(field.selector)), `fill("${_escStr(_sel(field.selector))}", fs_env("${_escStr(field.value ?? "")}"))`, `fill(fs_env("${_escStr(field.value ?? "")}"))`)}`,
+    );
+  }
+  if (config.submitSelector) {
+    lines.push(
+      `await ${_pyVerb(_escStr(_sel(config.submitSelector)), `click("${_escStr(_sel(config.submitSelector))}")`, "click()")}`,
+    );
+    lines.push(`await page.wait_for_load_state("networkidle")`);
+  }
+  lines.push("");
+  return lines;
+}
+
+/**
+ * Wrap a read in the transforms the field carries, innermost first.
+ * @returns {string|null} null when a transform cannot be emitted faithfully
+ */
+function _transformPy(expr, field) {
+  let out = expr;
+  for (const name of field.transform ?? []) {
+    if (name === "number") out = `fs_number(${out})`;
+    else if (name === "trim") out = `fs_trim(${out})`;
+    else if (name === "url") out = `fs_url(${out}, page.url)`;
+    else if (name === "lower") out = `str(${out} or "").lower()`;
+    else if (name === "upper") out = `str(${out} or "").upper()`;
+    // Same contract as the in-page transform: not-base64 becomes None rather
+    // than a mangled string, so a script and a run agree on what failed.
+    else if (name === "base64") out = `fs_b64(${out})`;
+    else if (name === "regex") {
+      const raw = String(field.regexPattern ?? "");
+      const flags = normalizeRegexFlags(field.regexFlags);
+      // A raw literal cannot end in a backslash, and a lone trailing backslash
+      // is not a valid pattern anyway — so refuse rather than trim it, which
+      // would give a script that extracts something else without saying so.
+      if (!isValidRegex(raw, flags) || /\\$/.test(raw)) return null;
+      // r"" means a backslash stands for itself, so _escStr's doubling would
+      // turn `\S` into a literal backslash followed by S. Only the quote
+      // needs handling.
+      const group = normalizeRegexGroup(field.regexGroup);
+      const extra =
+        group === null
+          ? flags
+            ? `, "${flags}"`
+            : ""
+          : `, "${flags}", ${group}`;
+      out = `fs_regex(${out}, r"${raw.replace(/"/g, '\\"')}"${extra})`;
     }
   }
-  lines.push("print(json.dumps(extracted))", "");
+  return out;
+}
+
+/**
+ * EXTRACT, with the same row assembly the extension does.
+ *
+ * The Node emitter's twin, and the same bug: this read `.first` for every
+ * field and printed one object, so a pipeline that extracted a grid of thirty
+ * products exported a script that returned one.
+ *
+ * The rules are `_stepExtract`'s: a field matching exactly one element is a
+ * page-level value repeated on every row; a field matching n > 1 is
+ * positional, and rows past n get None; a field matching nothing is None
+ * throughout.
+ */
+function _emitExtract(config) {
+  const fieldList = config.fields ?? config.schema ?? [];
+  if (fieldList.length === 0) return ["# EXTRACT: no fields defined", ""];
+
+  const lines = ["# EXTRACT"];
+  const fields = [];
+  for (const field of fieldList) {
+    const { name, selector, attribute, countSelector } = field;
+    if (field.type === "count" && !countSelector) {
+      lines.push(
+        `# INVALID: field "${name}" is set to Count but names nothing to count.`,
+        `raise ValueError("FlowScrape field '${name}': Count needs a selector")`,
+      );
+      continue;
+    }
+    if (field.type === "attribute" && !attribute) {
+      // The extension throws for this rather than falling through to the text:
+      // a successful-looking extraction of the wrong thing is the worst
+      // outcome. Refused here, before the file is written.
+      lines.push(
+        `# INVALID: field "${name}" is set to Attr but has no attribute name.`,
+        `raise ValueError("FlowScrape field '${name}': Attr needs an attribute name")`,
+      );
+      continue;
+    }
+    const spec = JSON.stringify({
+      type: field.type ?? "text",
+      attribute: attribute ?? "",
+      countSelector: countSelector ?? "",
+    });
+    const expr = _transformPy(`await fs_read_el(_el, ${spec})`, field);
+    if (expr === null) {
+      lines.push(
+        `# INVALID: field "${name}" has a pattern this script cannot carry.`,
+        `raise ValueError("FlowScrape field '${name}': invalid regex pattern")`,
+      );
+      continue;
+    }
+    fields.push({ name, selector, expr });
+  }
+
+  if (!fields.length) {
+    lines.push("");
+    return lines;
+  }
+
+  lines.push("_cols = {}");
+  for (const f of fields) {
+    lines.push(
+      `_cols["${f.name}"] = [`,
+      `    ${f.expr}`,
+      `    for _el in await ${_pyLoc(_escStr(_sel(f.selector)))}.all()`,
+      `]`,
+    );
+  }
+  lines.push(
+    `_n = max([1] + [len(_v) for _v in _cols.values()])`,
+    `for _i in range(_n):`,
+    `    row = {}`,
+    `    for _k, _v in _cols.items():`,
+    `        row[_k] = _v[0] if len(_v) == 1 else (_v[_i] if _i < len(_v) else None)`,
+    `    fs_collect(row)`,
+    "",
+  );
   return lines;
 }
 
@@ -203,7 +1369,7 @@ function _emitFormFill(config) {
     "    for row in reader:",
   ];
   for (const mapping of config.fieldMappings ?? []) {
-    const sel = _escStr(mapping.selector ?? "");
+    const sel = _escStr(_sel(mapping.selector ?? ""));
     const col = _escStr(mapping.column ?? "");
     const type = mapping.inputType ?? "text";
     if (type === "select") {
@@ -220,7 +1386,9 @@ function _emitFormFill(config) {
     }
   }
   if (config.submitSelector) {
-    lines.push(`        await page.click("${_escStr(config.submitSelector)}")`);
+    lines.push(
+      `        await page.click("${_escStr(_sel(config.submitSelector))}")`,
+    );
   }
   const delay = (config.interRowDelay?.min ?? 1200) / 1000;
   lines.push(`        await asyncio.sleep(${delay} + random.random())`);
@@ -228,15 +1396,228 @@ function _emitFormFill(config) {
   return lines;
 }
 
-function _emitExport(config) {
-  return [
-    `# EXPORT → ${config.format ?? "csv"}`,
-    "# (Results were collected into list during FORM_FILL / EXTRACT steps)",
-    "# Write to file here",
+/**
+ * DOWNLOAD_FILE, as Playwright's request API rather than as a click.
+ *
+ * `context.request` carries the browser context's cookies, so a file behind a
+ * login downloads for the same reason it downloads in the extension. The
+ * click-and-catch-the-download path Playwright also offers is the wrong shape
+ * here: an `<img>` is not clickable into a download, and a gallery of forty
+ * would be forty navigations.
+ */
+function _emitDownload(config) {
+  const { segments, unsupported } = parseFilenameTemplate(
+    String(config.filename ?? "") || "flowscrape/{{file.name}}",
+  );
+  if (unsupported.length > 0) {
+    return [
+      `# UNSUPPORTED: the filename template uses ${unsupported.join(", ")}, which`,
+      `# comes from the run's context and is not available to a standalone script.`,
+      `raise ValueError("FlowScrape: DOWNLOAD_FILE filename template is not exportable")`,
+      "",
+    ];
+  }
+
+  const pieces = (parts) =>
+    parts
+      .map((p) =>
+        p.lit !== undefined
+          ? `"${_escStr(p.lit)}"`
+          : { "file.name": "_name", "file.stem": "_stem", "file.ext": "_ext" }[
+              p.var
+            ] || (p.var === "file.index" ? "str(_i)" : "_host"),
+      )
+      .join(", ");
+  const pathExpr = segments.length
+    ? segments
+        .map((parts) => `fs_safe_seg("".join([${pieces(parts)}]))`)
+        .join(", ")
+    : `fs_safe_seg(_name)`;
+
+  const literal = String(config.url ?? "").trim();
+  const max = Number(config.max) > 0 ? Number(config.max) : 25;
+  const lines = ["# DOWNLOAD_FILE"];
+
+  if (literal) {
+    lines.push(`_urls = ["${_escStr(literal)}"]`);
+  } else {
+    lines.push(
+      `_els = await page.locator("${_escStr(_sel(config.selector ?? ""))}").all()`,
+      `_urls = []`,
+      `for _el in _els[:${max}]:`,
+      // One evaluate rather than three get_attribute calls, and the same order
+      // the content script uses: what the browser loaded, then the markup, then
+      // the data- attributes a lazy loader leaves the real URL in.
+      `    _raw = await _el.evaluate("e => e.currentSrc || e.getAttribute('href') || e.getAttribute('src') || e.getAttribute('data-src') || ''")`,
+      `    if _raw:`,
+      `        _urls.append(urljoin(page.url, _raw))`,
+      `if not _urls:`,
+      `    print("DOWNLOAD_FILE: nothing matched ${_escStr(_sel(config.selector ?? ""))} — no files.")`,
+    );
+  }
+
+  lines.push(
+    `_saved, _failed = 0, 0`,
+    `for _i, _u in enumerate(_urls, 1):`,
+    `    if not _u.startswith("http"):`,
+    `        _failed += 1`,
+    `        print("DOWNLOAD_FILE: skipped {} — only http(s) URLs are fetched here".format(_u[:120]))`,
+    `        continue`,
+    `    _name = fs_file_name(_u, _i)`,
+    `    _stem, _, _ext = _name.rpartition(".")`,
+    `    if not _stem:`,
+    `        _stem, _ext = _name, ""`,
+    `    _host = urlparse(_u).netloc`,
+    `    _path = os.path.join("downloads", ${pathExpr})`,
+    `    if _ext and not _path.lower().endswith("." + _ext.lower()):`,
+    `        _path = _path + "." + _ext`,
+    `    os.makedirs(os.path.dirname(_path) or ".", exist_ok=True)`,
+    `    try:`,
+    `        _resp = await page.context.request.get(_u)`,
+    `        if not _resp.ok:`,
+    `            raise IOError("HTTP {}".format(_resp.status))`,
+    `        with open(_path, "wb") as _fh:`,
+    `            _fh.write(await _resp.body())`,
+    `        _saved += 1`,
+    `    except Exception as _err:`,
+    `        _failed += 1`,
+    `        print("DOWNLOAD_FILE: {} — {}".format(_u[:120], _err))`,
+    `    await asyncio.sleep(MIN_DELAY_MS / 1000)`,
+    `print("DOWNLOAD_FILE: saved {}, failed {}".format(_saved, _failed))`,
+    `if _urls and _saved == 0:`,
+    // The same rule the extension applies: files were found and none arrived,
+    // which is a failure however cheerfully the rest of the script continues.
+    `    raise IOError("FlowScrape: DOWNLOAD_FILE saved none of the files it found")`,
     "",
-  ];
+  );
+  return lines;
 }
 
+/**
+ * DEDUPE, as the script's own gate.
+ *
+ * "forever" becomes a file the script reads at the start and rewrites at the
+ * end, named and sitting next to the output so it is obvious what to delete to
+ * start over.
+ */
+function _emitDedupe(config) {
+  const fields = String(config.fields ?? "")
+    .split(",")
+    .map((f) => f.trim())
+    .filter(Boolean);
+  const limit = Number(config.limit) > 0 ? Number(config.limit) : 100000;
+  const lines = [
+    `# DEDUPE: ${fields.length ? fields.join(", ") : "every field"}`,
+    `fs_dedupe = {"fields": ${JSON.stringify(fields)}, "limit": ${limit}}`,
+  ];
+  if (config.scope === "forever") {
+    lines.push(
+      `_seen_file = os.environ.get("FS_SEEN_FILE", ".fs-seen.json")`,
+      `if os.path.exists(_seen_file):`,
+      `    try:`,
+      `        with open(_seen_file, encoding="utf-8") as _fh:`,
+      `            for _k in json.load(_fh):`,
+      `                fs_seen[_k] = 1`,
+      `    except Exception as _err:`,
+      `        print("DEDUPE: could not read {} ({}); starting fresh.".format(_seen_file, _err), file=sys.stderr)`,
+      `@atexit.register`,
+      `def _fs_save_seen():`,
+      `    try:`,
+      `        with open(_seen_file, "w", encoding="utf-8") as _fh:`,
+      `            json.dump(list(fs_seen.keys()), _fh)`,
+      `    except Exception as _err:`,
+      `        print("DEDUPE: could not save {} ({}).".format(_seen_file, _err), file=sys.stderr)`,
+    );
+  }
+  lines.push("");
+  return lines;
+}
+
+function _emitExport(config) {
+  // It used to emit three comments, one of which said "write to file here" —
+  // a script that runs, exits 0, and leaves nothing behind.
+  const fmt = String(config.format ?? "csv");
+  if (!Object.prototype.hasOwnProperty.call(FORMAT_EXT, fmt)) {
+    return [
+      `# UNSUPPORTED: export format "${fmt}".`,
+      `raise ValueError("FlowScrape: unknown export format '${fmt}'")`,
+      "",
+    ];
+  }
+  if (config.append && !APPENDABLE_FORMATS.includes(fmt)) {
+    // A JSON array, an XML tree and a Markdown table each have to be rewritten
+    // whole. Emitting a plain append for them would leave a file no parser
+    // will read, which is the worse failure.
+    return [
+      `# UNSUPPORTED: "${fmt}" cannot be appended to a file a run at a time.`,
+      `raise ValueError("FlowScrape: cannot append ${fmt}; use ${APPENDABLE_FORMATS.join(", ")}")`,
+      "",
+    ];
+  }
+
+  const stem = config.append
+    ? (config.dataset || "dataset").replace(/[^\w. -]/g, "_")
+    : "export";
+  const out = `_out = os.environ.get("FS_OUT_FILE", "${stem}.${FORMAT_EXT[fmt]}")`;
+
+  if (!config.append) {
+    return [
+      `# EXPORT → ${fmt}`,
+      out,
+      `with open(_out, "w", encoding="utf-8", newline="") as _fh:`,
+      `    _fh.write(fs_format_rows(fs_rows, "${fmt}"))`,
+      `print("FlowScrape: wrote {} row(s) to {}{}".format(len(fs_rows), _out, " ({} duplicate(s) dropped)".format(fs_dropped) if fs_dropped else ""), file=sys.stderr)`,
+      "",
+    ];
+  }
+
+  const lines = [
+    `# EXPORT → ${fmt}, added to whatever is already in the file`,
+    out,
+    `_text = fs_format_rows(fs_rows, "${fmt}")`,
+    `_had = os.path.exists(_out) and os.path.getsize(_out) > 0`,
+  ];
+  if (fmt === "jsonl") {
+    lines.push(
+      `with open(_out, "a", encoding="utf-8", newline="") as _fh:`,
+      `    _fh.write(_text)`,
+    );
+  } else {
+    lines.push(
+      `_lines = _text.split("\\n")`,
+      // CSV rows end \r\n, so the split leaves a \r on each line. Comparing a
+      // stripped existing header against an unstripped new one would call
+      // every file a mismatch.
+      `_head = _lines[0].rstrip("\\r")`,
+      `if _had:`,
+      `    with open(_out, "r", encoding="utf-8", newline="") as _fh:`,
+      `        _existing = _fh.readline().lstrip("\\ufeff").rstrip("\\r\\n")`,
+      // Appending under a header that does not match would put values in the
+      // wrong columns, and nothing about the resulting file would say so.
+      `    if _existing != _head:`,
+      `        raise ValueError("FlowScrape: {} has different columns ({}) than this run ({}); appending would put values under the wrong headings".format(_out, _existing, _head))`,
+      `    with open(_out, "a", encoding="utf-8", newline="") as _fh:`,
+      `        _fh.write("\\n".join(_lines[1:]))`,
+      `else:`,
+      `    with open(_out, "w", encoding="utf-8", newline="") as _fh:`,
+      `        _fh.write(_text)`,
+    );
+  }
+  lines.push(
+    `print("FlowScrape: added {} row(s) to {}{}".format(len(fs_rows), _out, " ({} duplicate(s) dropped)".format(fs_dropped) if fs_dropped else ""), file=sys.stderr)`,
+    "",
+  );
+  return lines;
+}
+
+/**
+ * One API step. `fs_api_session()` carries the 429/5xx retry (K-24) for every
+ * request it makes, paginated or not. Pagination (K-25) is only emitted when
+ * it can actually stop on its own — a cursor mode with nowhere to read the
+ * cursor from, or any pagination with no rowsPath to say what an empty page
+ * is, refuses rather than exporting a script that loops forever or never
+ * advances.
+ */
 function _emitApi(config) {
   const url = _escStr(config.url ?? "");
   const method = String(config.method ?? "GET").toUpperCase();
@@ -244,35 +1625,154 @@ function _emitApi(config) {
   const body = _escStr(config.body ?? "");
   const timeoutSec = (Number(config.timeoutMs ?? 15000) / 1000).toFixed(2);
   const failOnHttp = config.failOnHttpError !== false;
+  const rowsPath = String(config.rowsPath ?? "").trim();
+  const pagination =
+    config.pagination && typeof config.pagination === "object"
+      ? config.pagination
+      : {};
+  const mode = String(pagination.mode ?? "none").toLowerCase();
 
+  if (mode !== "none" && !["cursor", "page", "link"].includes(mode)) {
+    return [
+      `# UNSUPPORTED: API pagination mode "${mode}" is not one this exporter knows.`,
+      `raise ValueError("FlowScrape: API pagination mode '${_escStr(mode)}' is not exportable")`,
+      "",
+    ];
+  }
+  if (mode !== "none" && !rowsPath) {
+    return [
+      "# UNSUPPORTED: API pagination needs rowsPath — a dotted path to the",
+      "# array of records in each page's body — so the script knows what an",
+      "# empty page is.",
+      `raise ValueError("FlowScrape: API pagination needs rowsPath")`,
+      "",
+    ];
+  }
+  if (mode === "cursor" && !String(pagination.cursorPath ?? "").trim()) {
+    return [
+      '# UNSUPPORTED: API pagination is set to "cursor" but has no cursorPath.',
+      `raise ValueError("FlowScrape: API cursor pagination needs cursorPath")`,
+      "",
+    ];
+  }
+
+  const dataExpr = `fs_env("""${body}""") if """${body}""" else None`;
   const lines = [
     "# API",
     `api_headers = {}`,
     `try:`,
-    `    api_headers = json.loads("""${headers}""") if """${headers}""".strip() else {}`,
+    `    api_headers = json.loads(fs_env("""${headers}""")) if """${headers}""".strip() else {}`,
     `except Exception:`,
     `    api_headers = {}`,
-    `api_resp = requests.request(`,
-    `    method="${method}",`,
-    `    url="${url}",`,
-    `    headers=api_headers,`,
-    `    data="""${body}""" if """${body}""" else None,`,
-    `    timeout=${timeoutSec},`,
-    `)`,
+    `api_session = fs_api_session()`,
   ];
 
-  if (failOnHttp) lines.push("api_resp.raise_for_status()");
+  if (mode === "none") {
+    lines.push(
+      `api_resp = api_session.request(method="${method}", url="${url}", headers=api_headers, data=${dataExpr}, timeout=${timeoutSec})`,
+    );
+    if (failOnHttp) lines.push("api_resp.raise_for_status()");
+    lines.push(
+      "try:",
+      "    api_body = api_resp.json()",
+      "except Exception:",
+      "    api_body = api_resp.text",
+      `api_rows = fs_api_rows(api_body, "${_escStr(rowsPath)}")` +
+        (rowsPath ? "" : "  # no rowsPath configured"),
+      'api_result = {"ok": api_resp.ok, "status": api_resp.status_code, "body": api_body, "rows": api_rows}',
+      'print("API_RESULT", json.dumps(api_result))',
+      "",
+    );
+    return lines;
+  }
 
+  const maxPages = paginationMaxPages(pagination);
+  const pageParam =
+    _escStr(String(pagination.pageParam || "page").trim()) || "page";
+  const cursorParam =
+    _escStr(String(pagination.cursorParam || "cursor").trim()) || "cursor";
+  const startPage = Number.isFinite(Number(pagination.startPage))
+    ? Number(pagination.startPage)
+    : 1;
+  const cursorPath = _escStr(String(pagination.cursorPath ?? "").trim());
+
+  lines.push(`api_rows = []`, `api_next_url = "${url}"`);
+  if (mode === "page") {
+    lines.push(
+      `api_next_url = fs_add_query_param(api_next_url, "${pageParam}", ${startPage})`,
+    );
+  }
   lines.push(
-    "try:",
-    "    api_body = api_resp.json()",
-    "except Exception:",
-    "    api_body = api_resp.text",
-    'api_result = {"ok": api_resp.ok, "status": api_resp.status_code, "body": api_body}',
+    `for _api_page in range(${maxPages}):`,
+    `    api_resp = api_session.request(method="${method}", url=api_next_url, headers=api_headers, data=${dataExpr}, timeout=${timeoutSec})`,
+  );
+  if (failOnHttp) {
+    lines.push(
+      "    if _api_page == 0:",
+      "        api_resp.raise_for_status()",
+      "    elif not api_resp.ok:",
+      "        break  # a later page failing keeps the rows already collected",
+    );
+  }
+  lines.push(
+    "    try:",
+    "        api_body = api_resp.json()",
+    "    except Exception:",
+    "        api_body = api_resp.text",
+    `    api_page_rows = fs_api_rows(api_body, "${_escStr(rowsPath)}")`,
+    "    api_rows.extend(api_page_rows)",
+    "    if not api_page_rows:",
+    "        break  # an empty page is the exit condition, not just the count",
+  );
+  if (mode === "cursor") {
+    lines.push(
+      `    api_cursor = fs_dig(api_body, "${cursorPath}")`,
+      "    if not api_cursor:",
+      "        break  # the source named no next cursor",
+      `    api_next_url = fs_add_query_param("${url}", "${cursorParam}", api_cursor)`,
+    );
+  } else if (mode === "page") {
+    const pageStep =
+      Number.isFinite(Number(pagination.pageStep)) &&
+      Number(pagination.pageStep) !== 0
+        ? Number(pagination.pageStep)
+        : 1;
+    lines.push(
+      `    api_next_url = fs_add_query_param("${url}", "${pageParam}", ${startPage} + (_api_page + 1) * ${pageStep})`,
+    );
+  } else if (mode === "link") {
+    lines.push(
+      "    api_next_link = api_resp.links.get('next', {}).get('url')",
+      "    if not api_next_link:",
+      '        break  # no rel="next" in the Link header',
+      "    api_next_url = api_next_link",
+    );
+  }
+  lines.push(
+    "",
+    'api_result = {"ok": True, "status": api_resp.status_code, "body": api_body, "rows": api_rows, "paginated": True, "pages": _api_page + 1}',
     'print("API_RESULT", json.dumps(api_result))',
     "",
   );
   return lines;
+}
+
+/**
+ * Translate FlowScrape's piercing combinator into Playwright's.
+ *
+ * CSS cannot cross a shadow boundary, so a selector for an element inside a web
+ * component is written `app-root >>> .price` here. Playwright spells the same
+ * idea `>>` — find the left side, then search the right side within it — and
+ * its CSS engine pierces open shadow roots, so the two mean exactly the same
+ * thing. Without this the emitted script carries a selector Playwright reads as
+ * malformed CSS and matches nothing.
+ */
+function _sel(selector) {
+  return String(selector ?? "")
+    .split(">>>")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" >> ");
 }
 
 function _escStr(s) {

@@ -50,40 +50,13 @@ const CONF = Object.freeze({
  * Ordered by specificity — most specific first.
  */
 const OG = Object.freeze({
-  NAME: [
-    "og:title",
-    "twitter:title",
-    "product:name",
-    "title",
-  ],
-  PRICE: [
-    "product:price:amount",
-    "og:price:amount",
-    "twitter:data1",
-  ],
-  CURRENCY: [
-    "product:price:currency",
-    "og:price:currency",
-  ],
-  IMAGE: [
-    "og:image",
-    "og:image:secure_url",
-    "twitter:image",
-    "product:image",
-  ],
-  DESCRIPTION: [
-    "og:description",
-    "twitter:description",
-    "description",
-  ],
-  BRAND: [
-    "og:brand",
-    "product:brand",
-  ],
-  AVAILABILITY: [
-    "product:availability",
-    "og:availability",
-  ],
+  NAME: ["og:title", "twitter:title", "product:name", "title"],
+  PRICE: ["product:price:amount", "og:price:amount", "twitter:data1"],
+  CURRENCY: ["product:price:currency", "og:price:currency"],
+  IMAGE: ["og:image", "og:image:secure_url", "twitter:image", "product:image"],
+  DESCRIPTION: ["og:description", "twitter:description", "description"],
+  BRAND: ["og:brand", "product:brand"],
+  AVAILABILITY: ["product:availability", "og:availability"],
 });
 
 /**
@@ -93,45 +66,121 @@ const OG = Object.freeze({
  */
 const KEYWORD_SCORES = [
   // Name/title
-  { field: "name",          score: 90, rx: /\bproduct[-_]?(?:name|title)\b/i },
-  { field: "name",          score: 85, rx: /\bpdp[-_]?(?:name|title|heading)\b/i },
-  { field: "name",          score: 80, rx: /\bitem[-_]?(?:name|title)\b/i },
-  { field: "name",          score: 70, rx: /\bproduct[-_]?(?:header|info)\b/i },
-  { field: "name",          score: 60, rx: /\btitle\b.*\bproduct\b|\bproduct\b.*\btitle\b/i },
+  { field: "name", score: 90, rx: /\bproduct[-_]?(?:name|title)\b/i },
+  { field: "name", score: 85, rx: /\bpdp[-_]?(?:name|title|heading)\b/i },
+  { field: "name", score: 80, rx: /\bitem[-_]?(?:name|title)\b/i },
+  { field: "name", score: 70, rx: /\bproduct[-_]?(?:header|info)\b/i },
+  {
+    field: "name",
+    score: 60,
+    rx: /\btitle\b.*\bproduct\b|\bproduct\b.*\btitle\b/i,
+  },
   // Price (sale/current)
-  { field: "price",         score: 95, rx: /\bselling[-_]?price\b|\bsale[-_]?price\b|\bdiscounted[-_]?price\b/i },
-  { field: "price",         score: 90, rx: /\bproduct[-_]?price\b|\bitem[-_]?price\b|\bpdp[-_]?price\b/i },
-  { field: "price",         score: 85, rx: /\boffer[-_]?price\b|\bcurrent[-_]?price\b|\bfinal[-_]?price\b/i },
-  { field: "price",         score: 80, rx: /\bprice[-_]?(?:box|container|block|value|amount)\b/i },
-  { field: "price",         score: 70, rx: /\b(?:price|pricing)\b/i },
+  {
+    field: "price",
+    score: 95,
+    rx: /\bselling[-_]?price\b|\bsale[-_]?price\b|\bdiscounted[-_]?price\b/i,
+  },
+  {
+    field: "price",
+    score: 90,
+    rx: /\bproduct[-_]?price\b|\bitem[-_]?price\b|\bpdp[-_]?price\b/i,
+  },
+  {
+    field: "price",
+    score: 85,
+    rx: /\boffer[-_]?price\b|\bcurrent[-_]?price\b|\bfinal[-_]?price\b/i,
+  },
+  {
+    field: "price",
+    score: 80,
+    rx: /\bprice[-_]?(?:box|container|block|value|amount)\b/i,
+  },
+  { field: "price", score: 70, rx: /\b(?:price|pricing)\b/i },
   // Original/MRP price
-  { field: "originalPrice", score: 90, rx: /\b(?:mrp|original|was|before|old|regular|full)[-_]?price\b/i },
-  { field: "originalPrice", score: 80, rx: /\bprice[-_]?(?:before|was|original|old)\b/i },
-  { field: "originalPrice", score: 70, rx: /\bstrike[-_]?price\b|\blist[-_]?price\b/i },
+  {
+    field: "originalPrice",
+    score: 90,
+    rx: /\b(?:mrp|original|was|before|old|regular|full)[-_]?price\b/i,
+  },
+  {
+    field: "originalPrice",
+    score: 80,
+    rx: /\bprice[-_]?(?:before|was|original|old)\b/i,
+  },
+  {
+    field: "originalPrice",
+    score: 70,
+    rx: /\bstrike[-_]?price\b|\blist[-_]?price\b/i,
+  },
   // Images
-  { field: "images",        score: 90, rx: /\bproduct[-_]?(?:image|img|photo|gallery|media)\b/i },
-  { field: "images",        score: 80, rx: /\bpdp[-_]?(?:image|gallery|media)\b/i },
-  { field: "images",        score: 70, rx: /\bgallery[-_]?(?:main|primary|hero)\b/i },
-  { field: "images",        score: 60, rx: /\bmain[-_]?(?:image|img|photo)\b|\bhero[-_]?(?:image|img)\b/i },
+  {
+    field: "images",
+    score: 90,
+    rx: /\bproduct[-_]?(?:image|img|photo|gallery|media)\b/i,
+  },
+  { field: "images", score: 80, rx: /\bpdp[-_]?(?:image|gallery|media)\b/i },
+  { field: "images", score: 70, rx: /\bgallery[-_]?(?:main|primary|hero)\b/i },
+  {
+    field: "images",
+    score: 60,
+    rx: /\bmain[-_]?(?:image|img|photo)\b|\bhero[-_]?(?:image|img)\b/i,
+  },
   // Brand
-  { field: "brand",         score: 85, rx: /\bproduct[-_]?brand\b|\bbrand[-_]?name\b/i },
-  { field: "brand",         score: 75, rx: /\bbrand\b/i },
+  {
+    field: "brand",
+    score: 85,
+    rx: /\bproduct[-_]?brand\b|\bbrand[-_]?name\b/i,
+  },
+  { field: "brand", score: 75, rx: /\bbrand\b/i },
   // SKU
-  { field: "sku",           score: 90, rx: /\bsku\b|\bmodel[-_]?(?:no|num|number|id)\b|\bpart[-_]?(?:no|num|number)\b/i },
-  { field: "sku",           score: 75, rx: /\bitem[-_]?id\b|\bproduct[-_]?id\b|\bpid\b/i },
+  {
+    field: "sku",
+    score: 90,
+    rx: /\bsku\b|\bmodel[-_]?(?:no|num|number|id)\b|\bpart[-_]?(?:no|num|number)\b/i,
+  },
+  {
+    field: "sku",
+    score: 75,
+    rx: /\bitem[-_]?id\b|\bproduct[-_]?id\b|\bpid\b/i,
+  },
   // Description
-  { field: "description",   score: 85, rx: /\bproduct[-_]?desc(?:ription)?\b/i },
-  { field: "description",   score: 75, rx: /\bitem[-_]?desc(?:ription)?\b|\bpdp[-_]?desc(?:ription)?\b/i },
-  { field: "description",   score: 65, rx: /\bdesc(?:ription)?\b/i },
+  { field: "description", score: 85, rx: /\bproduct[-_]?desc(?:ription)?\b/i },
+  {
+    field: "description",
+    score: 75,
+    rx: /\bitem[-_]?desc(?:ription)?\b|\bpdp[-_]?desc(?:ription)?\b/i,
+  },
+  { field: "description", score: 65, rx: /\bdesc(?:ription)?\b/i },
   // Availability
-  { field: "availability",  score: 85, rx: /\b(?:in[-_]?stock|out[-_]?of[-_]?stock|availability|stock[-_]?status)\b/i },
-  { field: "availability",  score: 70, rx: /\bstock\b/i },
+  {
+    field: "availability",
+    score: 85,
+    rx: /\b(?:in[-_]?stock|out[-_]?of[-_]?stock|availability|stock[-_]?status)\b/i,
+  },
+  { field: "availability", score: 70, rx: /\bstock\b/i },
   // Rating
-  { field: "rating",        score: 85, rx: /\brating(?:[-_]?value|[-_]?score|[-_]?avg)?\b/i },
-  { field: "rating",        score: 75, rx: /\bstars?\b.*\brating|\brating.*\bstars?\b/i },
+  {
+    field: "rating",
+    score: 85,
+    rx: /\brating(?:[-_]?value|[-_]?score|[-_]?avg)?\b/i,
+  },
+  {
+    field: "rating",
+    score: 75,
+    rx: /\bstars?\b.*\brating|\brating.*\bstars?\b/i,
+  },
   // Review count
-  { field: "reviewCount",   score: 85, rx: /\b(?:review|rating)[-_]?count\b|\bnum[-_]?reviews?\b/i },
-  { field: "reviewCount",   score: 75, rx: /\breviews?\b.*\bcount|\bcount.*\breviews?\b/i },
+  {
+    field: "reviewCount",
+    score: 85,
+    rx: /\b(?:review|rating)[-_]?count\b|\bnum[-_]?reviews?\b/i,
+  },
+  {
+    field: "reviewCount",
+    score: 75,
+    rx: /\breviews?\b.*\bcount|\bcount.*\breviews?\b/i,
+  },
 ];
 
 /**
@@ -139,47 +188,77 @@ const KEYWORD_SCORES = [
  * Group 1: optional currency symbol prefix.
  * Group 2: numeric value with commas/decimals.
  */
-const PRICE_RX = /(?:[$₹€£¥₩₽R\u20B9]|(?:USD|INR|EUR|GBP|JPY|CNY|AED|AUD|CAD)\s*)?\s*([\d,]+(?:\.\d{1,2})?)/;
-const PRICE_LEADING_RX = /^(?:[$₹€£¥₩₽R]|(?:USD|INR|EUR|GBP|JPY|CNY|AED|AUD|CAD)\s*)?\s?[\d,]+(?:\.\d{1,2})?/;
+const PRICE_RX =
+  /(?:[$₹€£¥₩₽R\u20B9]|(?:USD|INR|EUR|GBP|JPY|CNY|AED|AUD|CAD)\s*)?\s*([\d,]+(?:\.\d{1,2})?)/;
+const PRICE_LEADING_RX =
+  /^(?:[$₹€£¥₩₽R]|(?:USD|INR|EUR|GBP|JPY|CNY|AED|AUD|CAD)\s*)?\s?[\d,]+(?:\.\d{1,2})?/;
 
 /**
  * CTA text patterns — elements containing these near a field bump that
  * field's confidence by +20 (proximity scoring).
  */
-const CTA_RX = /\b(?:add\s+to\s+(?:cart|bag|basket)|buy\s+now|purchase|order\s+now|shop\s+now|get\s+it\s+now|checkout)\b/i;
+const CTA_RX =
+  /\b(?:add\s+to\s+(?:cart|bag|basket)|buy\s+now|purchase|order\s+now|shop\s+now|get\s+it\s+now|checkout)\b/i;
 
 /**
  * Navigation/boilerplate container selectors to exclude from heuristic scan.
  * We never extract from these.
  */
 const NOISE_SELECTORS = [
-  "nav", "header", "footer", "aside",
-  '[role="navigation"]', '[role="banner"]', '[role="contentinfo"]',
-  ".nav", ".navbar", ".header", ".footer", ".sidebar",
-  ".breadcrumb", ".breadcrumbs",
-  "#nav", "#header", "#footer", "#sidebar",
+  "nav",
+  "header",
+  "footer",
+  "aside",
+  '[role="navigation"]',
+  '[role="banner"]',
+  '[role="contentinfo"]',
+  ".nav",
+  ".navbar",
+  ".header",
+  ".footer",
+  ".sidebar",
+  ".breadcrumb",
+  ".breadcrumbs",
+  "#nav",
+  "#header",
+  "#footer",
+  "#sidebar",
 ].join(",");
 
 // ── Utility helpers ────────────────────────────────────────────────────────────
 
 /** Safe querySelector — returns null on invalid selector */
 function _qs(root, sel) {
-  try { return root.querySelector(sel); } catch { return null; }
+  try {
+    return root.querySelector(sel);
+  } catch {
+    return null;
+  }
 }
 
 /** Safe querySelectorAll — returns [] on invalid selector */
 function _qsa(root, sel) {
-  try { return Array.from(root.querySelectorAll(sel)); } catch { return []; }
+  try {
+    return Array.from(root.querySelectorAll(sel));
+  } catch {
+    return [];
+  }
 }
 
 /** Clean and collapse whitespace in a string */
 function _clean(str) {
-  return String(str || "").replace(/\s+/g, " ").trim();
+  return String(str || "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** Return true if element is inside a known noise/nav container */
 function _isNoise(el) {
-  try { return !!el.closest(NOISE_SELECTORS); } catch { return false; }
+  try {
+    return !!el.closest(NOISE_SELECTORS);
+  } catch {
+    return false;
+  }
 }
 
 /** Get the combined class + id string of an element for keyword matching */
@@ -192,7 +271,9 @@ function _fontSize(el) {
   try {
     const raw = window.getComputedStyle(el).fontSize;
     return raw ? parseFloat(raw) : 0;
-  } catch { return 0; }
+  } catch {
+    return 0;
+  }
 }
 
 /** Get computed font-weight as a number */
@@ -204,7 +285,9 @@ function _fontWeight(el) {
     if (raw === "bolder") return 800;
     const n = parseInt(raw, 10);
     return isNaN(n) ? 400 : n;
-  } catch { return 400; }
+  } catch {
+    return 400;
+  }
 }
 
 /** Extract visible bounding rect, returns null if hidden */
@@ -213,13 +296,17 @@ function _rect(el) {
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) return null;
     return r;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /** Absolute distance between two DOMRects centers */
 function _distance(a, b) {
-  const ax = a.left + a.width / 2, ay = a.top + a.height / 2;
-  const bx = b.left + b.width / 2, by = b.top + b.height / 2;
+  const ax = a.left + a.width / 2,
+    ay = a.top + a.height / 2;
+  const bx = b.left + b.width / 2,
+    by = b.top + b.height / 2;
   return Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2);
 }
 
@@ -233,14 +320,14 @@ function _parsePrice(str) {
 /** Detect currency symbol from text */
 function _detectCurrency(str) {
   const s = _clean(str);
-  if (/₹|INR/.test(s))  return "INR";
-  if (/\$|USD/.test(s))  return "USD";
-  if (/€|EUR/.test(s))  return "EUR";
-  if (/£|GBP/.test(s))  return "GBP";
+  if (/₹|INR/.test(s)) return "INR";
+  if (/\$|USD/.test(s)) return "USD";
+  if (/€|EUR/.test(s)) return "EUR";
+  if (/£|GBP/.test(s)) return "GBP";
   if (/¥|JPY|CNY/.test(s)) return "JPY";
-  if (/₩|KRW/.test(s))  return "KRW";
-  if (/₽|RUB/.test(s))  return "RUB";
-  if (/AED/.test(s))    return "AED";
+  if (/₩|KRW/.test(s)) return "KRW";
+  if (/₽|RUB/.test(s)) return "RUB";
+  if (/AED/.test(s)) return "AED";
   return null;
 }
 
@@ -262,7 +349,9 @@ function _readJsonLd() {
       const data = JSON.parse(script.textContent || "");
       const product = _findProductInLd(data);
       if (product) return product;
-    } catch { /* malformed JSON-LD — skip */ }
+    } catch {
+      /* malformed JSON-LD — skip */
+    }
   }
   return null;
 }
@@ -271,7 +360,10 @@ function _findProductInLd(data) {
   if (!data) return null;
 
   // Single object
-  if (data["@type"] === "Product" || (Array.isArray(data["@type"]) && data["@type"].includes("Product"))) {
+  if (
+    data["@type"] === "Product" ||
+    (Array.isArray(data["@type"]) && data["@type"].includes("Product"))
+  ) {
     return _normalizeJsonLd(data);
   }
 
@@ -300,51 +392,77 @@ function _normalizeJsonLd(product) {
   // Offers can be an array or a single object
   let offers = product.offers;
   if (Array.isArray(offers)) offers = offers[0];
-  const price = offers?.price != null
-    ? String(offers.price)
-    : (product.price != null ? String(product.price) : null);
+  const price =
+    offers?.price != null
+      ? String(offers.price)
+      : product.price != null
+        ? String(product.price)
+        : null;
   const currency = offers?.priceCurrency || product.priceCurrency || null;
 
   // Images: image can be string, object with url, or array
   const rawImages = Array.isArray(product.image)
     ? product.image
-    : (product.image ? [product.image] : []);
-  const images = rawImages.map(img => {
-    if (typeof img === "string") return img;
-    if (img?.url) return img.url;
-    return null;
-  }).filter(Boolean);
+    : product.image
+      ? [product.image]
+      : [];
+  const images = rawImages
+    .map((img) => {
+      if (typeof img === "string") return img;
+      if (img?.url) return img.url;
+      return null;
+    })
+    .filter(Boolean);
 
-  const brand = typeof product.brand === "string"
-    ? product.brand
-    : (product.brand?.name || null);
+  const brand =
+    typeof product.brand === "string"
+      ? product.brand
+      : product.brand?.name || null;
 
   const description = _clean(product.description || "");
 
   // SKU alternatives
-  const sku = product.sku || product.mpn || product.productID || product.identifier || null;
+  const sku =
+    product.sku ||
+    product.mpn ||
+    product.productID ||
+    product.identifier ||
+    null;
 
   // Availability mapping
   let availability = null;
   const avail = offers?.availability || product.availability;
   if (avail) {
     const a = String(avail).toLowerCase();
-    if (a.includes("instock"))     availability = "In Stock";
+    if (a.includes("instock")) availability = "In Stock";
     else if (a.includes("outofstock")) availability = "Out of Stock";
-    else if (a.includes("preorder"))   availability = "Pre-order";
+    else if (a.includes("preorder")) availability = "Pre-order";
     else availability = _clean(avail);
   }
 
   // Aggregate rating
   const aggRating = product.aggregateRating;
-  const rating = aggRating?.ratingValue != null
-    ? String(aggRating.ratingValue)
-    : null;
-  const reviewCount = aggRating?.reviewCount != null
-    ? String(aggRating.reviewCount)
-    : (aggRating?.ratingCount != null ? String(aggRating.ratingCount) : null);
+  const rating =
+    aggRating?.ratingValue != null ? String(aggRating.ratingValue) : null;
+  const reviewCount =
+    aggRating?.reviewCount != null
+      ? String(aggRating.reviewCount)
+      : aggRating?.ratingCount != null
+        ? String(aggRating.ratingCount)
+        : null;
 
-  return { name, price, currency, images, brand, description, sku, availability, rating, reviewCount };
+  return {
+    name,
+    price,
+    currency,
+    images,
+    brand,
+    description,
+    sku,
+    availability,
+    rating,
+    reviewCount,
+  };
 }
 
 /**
@@ -357,27 +475,40 @@ function _readMicrodata() {
   const get = (name, root = scope) => {
     const el = _qs(root, `[itemprop="${name}"]`);
     if (!el) return null;
-    return _clean(
-      el.content || el.getAttribute("content") ||
-      el.getAttribute("href") ||
-      el.textContent
-    ) || null;
+    return (
+      _clean(
+        el.content ||
+          el.getAttribute("content") ||
+          el.getAttribute("href") ||
+          el.textContent,
+      ) || null
+    );
   };
 
   const getAll = (name) =>
-    _qsa(scope, `[itemprop="${name}"]`).map(el =>
-      _clean(el.src || el.getAttribute("src") || el.content || el.getAttribute("content") || "")
-    ).filter(Boolean);
+    _qsa(scope, `[itemprop="${name}"]`)
+      .map((el) =>
+        _clean(
+          el.src ||
+            el.getAttribute("src") ||
+            el.content ||
+            el.getAttribute("content") ||
+            "",
+        ),
+      )
+      .filter(Boolean);
 
   const offerScope = _qs(scope, '[itemtype*="Offer"]');
   const price = offerScope
-    ? (get("price", offerScope) || get("lowPrice", offerScope))
+    ? get("price", offerScope) || get("lowPrice", offerScope)
     : get("price");
 
   return {
     name: get("name"),
     price,
-    currency: offerScope ? get("priceCurrency", offerScope) : get("priceCurrency"),
+    currency: offerScope
+      ? get("priceCurrency", offerScope)
+      : get("priceCurrency"),
     images: getAll("image"),
     brand: get("brand") || get("manufacturer"),
     description: get("description"),
@@ -395,7 +526,10 @@ function _readOpenGraph() {
   const getMeta = (properties) => {
     for (const prop of properties) {
       // Try property= and name= attributes
-      const el = _qs(document, `meta[property="${prop}"], meta[name="${prop}"]`);
+      const el = _qs(
+        document,
+        `meta[property="${prop}"], meta[name="${prop}"]`,
+      );
       if (el) {
         const v = _clean(el.content || el.getAttribute("content") || "");
         if (v) return v;
@@ -407,10 +541,12 @@ function _readOpenGraph() {
   const getAllMeta = (properties) => {
     const results = [];
     for (const prop of properties) {
-      _qsa(document, `meta[property="${prop}"], meta[name="${prop}"]`).forEach(el => {
-        const v = _clean(el.content || el.getAttribute("content") || "");
-        if (v) results.push(v);
-      });
+      _qsa(document, `meta[property="${prop}"], meta[name="${prop}"]`).forEach(
+        (el) => {
+          const v = _clean(el.content || el.getAttribute("content") || "");
+          if (v) results.push(v);
+        },
+      );
     }
     return results;
   };
@@ -425,7 +561,18 @@ function _readOpenGraph() {
 
   // Only return if we got at least name or price
   if (!name && !price) return null;
-  return { name, price, currency, images, brand, description, sku: null, availability, rating: null, reviewCount: null };
+  return {
+    name,
+    price,
+    currency,
+    images,
+    brand,
+    description,
+    sku: null,
+    availability,
+    rating: null,
+    reviewCount: null,
+  };
 }
 
 /**
@@ -461,8 +608,17 @@ function _runLayer1() {
  */
 function _scoreStructuredResult(r) {
   if (!r) return 0;
-  const weights = { name: 30, price: 25, images: 15, brand: 10, description: 10, sku: 5, availability: 5 };
-  let score = 0, total = 0;
+  const weights = {
+    name: 30,
+    price: 25,
+    images: 15,
+    brand: 10,
+    description: 10,
+    sku: 5,
+    availability: 5,
+  };
+  let score = 0,
+    total = 0;
   for (const [field, weight] of Object.entries(weights)) {
     total += weight;
     const v = r[field];
@@ -480,10 +636,17 @@ function _scoreStructuredResult(r) {
  * Used for proximity scoring.
  */
 function _findCtaRects() {
-  const buttons = _qsa(document, "button, [role='button'], a.btn, a.button, input[type='submit']");
+  const buttons = _qsa(
+    document,
+    "button, [role='button'], a.btn, a.button, input[type='submit']",
+  );
   return buttons
-    .filter(el => CTA_RX.test(el.textContent || el.value || el.getAttribute("aria-label") || ""))
-    .map(el => _rect(el))
+    .filter((el) =>
+      CTA_RX.test(
+        el.textContent || el.value || el.getAttribute("aria-label") || "",
+      ),
+    )
+    .map((el) => _rect(el))
     .filter(Boolean);
 }
 
@@ -544,9 +707,9 @@ function _scoreElement(el, field, ctaRects) {
   if (ctaRects.length > 0 && (field === "name" || field === "price")) {
     const elRect = _rect(el);
     if (elRect) {
-      const minDist = Math.min(...ctaRects.map(cr => _distance(elRect, cr)));
+      const minDist = Math.min(...ctaRects.map((cr) => _distance(elRect, cr)));
       // Within 300px of a CTA → strong signal; within 600px → moderate
-      if (minDist < 300)      score = Math.min(100, score + 20);
+      if (minDist < 300) score = Math.min(100, score + 20);
       else if (minDist < 600) score = Math.min(100, score + 10);
     }
   }
@@ -578,7 +741,9 @@ function _heuristicTextField(field, minScore, ctaRects) {
     }
   }
 
-  return best ? { value: best.value, confidence: best.score, el: best.el } : null;
+  return best
+    ? { value: best.value, confidence: best.score, el: best.el }
+    : null;
 }
 
 /**
@@ -598,7 +763,11 @@ function _heuristicPrice(field, isOriginal, ctaRects) {
     if (!text) continue;
 
     // Must look like a price string
-    if (!PRICE_LEADING_RX.test(text) && !/[$₹€£¥₩₽]|(?:USD|INR|EUR|GBP)/.test(text)) continue;
+    if (
+      !PRICE_LEADING_RX.test(text) &&
+      !/[$₹€£¥₩₽]|(?:USD|INR|EUR|GBP)/.test(text)
+    )
+      continue;
 
     // Numeric value must parse
     const numVal = _parsePrice(text);
@@ -612,7 +781,10 @@ function _heuristicPrice(field, isOriginal, ctaRects) {
     // For originalPrice: look for strikethrough style
     if (isOriginal) {
       const style = window.getComputedStyle(el);
-      if (style.textDecoration && style.textDecoration.includes("line-through")) {
+      if (
+        style.textDecoration &&
+        style.textDecoration.includes("line-through")
+      ) {
         score = Math.min(100, score + 20);
       }
     }
@@ -635,9 +807,11 @@ function _heuristicImages(ctaRects) {
 
   for (const img of imgs) {
     if (_isNoise(img)) continue;
-    const src = img.src || img.dataset?.src || img.getAttribute("data-src") || "";
-    if (!src || src.startsWith("data:") && src.length < 200) continue; // skip tiny inline SVG/GIF
-    if (/sprite|icon|logo|flag|pixel|1x1|blank|placeholder/i.test(src)) continue;
+    const src =
+      img.src || img.dataset?.src || img.getAttribute("data-src") || "";
+    if (!src || (src.startsWith("data:") && src.length < 200)) continue; // skip tiny inline SVG/GIF
+    if (/sprite|icon|logo|flag|pixel|1x1|blank|placeholder/i.test(src))
+      continue;
 
     const r = _rect(img);
     if (!r) continue;
@@ -666,7 +840,7 @@ function _heuristicImages(ctaRects) {
   }
 
   const confidence = results.length > 0 ? Math.min(100, results[0].score) : 0;
-  return { value: results.map(i => i.src), confidence };
+  return { value: results.map((i) => i.src), confidence };
 }
 
 /**
@@ -675,53 +849,60 @@ function _heuristicImages(ctaRects) {
 function _runLayer2() {
   const ctaRects = _findCtaRects();
 
-  const name =        _heuristicTextField("name", 50, ctaRects);
+  const name = _heuristicTextField("name", 50, ctaRects);
   const priceResult = _heuristicPrice("price", false, ctaRects);
-  const origResult  = _heuristicPrice("originalPrice", true, ctaRects);
-  const brand =       _heuristicTextField("brand", 55, ctaRects);
-  const sku =         _heuristicTextField("sku", 60, ctaRects);
-  const desc =        _heuristicTextField("description", 55, ctaRects);
-  const avail =       _heuristicTextField("availability", 60, ctaRects);
-  const rating =      _heuristicTextField("rating", 60, ctaRects);
-  const reviewCnt =   _heuristicTextField("reviewCount", 60, ctaRects);
-  const images =      _heuristicImages(ctaRects);
+  const origResult = _heuristicPrice("originalPrice", true, ctaRects);
+  const brand = _heuristicTextField("brand", 55, ctaRects);
+  const sku = _heuristicTextField("sku", 60, ctaRects);
+  const desc = _heuristicTextField("description", 55, ctaRects);
+  const avail = _heuristicTextField("availability", 60, ctaRects);
+  const rating = _heuristicTextField("rating", 60, ctaRects);
+  const reviewCnt = _heuristicTextField("reviewCount", 60, ctaRects);
+  const images = _heuristicImages(ctaRects);
 
   // Detect currency from price text
-  const currency = priceResult
-    ? _detectCurrency(priceResult.value)
-    : null;
+  const currency = priceResult ? _detectCurrency(priceResult.value) : null;
 
   const result = {
-    name:          name?.value         || null,
-    price:         priceResult?.value  || null,
-    originalPrice: origResult?.value   || null,
+    name: name?.value || null,
+    price: priceResult?.value || null,
+    originalPrice: origResult?.value || null,
     currency,
-    brand:         brand?.value        || null,
-    description:   desc?.value         || null,
-    sku:           sku?.value          || null,
-    availability:  avail?.value        || null,
-    rating:        rating?.value       || null,
-    reviewCount:   reviewCnt?.value    || null,
-    images:        images.value,
+    brand: brand?.value || null,
+    description: desc?.value || null,
+    sku: sku?.value || null,
+    availability: avail?.value || null,
+    rating: rating?.value || null,
+    reviewCount: reviewCnt?.value || null,
+    images: images.value,
   };
 
   const perField = {
-    name:          name?.confidence         ?? 0,
-    price:         priceResult?.confidence  ?? 0,
-    originalPrice: origResult?.confidence   ?? 0,
-    currency:      currency ? 70 : 0,
-    brand:         brand?.confidence        ?? 0,
-    description:   desc?.confidence         ?? 0,
-    sku:           sku?.confidence          ?? 0,
-    availability:  avail?.confidence        ?? 0,
-    rating:        rating?.confidence       ?? 0,
-    reviewCount:   reviewCnt?.confidence    ?? 0,
-    images:        images.confidence,
+    name: name?.confidence ?? 0,
+    price: priceResult?.confidence ?? 0,
+    originalPrice: origResult?.confidence ?? 0,
+    currency: currency ? 70 : 0,
+    brand: brand?.confidence ?? 0,
+    description: desc?.confidence ?? 0,
+    sku: sku?.confidence ?? 0,
+    availability: avail?.confidence ?? 0,
+    rating: rating?.confidence ?? 0,
+    reviewCount: reviewCnt?.confidence ?? 0,
+    images: images.confidence,
   };
 
   // Overall = weighted average of key fields
-  const weights = { name: 30, price: 25, images: 15, brand: 10, description: 10, sku: 5, availability: 5 };
-  let totalWeight = 0, weightedSum = 0;
+  const weights = {
+    name: 30,
+    price: 25,
+    images: 15,
+    brand: 10,
+    description: 10,
+    sku: 5,
+    availability: 5,
+  };
+  let totalWeight = 0,
+    weightedSum = 0;
   for (const [field, weight] of Object.entries(weights)) {
     totalWeight += weight;
     weightedSum += (perField[field] || 0) * weight;
@@ -739,18 +920,33 @@ function _runLayer2() {
  */
 function _mergeResults(layer1, layer2) {
   const structured = layer1?.result || {};
-  const heuristic  = layer2?.result || {};
+  const heuristic = layer2?.result || {};
 
   const merged = {};
-  const fieldList = ["name", "price", "originalPrice", "currency", "brand",
-    "description", "sku", "availability", "rating", "reviewCount", "images"];
+  const fieldList = [
+    "name",
+    "price",
+    "originalPrice",
+    "currency",
+    "brand",
+    "description",
+    "sku",
+    "availability",
+    "rating",
+    "reviewCount",
+    "images",
+  ];
 
   for (const field of fieldList) {
     const sv = structured[field];
     const hv = heuristic[field];
 
     // Structured data wins unless it's empty/null
-    const isEmpty = v => v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0);
+    const isEmpty = (v) =>
+      v === null ||
+      v === undefined ||
+      v === "" ||
+      (Array.isArray(v) && v.length === 0);
     merged[field] = isEmpty(sv) ? (isEmpty(hv) ? null : hv) : sv;
   }
 
@@ -761,19 +957,37 @@ function _mergeResults(layer1, layer2) {
   for (const field of fieldList) {
     const sv = structured[field];
     const hp = layer2?.perField?.[field] ?? 0;
-    const isEmpty = v => v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0);
+    const isEmpty = (v) =>
+      v === null ||
+      v === undefined ||
+      v === "" ||
+      (Array.isArray(v) && v.length === 0);
 
     if (!isEmpty(sv)) {
       // From structured data: very high confidence
-      perField[field] = layer1?.method === "json-ld" ? 98 : (layer1?.method === "microdata" ? 95 : 90);
+      perField[field] =
+        layer1?.method === "json-ld"
+          ? 98
+          : layer1?.method === "microdata"
+            ? 95
+            : 90;
     } else {
       perField[field] = hp;
     }
   }
 
   // Overall confidence
-  const weights = { name: 30, price: 25, images: 15, brand: 10, description: 10, sku: 5, availability: 5 };
-  let totalWeight = 0, weightedSum = 0;
+  const weights = {
+    name: 30,
+    price: 25,
+    images: 15,
+    brand: 10,
+    description: 10,
+    sku: 5,
+    availability: 5,
+  };
+  let totalWeight = 0,
+    weightedSum = 0;
   for (const [field, weight] of Object.entries(weights)) {
     totalWeight += weight;
     weightedSum += (perField[field] || 0) * weight;
@@ -784,15 +998,20 @@ function _mergeResults(layer1, layer2) {
   const warnings = [];
   for (const [field, conf] of Object.entries(perField)) {
     if (merged[field] != null && conf < CONF.FIELD_WARN) {
-      warnings.push(`⚠️ Field "${field}" has low confidence (${conf}/100) — verify manually.`);
+      warnings.push(
+        `⚠️ Field "${field}" has low confidence (${conf}/100) — verify manually.`,
+      );
     }
   }
 
   const method =
-    layer1?.method === "json-ld"    ? "json-ld"    :
-    layer1?.method === "microdata"  ? "microdata"  :
-    layer1?.method === "og-meta"    ? "og-meta"    :
-    "heuristic";
+    layer1?.method === "json-ld"
+      ? "json-ld"
+      : layer1?.method === "microdata"
+        ? "microdata"
+        : layer1?.method === "og-meta"
+          ? "og-meta"
+          : "heuristic";
 
   return { result: merged, perField, overallConfidence, method, warnings };
 }
@@ -810,14 +1029,17 @@ function _buildSimplifiedDom() {
   // Remove noise elements from the clone
   const noiseEls = clone.querySelectorAll(
     "script, style, link, noscript, svg, iframe, nav, header, footer, aside, " +
-    '[role="navigation"], [role="banner"], [role="contentinfo"], ' +
-    ".nav, .navbar, .header, .footer, .sidebar, .breadcrumb, " +
-    ".ads, .advertisement, .cookie-banner, .popup, .modal:not([aria-label*='product'])"
+      '[role="navigation"], [role="banner"], [role="contentinfo"], ' +
+      ".nav, .navbar, .header, .footer, .sidebar, .breadcrumb, " +
+      ".ads, .advertisement, .cookie-banner, .popup, .modal:not([aria-label*='product'])",
   );
-  noiseEls.forEach(el => el.remove());
+  noiseEls.forEach((el) => el.remove());
 
   const text = clone.innerText || clone.textContent || "";
-  return text.replace(/\s{3,}/g, "\n\n").trim().slice(0, 12000);
+  return text
+    .replace(/\s{3,}/g, "\n\n")
+    .trim()
+    .slice(0, 12000);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -856,11 +1078,11 @@ function fsSmartExtract(config = {}) {
   const simplifiedDom = needsLlm ? _buildSimplifiedDom() : "";
 
   return {
-    result:            merged.result,
-    perField:          merged.perField,
+    result: merged.result,
+    perField: merged.perField,
     overallConfidence: merged.overallConfidence,
-    method:            merged.method,
-    warnings:          merged.warnings,
+    method: merged.method,
+    warnings: merged.warnings,
     needsLlm,
     simplifiedDom,
   };

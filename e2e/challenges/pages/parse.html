@@ -1,0 +1,231 @@
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="index, follow">
+    
+    <meta name="keywords" content="request,html-parsing,xpath,css-selector,beginner">
+    
+    
+    <meta name="description" content="Practice parsing HTML documents and extracting structured data using CSS selectors or XPath.">
+    
+    <link rel="canonical" href="/web-scraping-practice/beginner/parse">
+    <link rel="stylesheet" href="/static/css/style.v5.min.css">
+    
+    <script defer src="/static/js/htmx2.0.7.min.js"></script>
+    <script defer src="/static/js/site.v5.min.js"></script>
+    <title>Parsing HTML Structures | TryScrapeMe | Web Scraping Practice Website with Tutorials & Challenges
+    </title>
+    
+    
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() {dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', 'G-5DBZ7E3LXG');
+    </script>
+</head>
+
+<body class="flex flex-col justify-between min-h-screen">
+    <div class="spinner"></div>
+    <header class="border-b border-gray-200">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between">
+          <div class="flex gap-2 items-center">
+              <div><img class="w-10 h-10 pt-2" src="/static/images/logo.png" alt="TryScrapeMe"></div>
+              <div class="text-xl font-bold"><a class="text-gray-800" href="/"
+                      title="Practice Your Web Scraping Skills">TryScrapeMe</a></div>
+          </div>
+          <nav class="flex items-center gap-12">
+              <a class="text-slate-800 hover:text-indigo-600" href="/challenges">Challenges</a>
+              <a class="text-slate-800 hover:text-indigo-600" href="/pricing">Pricing</a>
+              <a class="text-slate-800 hover:text-indigo-600" target="_blank" href="/docs">Docs</a>
+              
+              <a class="text-slate-800 hover:text-indigo-600" href="/login">Login</a>
+              
+          </nav>
+      </div>
+    </header>
+<section class="min-h-[90vh] flex flex-col items-center">
+    <div class="max-w-[65rem] w-[65rem] py-8">
+<div class="max-w-3xl mx-auto mb-12">
+    
+    <div class="bg-white border border-gray-200 rounded-2xl overflow-hidden">
+        
+        <div class="px-8 py-6 border-b border-gray-100">
+            <div class="flex justify-between items-start gap-4">
+                <h1 class="text-2xl font-bold text-gray-900 tracking-tight">Parsing HTML Structures</h1>
+
+                <button class="challenge-action flex-shrink-0 mt-2"
+                        popovertarget="challenge-help"
+                        aria-label="Help">
+                    <img src="/static/images/help-circle.svg"
+                         alt="Help"
+                         class="w-5 h-5 opacity-80 hover:opacity-100 transition-opacity">
+                </button>
+            </div>
+        </div>
+        
+        <div class="p-8 flex flex-col gap-7">
+            
+            <div class="inline-flex items-center gap-2">
+                <span class="text-gray-900">Calculate the total value of the price column from the scraped data.</span>
+            </div>
+            
+            <div class="text-sm leading-7 text-gray-600">
+                Practice parsing HTML documents and extracting structured data using CSS selectors or XPath.
+            </div>
+            
+            <div class="flex flex-wrap gap-x-8 gap-y-3 text-sm">
+                <div class="flex items-center gap-2">
+                    <span class="text-gray-500">Difficulty:</span>
+                    <span class="px-4 py-1.5 bg-gray-100 text-gray-700 font-medium rounded-2xl capitalize">
+                        beginner
+                    </span>
+                </div>
+                
+                <div class="flex items-center gap-2">
+                    <span class="text-gray-500">Tags:</span>
+                    <span class="text-gray-600">request · html-parsing · xpath · css-selector · beginner</span>
+                </div>
+                
+            </div>
+        </div>
+        
+        <div class="px-8 py-6 bg-white border-t border-gray-100">
+            <div class="flex items-center justify-end">
+                <div class="flex items-center gap-8">
+                    <a href="/guide/parse" class="text-gray-600 hover:text-gray-900">
+                        Verify Solution
+                    </a>
+                    <a href="/guide/parse" class="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-950">
+                        View Engineering Walkthrough
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div popover id="challenge-help"
+     class="max-w-md w-full p-9 rounded-2xl border border-gray-200 shadow-xl bg-white">
+    <h2 class="text-2xl font-semibold text-gray-900 mb-6">Web Scraping Practice</h2>
+    <p class="text-gray-600 mb-6">
+        This page is built specifically for practicing web scraping skills in a realistic environment.
+    </p>
+    <h3 class="font-medium text-gray-800 mb-3">This challenge may involve:</h3>
+    <ul class="space-y-2.5 text-gray-600 mb-8">
+        <li class="flex gap-2">
+            <span class="text-emerald-600 mt-0.5">→</span>
+            <span>Pagination and dynamic content</span>
+        </li>
+        <li class="flex gap-2">
+            <span class="text-emerald-600 mt-0.5">→</span>
+            <span>Authentication and session handling</span>
+        </li>
+        <li class="flex gap-2">
+            <span class="text-emerald-600 mt-0.5">→</span>
+            <span>Structured data extraction</span>
+        </li>
+        <li class="flex gap-2">
+            <span class="text-emerald-600 mt-0.5">→</span>
+            <span>Production-style scraping patterns</span>
+        </li>
+    </ul>
+    <div class="pt-6 border-t border-gray-100 flex items-center justify-center">
+        <a href="/guide/parse">
+           View Engineering Walkthrough →
+        </a>
+    </div>
+</div>
+<table>
+           	<thead>
+                <tr>
+                    <th>name</th>
+                    <th>author</th>
+                    <th>stars</th>
+                    <th>price</th>
+                </tr>
+           	</thead>
+           	<tbody>
+                <tr>
+                    <td><h4>Gut</h4></td>
+                    <td>Giulia Enders</td>
+                    <td>4</td>
+                    <td><span>$</span>10.49</td>
+                </tr>
+                <tr>
+                    <td><h4>The Brain That Changes Itself</h4></td>
+                    <td>Norman Doidge</td>
+                    <td>4</td>
+                    <td><span>$</span>11.03</td>
+                </tr>
+                <tr>
+                    <td><h4>Medical Medium Liver Rescue</h4></td>
+                    <td>Anthony William</td>
+                    <td>4</td>
+                    <td><span>$</span>23.76</td>
+                </tr>
+                <tr>
+                    <td><h4>Wreck This Journal</h4></td>
+                    <td>Keri Smith</td>
+                    <td>4</td>
+                    <td><span>$</span>9.59</td>
+                </tr>
+                <tr>
+                    <td><h4>12 Rules for Life</h4></td>
+                    <td>Jordan B. Peterson</td>
+                    <td>4</td>
+                    <td><span>$</span>20.99</td>
+                </tr>
+
+                <tr>
+                    <td><h4>12 Rules for Life</h4></td>
+                    <td>Jordan B. Peterson</td>
+                    <td>4</td>
+                    <td><span>$</span>10.26</td>
+                </tr>
+                <tr>
+                    <td><h4>Gut and Psychology Syndrome</h4></td>
+                    <td>Dr Natasha Campbell-McBride</td>
+                    <td>4</td>
+                    <td><span>$</span>19.48</td>
+                </tr>
+                <tr>
+                    <td><h4>Medical Medium Thyroid Healing</h4></td>
+                    <td>Anthony William</td>
+                    <td>4</td>
+                    <td><span>$</span>17.26</td>
+                </tr>
+                <tr>
+                    <td><h4>Steal Like an Artist</h4></td>
+                    <td>Austin Kleon</td>
+                    <td>4</td>
+                    <td><span>$</span>8.81</td>
+                </tr>
+                <tr>
+                    <td><h4>Sitting Still Like A Frog</h4></td>
+                    <td>Eline Snel</td>
+                    <td>4</td>
+                    <td><span>$</span>10.4</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+<footer class="flex flex-wrap items-center justify-center gap-6 text-sm py-4 border-t border-t-gray-200">
+        <span class="text-gray-600">© TryScrapeMe</span>
+        <a class="text-slate-600 hover:text-indigo-600" href="/about">About</a>
+        <a class="text-gray-600 hover:text-indigo-800" href="/privacy">Privacy</a>
+        <a class="text-gray-600 hover:text-indigo-800" href="/terms">Terms</a>
+        <a class="text-gray-600 hover:text-indigo-800" href="/faq">FAQ</a>
+        <a class="text-gray-600 hover:text-indigo-800" href="/contactus">Contact Us</a>
+    </footer>
+</body>
+
+</html>
+
+
+

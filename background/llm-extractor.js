@@ -1,45 +1,51 @@
 // === llm-extractor.js ===
 /**
  * @module llm-extractor
- * @description Layer 3 LLM-based product extraction using Gemini Flash.
+ * @description Layer 3 of AUTO_EXTRACT: ask a model when the free layers could
+ *   not answer.
  *
- *   Called ONLY when Layers 1 & 2 (smart-extractor.js) return an
- *   overall confidence below the configured threshold (default: 70).
+ *   Called ONLY when layers 1 and 2 (`content/smart-extractor.js`) come back
+ *   below the configured confidence threshold. The free layers answer most
+ *   pages; this is the escape hatch, and it is never a requirement.
  *
- *   Flow:
- *     1. Caller sends a simplified DOM string (12000 char max).
- *     2. We call the Gemini Flash API (gemini-2.0-flash model).
- *     3. The model returns a strictly typed JSON product object.
- *     4. We validate and normalize the response.
- *     5. We return the same shape as smart-extractor's result so the
- *        service-worker can merge/use it transparently.
+ *   **This used to be a second HTTP client.** It spoke to Gemini and only
+ *   Gemini, with its own key lookup, its own timeout, its own error handling
+ *   and its own copy of "what a bad response looks like" — while
+ *   `utils/ai-gateway.js` already spoke to Anthropic, OpenAI, Gemini and any
+ *   OpenAI-compatible local server, and was wired to the settings panel with a
+ *   provider picker and a test button. So the one feature that most needed a
+ *   free local model was the one feature that could not use one, and a fix to
+ *   either client left the other wrong. It now goes through the gateway like
+ *   everything else, which means:
  *
- *   Design decisions:
- *     - Uses Gemini Flash (not Pro) for speed and cost efficiency.
- *       Flash handles structured product extraction at the same
- *       quality as Pro for this type of task.
- *     - Temperature = 0 for maximum determinism — we want facts, not creativity.
- *     - System prompt is hardcoded and never user-editable to prevent injection.
- *     - The prompt instructs the model to return ONLY valid JSON.
- *       We still validate the response defensively.
- *     - Max output tokens = 1024 — a full product object is never larger.
- *     - Timeout = 20 seconds. On timeout, returns null so the pipeline
- *       continues with whatever Layers 1 & 2 found.
+ *   - Point it at Ollama or LM Studio and the layer costs nothing and sends
+ *     nothing off the machine.
+ *   - JSON comes back as JSON, using each provider's own native mechanism
+ *     rather than a regex hunting for a code fence.
  *
- * @dependencies background/api-key-manager.js (getApiKey)
+ *   Design decisions kept from before: temperature is not set (the gateway
+ *   does not expose it and the prompt does the work), the system instruction is
+ *   hardcoded and never user-editable so page content cannot rewrite it, and a
+ *   response that does not parse returns null so the run continues with
+ *   whatever layers 1 and 2 found.
+ *
+ * @dependencies background/gateway-config.js, utils/ai-gateway.js
  */
 
-import { getApiKey } from "./api-key-manager.js";
+import { askText } from "../utils/ai-gateway.js";
+import { readGatewayConfig, describeGateway } from "./gateway-config.js";
 import { logger } from "../utils/logger.js";
 
 const MODULE = "llm-extractor";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const GEMINI_MODEL   = "gemini-2.0-flash";
-const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-const MAX_TOKENS     = 1024;
-const TIMEOUT_MS     = 20_000;
+/** A product object with a confidence per field fits well inside this. */
+const MAX_TOKENS = 2048;
+const TIMEOUT_MS = 20_000;
+
+/** How much page text the model is given. Beyond this the tail is dropped. */
+const MAX_DOM_CHARS = 12_000;
 
 /**
  * The system-level instruction sent to the model.
@@ -96,78 +102,41 @@ Return a JSON object with exactly this structure:
 // ── Gemini API call ───────────────────────────────────────────────────────────
 
 /**
- * Call Gemini Flash with a structured extraction prompt.
+ * Ask the configured model for the page's product data.
  *
- * @param {string} simplifiedDom - Stripped page text (max 12000 chars)
- * @param {string} apiKey - Gemini API key
- * @returns {Promise<object|null>} Parsed product object or null on failure
+ * @param {string} simplifiedDom - stripped page text
+ * @param {import("../utils/ai-gateway.js").GatewayConfig} config
+ * @returns {Promise<object|null>} the parsed product object, or null when the
+ *   model could not be reached or did not answer usefully. Null rather than a
+ *   throw: this layer is a bonus, and a run must survive it failing.
  */
-export async function llmExtract(simplifiedDom, apiKey) {
-  if (!simplifiedDom || !apiKey) return null;
+export async function llmExtract(simplifiedDom, config) {
+  if (!simplifiedDom || !config) return null;
 
-  const prompt = PROMPT_TEMPLATE.replace("{dom}", simplifiedDom.slice(0, 12000));
-  const requestBody = {
-    system_instruction: {
-      parts: [{ text: SYSTEM_INSTRUCTION }],
-    },
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: prompt }],
-      },
-    ],
-    generationConfig: {
-      temperature:     0,          // Maximum determinism
-      maxOutputTokens: MAX_TOKENS,
-      responseMimeType: "application/json", // Force JSON-only output
-    },
-    safetySettings: [
-      // Allow commercial content — product pages can mention restricted items
-      { category: "HARM_CATEGORY_HARASSMENT",        threshold: "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_HATE_SPEECH",       threshold: "BLOCK_NONE" },
-      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
-      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-    ],
-  };
+  const prompt = `${SYSTEM_INSTRUCTION}\n\n${PROMPT_TEMPLATE.replace(
+    "{dom}",
+    simplifiedDom.slice(0, MAX_DOM_CHARS),
+  )}`;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const said = await askText(
+    { prompt },
+    { ...config, json: true, maxTokens: MAX_TOKENS, timeoutMs: TIMEOUT_MS },
+  );
 
-  try {
-    const resp = await fetch(`${GEMINI_API_URL}?key=${encodeURIComponent(apiKey)}`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(requestBody),
-      signal:  controller.signal,
+  if (!said.ok) {
+    // The gateway's messages are already written to be shown to a person, so
+    // they are passed along rather than replaced with "the LLM layer failed".
+    logger.warn(MODULE, "gateway-declined", {
+      code: said.code,
+      error: said.error,
     });
-
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => `HTTP ${resp.status}`);
-      logger.warn(MODULE, "gemini-api-error", { status: resp.status, body: errText.slice(0, 200) });
-      return null;
-    }
-
-    const json = await resp.json();
-    const raw  = json?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!raw) {
-      logger.warn(MODULE, "gemini-empty-response", {});
-      return null;
-    }
-
-    return _parseAndValidate(raw);
-  } catch (err) {
-    if (err?.name === "AbortError") {
-      logger.warn(MODULE, "gemini-timeout", { timeoutMs: TIMEOUT_MS });
-    } else {
-      logger.error(MODULE, "gemini-fetch-error", { error: err.message });
-    }
-    return null;
-  } finally {
-    clearTimeout(timer);
+    return { error: said.error, code: said.code };
   }
-}
 
-// ── Response parsing & validation ─────────────────────────────────────────────
+  const parsed = _parseAndValidate(said.text);
+  if (parsed) parsed.model = said.model ?? config.model ?? null;
+  return parsed;
+}
 
 /**
  * Parse the model response string into a validated product object.
@@ -181,13 +150,19 @@ export async function llmExtract(simplifiedDom, apiKey) {
 function _parseAndValidate(raw) {
   // Strip any accidental markdown code fences
   let cleaned = raw.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  cleaned = cleaned
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
 
   let parsed;
   try {
     parsed = JSON.parse(cleaned);
   } catch (err) {
-    logger.warn(MODULE, "gemini-invalid-json", { raw: raw.slice(0, 300), error: err.message });
+    logger.warn(MODULE, "gemini-invalid-json", {
+      raw: raw.slice(0, 300),
+      error: err.message,
+    });
     return null;
   }
 
@@ -198,41 +173,64 @@ function _parseAndValidate(raw) {
 
   // Normalize and sanitize each field
   const result = {
-    name:          _str(parsed.name),
-    price:         _str(parsed.price),
+    name: _str(parsed.name),
+    price: _str(parsed.price),
     originalPrice: _str(parsed.originalPrice),
-    currency:      _str(parsed.currency),
-    brand:         _str(parsed.brand),
-    description:   _str(parsed.description),
-    sku:           _str(parsed.sku),
-    availability:  _str(parsed.availability),
-    rating:        _str(parsed.rating),
-    reviewCount:   _str(parsed.reviewCount),
-    images:        _arrayOfStrings(parsed.images),
+    currency: _str(parsed.currency),
+    brand: _str(parsed.brand),
+    description: _str(parsed.description),
+    sku: _str(parsed.sku),
+    availability: _str(parsed.availability),
+    rating: _str(parsed.rating),
+    reviewCount: _str(parsed.reviewCount),
+    images: _arrayOfStrings(parsed.images),
   };
 
   // Validate per-field confidence scores from model
   const modelConf = parsed.confidence;
-  const perField  = {};
-  const fieldList = ["name", "price", "originalPrice", "currency", "brand",
-    "description", "sku", "availability", "rating", "reviewCount", "images"];
+  const perField = {};
+  const fieldList = [
+    "name",
+    "price",
+    "originalPrice",
+    "currency",
+    "brand",
+    "description",
+    "sku",
+    "availability",
+    "rating",
+    "reviewCount",
+    "images",
+  ];
 
   for (const field of fieldList) {
     const raw = modelConf?.[field];
-    const n   = parseInt(raw, 10);
+    const n = parseInt(raw, 10);
     // If model gave a valid 0–100 score, use it; otherwise infer from presence
     if (Number.isFinite(n) && n >= 0 && n <= 100) {
       perField[field] = n;
     } else {
       // Fallback: 80 if field has a value, 0 if null
       const v = result[field];
-      perField[field] = (v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0)) ? 80 : 0;
+      perField[field] =
+        v !== null && v !== undefined && !(Array.isArray(v) && v.length === 0)
+          ? 80
+          : 0;
     }
   }
 
   // Compute overall confidence
-  const weights = { name: 30, price: 25, images: 15, brand: 10, description: 10, sku: 5, availability: 5 };
-  let totalWeight = 0, weightedSum = 0;
+  const weights = {
+    name: 30,
+    price: 25,
+    images: 15,
+    brand: 10,
+    description: 10,
+    sku: 5,
+    availability: 5,
+  };
+  let totalWeight = 0,
+    weightedSum = 0;
   for (const [field, weight] of Object.entries(weights)) {
     totalWeight += weight;
     weightedSum += (perField[field] || 0) * weight;
@@ -243,20 +241,26 @@ function _parseAndValidate(raw) {
   const warnings = [];
   for (const [field, conf] of Object.entries(perField)) {
     if (result[field] != null && conf < 50) {
-      warnings.push(`⚠️ LLM field "${field}" has low confidence (${conf}/100).`);
+      warnings.push(
+        `⚠️ LLM field "${field}" has low confidence (${conf}/100).`,
+      );
     }
   }
 
   logger.info(MODULE, "llm-extraction-done", {
     overallConfidence,
-    fieldsFound: fieldList.filter(f => result[f] != null && result[f] !== "").length,
+    fieldsFound: fieldList.filter((f) => result[f] != null && result[f] !== "")
+      .length,
   });
 
   return {
     result,
     perField,
     overallConfidence,
-    method:   "llm-gemini",
+    // Not "llm-gemini" any more: whichever of the four providers the user
+    // configured answered this, and a label naming one vendor was wrong for
+    // three of them — including the local one that costs nothing.
+    method: "llm",
     warnings,
     needsLlm: false, // by definition — LLM already ran
   };
@@ -275,26 +279,29 @@ function _str(v) {
 function _arrayOfStrings(v) {
   if (!Array.isArray(v)) return [];
   return v
-    .map(item => _str(item))
-    .filter(s => s !== null && s.startsWith("http")); // must be absolute URLs
+    .map((item) => _str(item))
+    .filter((s) => s !== null && s.startsWith("http")); // must be absolute URLs
 }
 
 // ── Convenience wrapper ───────────────────────────────────────────────────────
 
 /**
- * High-level function used by service-worker.js.
- * Loads the Gemini key automatically, calls llmExtract, returns result.
+ * Run layer 3 with whatever model the user configured, if any.
  *
  * @param {string} simplifiedDom
- * @returns {Promise<object|null>}
+ * @returns {Promise<object|null>} null when no model is configured — which is
+ *   the default, and not a failure.
  */
 export async function runLlmLayer(simplifiedDom) {
-  const apiKey = await getApiKey("gemini").catch(() => null);
-  if (!apiKey) {
-    logger.info(MODULE, "no-gemini-key", { note: "Skipping LLM layer — no Gemini key stored." });
+  const config = await readGatewayConfig();
+  if (!config) {
+    logger.info(MODULE, "no-model-configured", {
+      note: "Skipping the AI layer — no provider set up in Settings.",
+    });
     return null;
   }
-  return llmExtract(simplifiedDom, apiKey);
+  logger.info(MODULE, "asking", { model: describeGateway(config) });
+  return llmExtract(simplifiedDom, config);
 }
 
 // === END llm-extractor.js ===

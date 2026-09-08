@@ -3,7 +3,7 @@
  * @module page-sniffer
  * @description Injected into the "MAIN" world (same context as the website).
  *   Hooks window.fetch and XMLHttpRequest to silently capture background APIs.
- *   Transmits captured data (url, method, request/response bodies) to the 
+ *   Transmits captured data (url, method, request/response bodies) to the
  *   isolated content script (injector.js) via window.postMessage.
  */
 
@@ -16,8 +16,20 @@
   function _shouldLog(url, contentType) {
     if (!url) return false;
     const strUrl = String(url).toLowerCase();
-    if (strUrl.includes(".png") || strUrl.includes(".jpg") || strUrl.includes(".css") || strUrl.includes(".woff")) return false;
-    if (contentType && (contentType.includes("image") || contentType.includes("font") || contentType.includes("css"))) return false;
+    if (
+      strUrl.includes(".png") ||
+      strUrl.includes(".jpg") ||
+      strUrl.includes(".css") ||
+      strUrl.includes(".woff")
+    )
+      return false;
+    if (
+      contentType &&
+      (contentType.includes("image") ||
+        contentType.includes("font") ||
+        contentType.includes("css"))
+    )
+      return false;
     return true;
   }
 
@@ -35,7 +47,7 @@
             apiType: type,
           },
         },
-        "*"
+        "*",
       );
     } catch {
       // Ignore cloning errors
@@ -57,7 +69,8 @@
     let method = "GET";
     if (initObj) {
       if (initObj.method) method = initObj.method;
-      if (initObj.body && typeof initObj.body === "string") reqBody = initObj.body;
+      if (initObj.body && typeof initObj.body === "string")
+        reqBody = initObj.body;
     } else if (startObj instanceof Request) {
       method = startObj.method;
     }
@@ -72,7 +85,14 @@
         clone
           .text()
           .then((resText) => {
-            _sendPayload(method, url, response.status, reqBody, resText, "fetch");
+            _sendPayload(
+              method,
+              url,
+              response.status,
+              reqBody,
+              resText,
+              "fetch",
+            );
           })
           .catch(() => {});
       }
@@ -94,7 +114,7 @@
 
   XMLHttpRequest.prototype.send = function (body) {
     this._fsReqBody = typeof body === "string" ? body : "";
-    
+
     this.addEventListener("load", function () {
       const ct = this.getResponseHeader("content-type") || "";
       if (_shouldLog(this._fsUrl, ct)) {
@@ -104,7 +124,14 @@
             resBody = this.responseText;
           }
         } catch {}
-        _sendPayload(this._fsMethod, this._fsUrl, this.status, this._fsReqBody, resBody, "xhr");
+        _sendPayload(
+          this._fsMethod,
+          this._fsUrl,
+          this.status,
+          this._fsReqBody,
+          resBody,
+          "xhr",
+        );
       }
     });
 

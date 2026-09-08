@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
+import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -14,10 +15,19 @@ import { z } from "zod";
 import {
   compilePipeline,
   serializePipeline,
+  findUnexportableSteps,
+  findUnresolvedTemplates,
+  redactSecrets,
 } from "../script-gen/pipeline-compiler.js";
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { checkRobots } from "../ethics/robots-parser.js";
+import { ALL_STEP_TYPES } from "../utils/step-types.js";
+import { VERSION } from "../utils/version.js";
+import {
+  formatRows,
+  defaultFilename as rowFilename,
+} from "../exporters/row-formatters.js";
 import {
   scanRows,
   scanText,
@@ -28,19 +38,39 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = path.resolve(__dirname, "..");
 const ROOT = resolveRootFromArgs(process.argv.slice(2)) ?? DEFAULT_ROOT;
 const TRANSPORT_MODE =
-  resolveArgValue(process.argv.slice(2), "--transport=") ??
+  resolveArgValue(process.argv.slice(2), "--transport") ??
   process.env.MCP_TRANSPORT ??
   "stdio";
 const HTTP_PORT = Number(
-  resolveArgValue(process.argv.slice(2), "--port=") ?? process.env.PORT ?? 3000,
+  resolveArgValue(process.argv.slice(2), "--port") ?? process.env.PORT ?? 3000,
 );
+
+// Loopback by default. The previous app.listen(HTTP_PORT) bound every
+// interface, so the server was reachable from the local network with no
+// authentication at all — while repo_write_file was a registered tool.
+const HTTP_HOST =
+  resolveArgValue(process.argv.slice(2), "--host") ??
+  process.env.HOST ??
+  "127.0.0.1";
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+/**
+ * Whether tools that modify the workspace may run.
+ *
+ * Over stdio the client is a process the user started, so writes are allowed.
+ * Over HTTP anyone who can reach the port is the client, so they are refused
+ * unless explicitly enabled.
+ */
+const WRITES_ALLOWED =
+  TRANSPORT_MODE === "stdio" || process.argv.slice(2).includes("--allow-write");
 const PIPELINES_DIR = path.join(ROOT, "pipelines");
 const httpSessions = new Map();
 const httpSessionServers = new Map();
 
 const server = new McpServer({
   name: "flowscrape-v3",
-  version: "3.0.0",
+  version: VERSION,
 });
 const toolDefinitions = [];
 const registerTool = server.tool.bind(server);
@@ -53,7 +83,7 @@ server.tool = (...args) => {
 function createServerInstance() {
   const instance = new McpServer({
     name: "flowscrape-v3",
-    version: "3.0.0",
+    version: VERSION,
   });
 
   for (const [name, description, inputSchema, handler] of toolDefinitions) {
@@ -63,19 +93,11 @@ function createServerInstance() {
   return instance;
 }
 
-const supportedStepTypes = new Set([
-  "WEBSITE",
-  "NAVIGATE",
-  "API",
-  "CLICK",
-  "WAIT",
-  "EXTRACT",
-  "FORM_FILL",
-  "EXPORT",
-  "SCROLL",
-  "LOOP",
-  "IF_ELSE",
-]);
+// Derived from the shared vocabulary rather than hand-maintained. The old
+// hardcoded list was missing 11 real step types — pipeline_validate reported
+// FILL and AUTO_EXTRACT as "unsupported" for pipelines the UI had just built —
+// and listed FORM_FILL, which is not a step type at all.
+const supportedStepTypes = new Set(ALL_STEP_TYPES);
 
 server.tool(
   "repo_list_files",
@@ -123,6 +145,7 @@ server.tool(
     content: z.string(),
   },
   async ({ path: filePath, content }) => {
+    assertWritesAllowed("repo_write_file");
     const resolved = resolveWorkspacePath(filePath);
     await fs.mkdir(path.dirname(resolved), { recursive: true });
     await fs.writeFile(resolved, content, "utf8");
@@ -140,7 +163,18 @@ server.tool(
     query: z.string(),
     regex: z.boolean().optional(),
     caseSensitive: z.boolean().optional(),
-    include: z.string().optional(),
+    include: z
+      .string()
+      .optional()
+      .describe(
+        'Directory to search under, relative to the workspace root (e.g. "content"). Not a glob — use filePattern to filter file names.',
+      ),
+    filePattern: z
+      .string()
+      .optional()
+      .describe(
+        'Regular expression matched against each file\'s workspace-relative path, e.g. "\\.mjs$".',
+      ),
     maxResults: z.number().int().min(1).max(200).optional(),
   },
   async ({
@@ -148,17 +182,44 @@ server.tool(
     regex = false,
     caseSensitive = false,
     include = ".",
+    filePattern,
     maxResults = 50,
   }) => {
-    const needle = regex ? new RegExp(query, caseSensitive ? "g" : "gi") : null;
+    // `include` was described only as an optional string and passed straight to
+    // resolveWorkspacePath, so anyone who reasonably tried "**/*.js" got an
+    // unhelpful path error (G-07). Say so, and offer the thing they wanted.
+    if (/[*?[\]]/.test(include)) {
+      throw new Error(
+        `include is a directory, not a glob (got "${include}"). Use include for the directory and filePattern for a file-name regular expression.`,
+      );
+    }
+
+    let nameFilter = null;
+    if (filePattern) {
+      try {
+        nameFilter = new RegExp(filePattern);
+      } catch (err) {
+        throw new Error(
+          `filePattern is not a valid regular expression: ${err.message}`,
+        );
+      }
+    }
+
     const literal = caseSensitive ? query : query.toLowerCase();
     const matches = [];
     const files = await collectFiles(resolveWorkspacePath(include));
 
     for (const file of files) {
       if (matches.length >= maxResults) break;
+      if (nameFilter && !nameFilter.test(toWorkspaceRelative(file))) continue;
       const content = await safeReadText(file);
       if (content == null) continue;
+      // Built per file. One /g regex shared across the loop happened to work
+      // with String.match, which resets lastIndex — but it is one edit away
+      // from being a bug that skips matches (G-08).
+      const needle = regex
+        ? new RegExp(query, caseSensitive ? "g" : "gi")
+        : null;
       const lines = content.split(/\r?\n/);
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -319,6 +380,7 @@ server.tool(
     recipe,
     overwrite = false,
   }) => {
+    assertWritesAllowed("pipeline_save");
     const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
     const { ast, errors } = compilePipeline(input);
     if (!ast) return textResult({ errors });
@@ -401,7 +463,19 @@ server.tool(
     const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
     const { ast, errors } = compilePipeline(input);
     if (!ast) return textResult({ errors });
-    return textResult({ errors, code: emitPython(ast) });
+    // Same order and same treatment as the extension's script:export handler,
+    // so both surfaces produce the same file: scan for templates first, then
+    // rewrite credentials into environment markers the script resolves at run
+    // time (B-14, B-16).
+    const templates = findUnresolvedTemplates(ast);
+    const secrets = redactSecrets(ast);
+    return textResult({
+      errors,
+      unexportable: findUnexportableSteps(ast),
+      unresolvedTemplates: templates,
+      secrets,
+      code: emitPython(ast),
+    });
   },
 );
 
@@ -416,7 +490,209 @@ server.tool(
     const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
     const { ast, errors } = compilePipeline(input);
     if (!ast) return textResult({ errors });
-    return textResult({ errors, code: emitNode(ast) });
+    // Same order and same treatment as the extension's script:export handler,
+    // so both surfaces produce the same file: scan for templates first, then
+    // rewrite credentials into environment markers the script resolves at run
+    // time (B-14, B-16).
+    const templates = findUnresolvedTemplates(ast);
+    const secrets = redactSecrets(ast);
+    return textResult({
+      errors,
+      unexportable: findUnexportableSteps(ast),
+      unresolvedTemplates: templates,
+      secrets,
+      code: emitNode(ast),
+    });
+  },
+);
+
+/**
+ * Where a run's script and its output go.
+ *
+ * Under the repo rather than the system temp directory, for one reason that
+ * matters more than tidiness: the emitted script does `import { chromium } from
+ * "playwright"`, and Node resolves that from the script's own location. A file
+ * in /tmp resolves nothing.
+ */
+const RUN_DIR = path.join(ROOT, ".fs-mcp-runs");
+
+/**
+ * A browser for the emitted script to drive, when the environment has not
+ * named one.
+ *
+ * Headless Playwright reaches for a separate "headless shell" build by default,
+ * so a machine carrying full Chromium but not that variant fails at launch with
+ * a message about installing browsers. Looking for what is actually there costs
+ * one directory read and saves that entirely; finding nothing is fine, because
+ * the script's own default then applies and the failure is reported with the
+ * install command.
+ */
+async function _findBrowser() {
+  if (process.env.FS_BROWSER_PATH) return process.env.FS_BROWSER_PATH;
+  const base = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!base) return null;
+  let entries = [];
+  try {
+    entries = await fs.readdir(base);
+  } catch {
+    return null;
+  }
+  for (const dir of entries.filter((d) => d.startsWith("chromium-")).sort()) {
+    for (const rel of [
+      "chrome-linux/chrome",
+      "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+      "chrome-win/chrome.exe",
+    ]) {
+      const candidate = path.join(base, dir, rel);
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {
+        // Try the next layout.
+      }
+    }
+  }
+  return null;
+}
+
+/** One JSON object per line is what the emitted script prints per row. */
+function _rowsFromStdout(stdout) {
+  const rows = [];
+  const noise = [];
+  for (const line of String(stdout).split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    if (text.startsWith("{") || text.startsWith("[")) {
+      try {
+        rows.push(JSON.parse(text));
+        continue;
+      } catch {
+        // Not a row after all — a log line that happens to start with a brace.
+      }
+    }
+    noise.push(text);
+  }
+  return { rows, noise };
+}
+
+server.tool(
+  "pipeline_run",
+  "Run a pipeline and return the rows it scraped. Requires playwright to be installed.",
+  {
+    recipeJson: z.string().optional(),
+    recipe: z.any().optional(),
+    timeoutMs: z.number().int().min(1000).max(600000).optional(),
+    keepScript: z.boolean().optional(),
+  },
+  async ({ recipeJson, recipe, timeoutMs = 120000, keepScript = false }) => {
+    const input = recipe ?? parseMaybeJson(recipeJson) ?? null;
+    const { ast, errors } = compilePipeline(input);
+    if (!ast) return textResult({ ok: false, errors });
+
+    // Refused before anything launches, not discovered halfway through. A step
+    // with no standalone equivalent emits a throw, so running first would burn
+    // a browser launch to arrive at a message we already have.
+    const unexportable = findUnexportableSteps(ast);
+    if (unexportable.length) {
+      return textResult({
+        ok: false,
+        reason: "this pipeline contains steps a standalone script cannot run",
+        unexportable,
+        hint:
+          "Those steps are extension-only — the sniffer needs the browser's " +
+          "own network hooks, and answering a challenge needs a person. Run " +
+          "the pipeline in the extension, or take those steps out.",
+      });
+    }
+    const unresolved = findUnresolvedTemplates(ast);
+    if (unresolved.length) {
+      return textResult({
+        ok: false,
+        reason: "this pipeline has templates nothing will fill in at run time",
+        unresolvedTemplates: unresolved,
+      });
+    }
+
+    // The script *is* the runner. There is no second step engine here on
+    // purpose: a pipeline executed by its own emitted script cannot silently
+    // mean something different from the script the user exports, and the one
+    // definition of what a step does stays in one place. It also means this
+    // tool inherits the emitters' limits exactly, which is the honest bargain.
+    const secrets = redactSecrets(ast);
+    const code = emitNode(ast);
+    await fs.mkdir(RUN_DIR, { recursive: true });
+    const scriptPath = path.join(
+      RUN_DIR,
+      `run_${randomUUID().slice(0, 8)}.mjs`,
+    );
+    await fs.writeFile(scriptPath, code, "utf8");
+
+    const browserPath = await _findBrowser();
+    const started = Date.now();
+    let out;
+    try {
+      out = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [scriptPath], {
+          cwd: ROOT,
+          env: browserPath
+            ? { ...process.env, FS_BROWSER_PATH: browserPath }
+            : process.env,
+        });
+        let stdout = "";
+        let stderr = "";
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(
+            new Error(
+              `the run passed ${Math.round(timeoutMs / 1000)}s and was stopped`,
+            ),
+          );
+        }, timeoutMs);
+        child.stdout.on("data", (d) => (stdout += d));
+        child.stderr.on("data", (d) => (stderr += d));
+        child.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          resolve({ code, stdout, stderr });
+        });
+      });
+    } catch (err) {
+      if (!keepScript) await fs.rm(scriptPath, { force: true });
+      return textResult({ ok: false, error: err.message });
+    }
+
+    if (!keepScript) await fs.rm(scriptPath, { force: true });
+    const { rows, noise } = _rowsFromStdout(out.stdout);
+    const missingPlaywright = /Cannot find package 'playwright'/.test(
+      out.stderr,
+    );
+
+    return textResult({
+      ok: out.code === 0,
+      rowCount: rows.length,
+      rows,
+      elapsedMs: Date.now() - started,
+      exitCode: out.code,
+      // Kept apart from the rows so a log line can never be mistaken for data.
+      log: noise.slice(0, 40),
+      stderr: String(out.stderr).slice(0, 4000),
+      ...(missingPlaywright
+        ? {
+            hint:
+              "The generated script needs Playwright. Install it in this " +
+              "repository (`npm install playwright && npx playwright install " +
+              "chromium`) and run this again.",
+          }
+        : {}),
+      // Named, never valued: a credential moved into an environment marker is
+      // still a credential (C-03, B-16).
+      secretsMovedToEnv: secrets,
+      ...(browserPath ? { browser: browserPath } : {}),
+      ...(keepScript ? { scriptPath } : {}),
+    });
   },
 );
 
@@ -498,8 +774,14 @@ server.tool(
       targetOrigin: compiled.ast?.targetOrigin ?? input?.targetOrigin ?? "",
       stepCount: flattened.length,
       errors: compiled.errors,
-      pythonBytes: compiled.ast ? emitPython(compiled.ast).length : 0,
-      nodeBytes: compiled.ast ? emitNode(compiled.ast).length : 0,
+      // This used to emit both scripts in full purely to measure .length and
+      // throw them away (G-06) — two complete code generations per call, for a
+      // byte count nobody can act on. What a caller actually needs to know is
+      // what the export will not carry.
+      unexportable: compiled.ast ? findUnexportableSteps(compiled.ast) : [],
+      unresolvedTemplates: compiled.ast
+        ? findUnresolvedTemplates(compiled.ast)
+        : [],
     };
     return textResult(report);
   },
@@ -527,17 +809,45 @@ main().catch((error) => {
 });
 
 function resolveRootFromArgs(args) {
-  const rootArg = args.find((arg) => arg.startsWith("--root="));
-  if (!rootArg) return null;
-  const value = rootArg.slice("--root=".length).trim();
+  const value = resolveArgValue(args, "--root");
   return value ? path.resolve(value) : null;
 }
 
-function resolveArgValue(args, prefix) {
-  const arg = args.find((value) => value.startsWith(prefix));
-  if (!arg) return null;
-  const value = arg.slice(prefix.length).trim();
-  return value || null;
+/**
+ * Read `--name=value` or `--name value`.
+ *
+ * Only the `=` form used to be accepted, while the README documents the
+ * space-separated form — so following the README silently ignored --root and
+ * rooted the server at the repository directory instead.
+ *
+ * @param {string[]} args
+ * @param {string} name - flag name, with or without a trailing "="
+ */
+function resolveArgValue(args, name) {
+  const flag = name.endsWith("=") ? name.slice(0, -1) : name;
+
+  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
+  if (inline) {
+    const value = inline.slice(flag.length + 1).trim();
+    if (value) return value;
+  }
+
+  const index = args.indexOf(flag);
+  if (index !== -1) {
+    const next = args[index + 1];
+    if (next && !next.startsWith("--")) return next.trim() || null;
+  }
+
+  return null;
+}
+
+function assertWritesAllowed(toolName) {
+  if (WRITES_ALLOWED) return;
+  throw new Error(
+    `${toolName} is disabled: this server is running over HTTP, where any client ` +
+      `that can reach the port could modify the workspace. Restart with ` +
+      `--allow-write to enable it.`,
+  );
 }
 
 function resolveWorkspacePath(targetPath) {
@@ -576,7 +886,16 @@ async function listPipelineFiles(
   const entries = [];
   if (currentDepth > maxDepth) return entries;
 
-  const dirents = await fs.readdir(directory, { withFileTypes: true });
+  // The pipelines folder does not exist in a fresh clone, and readdir throwing
+  // ENOENT made pipeline_list fail instead of reporting an empty library.
+  let dirents;
+  try {
+    dirents = await fs.readdir(directory, { withFileTypes: true });
+  } catch (err) {
+    if (err.code === "ENOENT") return entries;
+    throw err;
+  }
+
   for (const dirent of dirents) {
     const fullPath = path.join(directory, dirent.name);
     if (dirent.isDirectory()) {
@@ -623,7 +942,10 @@ async function listPipelineFiles(
 }
 
 async function startHttpServer() {
-  const app = createMcpExpressApp();
+  // createMcpExpressApp applies DNS-rebinding protection automatically for
+  // loopback hosts; pass the host explicitly so the middleware and the socket
+  // agree about what is being protected.
+  const app = createMcpExpressApp({ host: HTTP_HOST });
 
   app.post("/mcp", async (req, res) => {
     const sessionId = req.headers["mcp-session-id"];
@@ -713,10 +1035,22 @@ async function startHttpServer() {
   });
 
   await new Promise((resolve) => {
-    app.listen(HTTP_PORT, () => {
+    app.listen(HTTP_PORT, HTTP_HOST, () => {
       console.log(
-        `HTTP MCP server listening on http://localhost:${HTTP_PORT}/mcp`,
+        `HTTP MCP server listening on http://${HTTP_HOST}:${HTTP_PORT}/mcp`,
       );
+      if (!LOOPBACK_HOSTS.has(HTTP_HOST)) {
+        console.warn(
+          `WARNING: bound to ${HTTP_HOST}, which is reachable beyond this machine. ` +
+            `This server has no authentication. DNS-rebinding protection is not ` +
+            `applied to non-loopback hosts.`,
+        );
+      }
+      if (!WRITES_ALLOWED) {
+        console.log(
+          "Workspace writes are disabled over HTTP. Pass --allow-write to enable them.",
+        );
+      }
       resolve();
     });
   });
@@ -852,116 +1186,12 @@ function flattenSteps(steps, output = []) {
   return output;
 }
 
-function renderRows(rows, format) {
-  const safeRows = Array.isArray(rows) ? rows : [];
-  switch (format) {
-    case "csv":
-      return toCSV(safeRows);
-    case "json":
-      return JSON.stringify(safeRows, null, 2);
-    case "jsonl":
-      return (
-        safeRows.map((row) => JSON.stringify(row)).join("\n") +
-        (safeRows.length ? "\n" : "")
-      );
-    case "tsv":
-      return toTSV(safeRows);
-    case "xml":
-      return toXML(safeRows);
-    case "markdown":
-      return toMarkdown(safeRows);
-    default:
-      throw new Error(`Unsupported format: ${format}`);
-  }
-}
-
-function toCSV(rows) {
-  if (rows.length === 0) return "";
-  const headers = Object.keys(rows[0]);
-  const lines = [headers.map(csvEscape).join(",")];
-  for (const row of rows) {
-    lines.push(
-      headers.map((header) => csvEscape(row?.[header] ?? "")).join(","),
-    );
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function toTSV(rows) {
-  if (rows.length === 0) return "";
-  const headers = Object.keys(rows[0]);
-  const lines = [headers.join("\t")];
-  for (const row of rows) {
-    lines.push(
-      headers
-        .map((header) => String(row?.[header] ?? "").replace(/\t/g, " "))
-        .join("\t"),
-    );
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function toXML(rows) {
-  const escape = (value) =>
-    String(value ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  const lines = ['<?xml version="1.0" encoding="UTF-8"?>', "<rows>"];
-  for (const row of rows) {
-    lines.push("  <row>");
-    for (const [key, value] of Object.entries(row ?? {})) {
-      lines.push(`    <${key}>${escape(value)}</${key}>`);
-    }
-    lines.push("  </row>");
-  }
-  lines.push("</rows>");
-  return `${lines.join("\n")}\n`;
-}
-
-function toMarkdown(rows) {
-  if (rows.length === 0) return "";
-  const headers = Object.keys(rows[0]);
-  const escape = (value) => String(value ?? "").replace(/\|/g, "\\|");
-  const lines = [
-    `| ${headers.map(escape).join(" | ")} |`,
-    `| ${headers.map(() => "---").join(" | ")} |`,
-  ];
-  for (const row of rows) {
-    lines.push(
-      `| ${headers.map((header) => escape(row?.[header] ?? "")).join(" | ")} |`,
-    );
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function csvEscape(value) {
-  const text = String(value ?? "");
-  if (/[",\n\r]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-  return text;
-}
-
-function defaultFilename(format) {
-  switch (format) {
-    case "csv":
-      return "export.csv";
-    case "json":
-      return "export.json";
-    case "jsonl":
-      return "export.jsonl";
-    case "tsv":
-      return "export.tsv";
-    case "xml":
-      return "export.xml";
-    case "markdown":
-      return "export.md";
-    default:
-      return "export.txt";
-  }
-}
+// Formatting is shared with the extension (exporters/row-formatters.js) so the
+// MCP output matches what a pipeline exports. The local copies derived headers
+// from Object.keys(rows[0]), so any column missing from the first row was
+// dropped from CSV, TSV and Markdown entirely.
+const renderRows = formatRows;
+const defaultFilename = rowFilename;
 
 function textResult(data) {
   return {

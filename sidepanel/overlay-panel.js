@@ -3,73 +3,100 @@
  * @module overlay-panel
  * @description Renders the overlay preferences UI into the new Config view's accordion section.
  */
-'use strict';
+"use strict";
 
-const SK_PREFS  = 'fs_overlay_prefs';
-const SK_PALETTE = 'fs_zone_palette';
+const SK_PREFS = "fs_overlay_prefs";
+const SK_PALETTE = "fs_zone_palette";
 
 const DEFAULT_PREFS = {
-  enabled:           true,
+  enabled: true,
   showInPreviewMode: true,
-  showDuringRun:     true,
-  opacity:           0.28,
-  showLabels:        true,
-  showMatchCount:    true,
-  pulseAnimation:    true,
+  showDuringRun: true,
+  opacity: 0.28,
+  showLabels: true,
+  showMatchCount: true,
+  pulseAnimation: true,
   autoFadeCompleted: true,
-  fadeDelayMs:       2000,
-  customPalette:     null,
+  fadeDelayMs: 2000,
+  customPalette: null,
 };
 
 const DEFAULT_PALETTE = [
-  '#3B82F6','#10B981','#F59E0B','#8B5CF6','#EF4444','#06B6D4','#EC4899','#84CC16',
+  "#3B82F6",
+  "#10B981",
+  "#F59E0B",
+  "#8B5CF6",
+  "#EF4444",
+  "#06B6D4",
+  "#EC4899",
+  "#84CC16",
 ];
 
-const PALETTE_NAMES = ['NAVIGATE','EXTRACT','FORM_FILL','CLICK','Error','SCROLL','WAIT','PAGINATE'];
+const PALETTE_NAMES = [
+  "NAVIGATE",
+  "EXTRACT",
+  "FORM_FILL",
+  "CLICK",
+  "Error",
+  "SCROLL",
+  "WAIT",
+  "PAGINATE",
+];
 
-let _prefs   = { ...DEFAULT_PREFS };
+let _prefs = { ...DEFAULT_PREFS };
 let _palette = [...DEFAULT_PALETTE];
 
 async function _loadPrefs() {
-  const { [SK_PREFS]: p, [SK_PALETTE]: pal } = await chrome.storage.local.get([SK_PREFS, SK_PALETTE]);
-  if (p)   _prefs   = { ...DEFAULT_PREFS, ...p };
+  const { [SK_PREFS]: p, [SK_PALETTE]: pal } = await chrome.storage.local.get([
+    SK_PREFS,
+    SK_PALETTE,
+  ]);
+  if (p) _prefs = { ...DEFAULT_PREFS, ...p };
   if (pal) _palette = pal;
   _renderPanel();
 }
 
 async function _savePrefs() {
   await chrome.storage.local.set({
-    [SK_PREFS]:  _prefs,
+    [SK_PREFS]: _prefs,
     [SK_PALETTE]: _palette,
   });
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
     if (tab?.id) {
-      await chrome.tabs.sendMessage(tab.id, { type: 'overlay:reloadPrefs', payload: { prefs: _prefs } });
+      await chrome.tabs.sendMessage(tab.id, {
+        type: "overlay:reloadPrefs",
+        payload: { prefs: _prefs },
+      });
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 function _renderPanel() {
-  const container = document.getElementById('overlay-panel-root');
+  const container = document.getElementById("overlay-panel-root");
   if (!container) return;
 
   container.innerHTML = `
     <!-- Master Toggle -->
     <div class="toggle-wrap" style="padding-bottom: 8px; border-bottom: 1px solid var(--bg-border); margin-bottom: 12px;">
-      <input type="checkbox" id="ov-master" ${_prefs.enabled ? 'checked' : ''}>
+      <input type="checkbox" id="ov-master" ${_prefs.enabled ? "checked" : ""}>
       <div class="toggle-switch"></div>
       <span style="font-weight: 600;">Master Overlay Feature</span>
     </div>
 
     <div class="flex gap-2 justify-between">
        <div class="toggle-wrap">
-          <input type="checkbox" id="ov-show-preview" ${_prefs.showInPreviewMode ? 'checked' : ''}>
+          <input type="checkbox" id="ov-show-preview" ${_prefs.showInPreviewMode ? "checked" : ""}>
           <div class="toggle-switch"></div>
           <span>Show on hover</span>
        </div>
        <div class="toggle-wrap">
-          <input type="checkbox" id="ov-show-run" ${_prefs.showDuringRun ? 'checked' : ''}>
+          <input type="checkbox" id="ov-show-run" ${_prefs.showDuringRun ? "checked" : ""}>
           <div class="toggle-switch"></div>
           <span>Show on run</span>
        </div>
@@ -80,17 +107,17 @@ function _renderPanel() {
 
     <div class="grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
         <div class="toggle-wrap">
-            <input type="checkbox" id="ov-show-labels" ${_prefs.showLabels ? 'checked' : ''}>
+            <input type="checkbox" id="ov-show-labels" ${_prefs.showLabels ? "checked" : ""}>
             <div class="toggle-switch"></div>
             <span>Labels</span>
         </div>
         <div class="toggle-wrap">
-            <input type="checkbox" id="ov-pulse" ${_prefs.pulseAnimation ? 'checked' : ''}>
+            <input type="checkbox" id="ov-pulse" ${_prefs.pulseAnimation ? "checked" : ""}>
             <div class="toggle-switch"></div>
             <span>Pulse FX</span>
         </div>
         <div class="toggle-wrap" style="grid-column: span 2;">
-            <input type="checkbox" id="ov-auto-fade" ${_prefs.autoFadeCompleted ? 'checked' : ''}>
+            <input type="checkbox" id="ov-auto-fade" ${_prefs.autoFadeCompleted ? "checked" : ""}>
             <div class="toggle-switch"></div>
             <span>Auto-fade (${_prefs.fadeDelayMs}ms)</span>
         </div>
@@ -99,10 +126,14 @@ function _renderPanel() {
     <!-- Palette -->
     <label style="margin-top:16px;">Color Palette</label>
     <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:8px;margin-bottom:8px;">
-        ${_palette.map((color, i) => `
-          <input type="color" id="ov-color-${i}" value="${color}" title="${PALETTE_NAMES[i] || 'Zone '+i}"
+        ${_palette
+          .map(
+            (color, i) => `
+          <input type="color" id="ov-color-${i}" value="${color}" title="${PALETTE_NAMES[i] || "Zone " + i}"
           style="width:100%;height:24px;border:none;padding:0;cursor:pointer;border-radius:4px;background:none;">
-        `).join('')}
+        `,
+          )
+          .join("")}
     </div>
     
     <div class="flex justify-between gap-2 mt-4">
@@ -115,60 +146,74 @@ function _renderPanel() {
 }
 
 function _bindEvents() {
-  document.getElementById('ov-master')?.addEventListener('change', async (e) => {
-    _prefs.enabled = e.target.checked;
-    await _savePrefs();
-  });
+  document
+    .getElementById("ov-master")
+    ?.addEventListener("change", async (e) => {
+      _prefs.enabled = e.target.checked;
+      await _savePrefs();
+    });
 
   const cbMap = {
-    'ov-show-preview': 'showInPreviewMode',
-    'ov-show-run':     'showDuringRun',
-    'ov-show-labels':  'showLabels',
-    'ov-pulse':        'pulseAnimation',
-    'ov-auto-fade':    'autoFadeCompleted',
+    "ov-show-preview": "showInPreviewMode",
+    "ov-show-run": "showDuringRun",
+    "ov-show-labels": "showLabels",
+    "ov-pulse": "pulseAnimation",
+    "ov-auto-fade": "autoFadeCompleted",
   };
-  
+
   for (const [id, key] of Object.entries(cbMap)) {
-    document.getElementById(id)?.addEventListener('change', async (e) => {
+    document.getElementById(id)?.addEventListener("change", async (e) => {
       _prefs[key] = e.target.checked;
       await _savePrefs();
     });
   }
 
-  const opSlider = document.getElementById('ov-opacity');
-  const opLabel  = document.getElementById('ov-opacity-label');
-  opSlider?.addEventListener('input', (e) => {
+  const opSlider = document.getElementById("ov-opacity");
+  const opLabel = document.getElementById("ov-opacity-label");
+  opSlider?.addEventListener("input", (e) => {
     const val = parseInt(e.target.value, 10);
     _prefs.opacity = val / 100;
     if (opLabel) opLabel.textContent = `Opacity: ${val}%`;
   });
-  opSlider?.addEventListener('change', _savePrefs);
+  opSlider?.addEventListener("change", _savePrefs);
 
   _palette.forEach((_, i) => {
-    document.getElementById(`ov-color-${i}`)?.addEventListener('change', async (e) => {
-      _palette[i] = e.target.value;
-      _prefs.customPalette = [..._palette];
+    document
+      .getElementById(`ov-color-${i}`)
+      ?.addEventListener("change", async (e) => {
+        _palette[i] = e.target.value;
+        _prefs.customPalette = [..._palette];
+        await _savePrefs();
+      });
+  });
+
+  document
+    .getElementById("ov-reset-palette")
+    ?.addEventListener("click", async () => {
+      _palette = [...DEFAULT_PALETTE];
+      _prefs.customPalette = null;
       await _savePrefs();
+      _renderPanel();
     });
-  });
 
-  document.getElementById('ov-reset-palette')?.addEventListener('click', async () => {
-    _palette = [...DEFAULT_PALETTE];
-    _prefs.customPalette = null;
-    await _savePrefs();
-    _renderPanel();
-  });
-
-  document.getElementById('ov-preview-now')?.addEventListener('click', async () => {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return alert('No active tab');
-    await chrome.tabs.sendMessage(tab.id, { type: 'overlay:setMode', payload: { action: 'previewAll' } });
-  });
+  document
+    .getElementById("ov-preview-now")
+    ?.addEventListener("click", async () => {
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      if (!tab?.id) return alert("No active tab");
+      await chrome.tabs.sendMessage(tab.id, {
+        type: "overlay:setMode",
+        payload: { action: "previewAll" },
+      });
+    });
 }
 
 // Init when module loads
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', _loadPrefs);
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", _loadPrefs);
 } else {
-    _loadPrefs();
+  _loadPrefs();
 }

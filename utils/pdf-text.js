@@ -1,0 +1,628 @@
+// === pdf-text.js ===
+/**
+ * @module pdf-text
+ * @description Text extraction from a PDF, with no dependencies.
+ *
+ *   PDF_EXTRACTION had a full config UI — source, max pages, storeAs — and
+ *   never parsed anything. It logged "use MCP tool pdf_extract_text" and stored
+ *   `{status: "pending"}`, which is an instruction the user cannot act on:
+ *   there is no bridge from the extension to the MCP server (audit B-28, G-05).
+ *
+ *   The MCP server uses pdfjs. The extension has no bundler and no npm
+ *   dependencies, so this is a direct reader instead. It handles what the
+ *   overwhelming majority of text PDFs are made of:
+ *
+ *     * uncompressed and FlateDecode content streams (via DecompressionStream,
+ *       which service workers have)
+ *     * literal `(string)` and hex `<hex>` operands of Tj, TJ, ' and "
+ *     * PDF string escapes, including octal
+ *     * per-font /ToUnicode CMaps, for bfchar and bfrange
+ *
+ *   What it does not do, and reports rather than guessing at:
+ *
+ *     * encrypted PDFs
+ *     * scanned pages, which contain images and no text at all
+ *     * CID text whose font ships no ToUnicode map — the bytes are glyph
+ *       indices, and without the map there is nothing to map them to
+ *
+ *   A page it cannot read comes back with an explicit note, never with the
+ *   mojibake that guessing would produce.
+ *
+ * @dependencies none
+ */
+
+"use strict";
+
+/**
+ * @typedef {Object} PdfPage
+ * @property {number} page
+ * @property {string} text
+ * @property {number} chars
+ * @property {string} [note] why this page has no text
+ */
+
+/**
+ * @typedef {Object} PdfText
+ * @property {PdfPage[]} pages
+ * @property {string}    text        every page joined with a blank line
+ * @property {number}    pageCount   content streams found
+ * @property {boolean}   truncated   whether maxPages cut it short
+ * @property {string[]}  warnings
+ */
+
+/** Bytes → a string with one char per byte, so offsets survive regex scanning. */
+function _latin1(bytes) {
+  let out = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return out;
+}
+
+/** The inverse, for handing a slice back to the inflater. */
+function _bytesOf(str) {
+  const out = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) out[i] = str.charCodeAt(i) & 0xff;
+  return out;
+}
+
+/**
+ * Inflate a zlib or raw-deflate stream.
+ *
+ * PDF writers are inconsistent about the zlib header, so try both.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {Promise<Uint8Array|null>} null when neither format decodes
+ */
+async function _inflate(bytes) {
+  for (const format of ["deflate", "deflate-raw"]) {
+    try {
+      const stream = new Blob([bytes])
+        .stream()
+        .pipeThrough(new DecompressionStream(format));
+      const buf = await new Response(stream).arrayBuffer();
+      return new Uint8Array(buf);
+    } catch {
+      // Try the other framing.
+    }
+  }
+  return null;
+}
+
+/**
+ * Pull every stream object out of the file, decoded where possible.
+ *
+ * @param {string} raw - the file as latin1
+ * @returns {Promise<Array<{ dict: string, data: string }>>}
+ */
+async function _readStreams(raw) {
+  const streams = [];
+  // `stream` is followed by CRLF or LF, then the bytes, then `endstream`.
+  //
+  // The lookbehind is load-bearing: `endstream` ends in `stream`, so a plain
+  // /stream\r?\n/ matches the tail of the very token that closes a stream. The
+  // cursor then restarted inside the next object's binary body, every later
+  // stream was framed wrongly, and their inflate failed — which cost the
+  // /ToUnicode maps and left a Chrome-printed PDF with no text at all.
+  const re = /(?<!end)stream\r?\n/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    const start = m.index + m[0].length;
+
+    // The dictionary is whatever precedes this stream back to the object head.
+    const objStart = raw.lastIndexOf(" obj", m.index);
+    const dict = objStart === -1 ? "" : raw.slice(objStart, m.index);
+
+    // Take exactly /Length bytes where the dictionary states one directly.
+    //
+    // Searching for the next "endstream" is not good enough, and neither is
+    // trusting this regex to land only on real stream headers: compressed font
+    // programs and CMaps are arbitrary bytes, and they contain sequences that
+    // look exactly like `stream\n`. Scanning without /Length made every stream
+    // after the first binary one start in the wrong place, so their inflate
+    // failed and the /ToUnicode maps were lost — which is why a Chrome-printed
+    // PDF came back with no text at all. Found by running the reader against a
+    // real PDF rather than a hand-built fixture.
+    const declared = dict.match(/\/Length\s+(\d+)(?!\s+\d+\s+R)/);
+    let end;
+    if (declared) {
+      end = start + Number(declared[1]);
+      // A wrong /Length (or one this simple parser mis-attributed) must not run
+      // past the file or swallow the rest of it.
+      if (end > raw.length || !/^\s*endstream/.test(raw.slice(end, end + 20))) {
+        end = raw.indexOf("endstream", start);
+      }
+    } else {
+      // /Length is an indirect reference, which needs the xref table to
+      // resolve. Fall back to the delimiter.
+      end = raw.indexOf("endstream", start);
+    }
+    if (end === -1) break;
+
+    let data = raw.slice(start, end).replace(/\r?\n$/, "");
+    if (/\/Filter\s*(\[[^\]]*\])?\s*\/?[^>]*FlateDecode/.test(dict)) {
+      const inflated = await _inflate(_bytesOf(data));
+      if (!inflated) {
+        // Compressed with something we cannot read, or a mis-framed stream.
+        re.lastIndex = end + "endstream".length;
+        continue;
+      }
+      data = _latin1(inflated);
+    }
+    streams.push({ dict, data });
+    // Past the real end, so a `stream\n` inside the bytes just consumed cannot
+    // be mistaken for the start of another one.
+    re.lastIndex = end + "endstream".length;
+  }
+  return streams;
+}
+
+/** Decode a PDF literal string body, resolving escapes. */
+function _decodeLiteral(body) {
+  let out = "";
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== "\\") {
+      out += ch;
+      continue;
+    }
+    const next = body[++i];
+    if (next === undefined) break;
+    if (next >= "0" && next <= "7") {
+      let oct = next;
+      while (oct.length < 3 && body[i + 1] >= "0" && body[i + 1] <= "7") {
+        oct += body[++i];
+      }
+      out += String.fromCharCode(parseInt(oct, 8));
+      continue;
+    }
+    const simple = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f" };
+    if (next === "\n") continue; // a line continuation
+    out += simple[next] ?? next;
+  }
+  return out;
+}
+
+/** Decode a `<...>` hex string. */
+function _decodeHex(body) {
+  const hex = body.replace(/[^0-9A-Fa-f]/g, "");
+  const padded = hex.length % 2 ? `${hex}0` : hex;
+  let out = "";
+  for (let i = 0; i < padded.length; i += 2) {
+    out += String.fromCharCode(parseInt(padded.slice(i, i + 2), 16));
+  }
+  return out;
+}
+
+/**
+ * Parse the /ToUnicode CMaps in a document into one code → text map per CMap.
+ *
+ * Keys are the raw byte sequences as they appear in the content stream, so a
+ * two-byte CID and a one-byte code are both handled.
+ *
+ * @param {Array<{ dict: string, data: string }>} streams
+ * @returns {Map<string, string>}
+ */
+function _readToUnicode(streams) {
+  const map = new Map();
+
+  for (const { data } of streams) {
+    if (!data.includes("beginbfchar") && !data.includes("beginbfrange")) {
+      continue;
+    }
+
+    for (const block of data.match(/beginbfchar([\s\S]*?)endbfchar/g) ?? []) {
+      const pairs = block.match(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g) ?? [];
+      for (const pair of pairs) {
+        const [src, dst] = pair
+          .match(/<([0-9A-Fa-f]+)>/g)
+          .map((h) => h.slice(1, -1));
+        map.set(_decodeHex(src), _utf16beToString(dst));
+      }
+    }
+
+    for (const block of data.match(/beginbfrange([\s\S]*?)endbfrange/g) ?? []) {
+      const rows =
+        block.match(
+          /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g,
+        ) ?? [];
+      for (const row of rows) {
+        const [lo, hi, dst] = row
+          .match(/<([0-9A-Fa-f]+)>/g)
+          .map((h) => h.slice(1, -1));
+        const width = lo.length / 2;
+        const start = parseInt(lo, 16);
+        const end = parseInt(hi, 16);
+        const base = parseInt(dst, 16);
+        // A runaway range would build a huge map for nothing.
+        if (end - start > 65535) continue;
+        for (let code = start; code <= end; code++) {
+          let key = "";
+          for (let b = width - 1; b >= 0; b--) {
+            key += String.fromCharCode((code >> (b * 8)) & 0xff);
+          }
+          map.set(key, String.fromCodePoint(base + (code - start)));
+        }
+      }
+    }
+  }
+  return map;
+}
+
+/** Big-endian UTF-16 hex → a JS string. */
+function _utf16beToString(hex) {
+  let out = "";
+  for (let i = 0; i + 3 < hex.length + 1; i += 4) {
+    const unit = parseInt(hex.slice(i, i + 4), 16);
+    if (Number.isNaN(unit)) break;
+    out += String.fromCharCode(unit);
+  }
+  return out;
+}
+
+/** Is this string mostly unprintable — i.e. glyph indices, not text? */
+function _looksLikeGlyphIndices(s) {
+  if (!s) return false;
+  let bad = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (c < 9 || (c > 13 && c < 32) || c === 0xfffd) bad++;
+  }
+  return bad / s.length > 0.3;
+}
+
+/**
+ * Pull the text operands out of one content stream.
+ *
+ * @param {string} content
+ * @param {Map<string, string>} toUnicode
+ * @returns {{ text: string, undecodable: boolean }}
+ */
+/**
+ * One string token from a content stream, as text.
+ *
+ * Shared by the plain-text reader and the positioned one, so the two cannot
+ * disagree about what a given PDF says — which they would, eventually, and the
+ * disagreement would show up as a table whose cells did not match the text
+ * beside them.
+ *
+ * @param {string} token - a `(literal)` or `<hex>` operand, brackets included
+ * @param {Map<string, string>} toUnicode
+ * @returns {{text: string, undecodable: boolean}}
+ */
+function _decodeToken(token, toUnicode) {
+  const raw =
+    token[0] === "("
+      ? _decodeLiteral(token.slice(1, -1))
+      : _decodeHex(token.slice(1, -1));
+
+  let decoded = "";
+  let mapped = true;
+  // Try the CMap two bytes at a time, then one, before giving up on it.
+  for (let i = 0; i < raw.length;) {
+    const two = raw.slice(i, i + 2);
+    const one = raw[i];
+    if (toUnicode.has(two)) {
+      decoded += toUnicode.get(two);
+      i += 2;
+    } else if (toUnicode.has(one)) {
+      decoded += toUnicode.get(one);
+      i += 1;
+    } else {
+      mapped = false;
+      break;
+    }
+  }
+
+  if (!mapped && _looksLikeGlyphIndices(raw)) {
+    return { text: "", undecodable: true };
+  }
+  return { text: mapped && decoded ? decoded : raw, undecodable: false };
+}
+
+/**
+ * Text runs with the coordinates the page draws them at.
+ *
+ * A table is a table because of where its cells sit, not because of anything
+ * in the text — PDF has no notion of a table at all, only strings at positions.
+ * So reading one back means keeping the positions the plain-text reader throws
+ * away.
+ *
+ * What is tracked, and what is not. `Tm` sets the text matrix outright, so its
+ * last two numbers are the position. `Td` moves relative to the start of the
+ * current line, `TD` does the same and sets the leading, `T*` drops one
+ * leading. What cannot be tracked without font metrics is how far a *string*
+ * advances the cursor — so two runs shown one after another with no
+ * repositioning between them are reported at the same x. That is not a
+ * problem for the case this exists for: a table is laid out by positioning
+ * each cell, and a row drawn as one string with spaces in it is handled by
+ * splitting on the spaces instead.
+ *
+ * @param {string} content
+ * @param {Map<string, string>} toUnicode
+ * @returns {{items: Array<{x: number, y: number, text: string}>, undecodable: boolean}}
+ */
+function _itemsFromContent(content, toUnicode) {
+  const items = [];
+  let undecodable = false;
+
+  // Numbers, string operands, and the operators that move the cursor.
+  //
+  // `T*` is matched outside the \b group on purpose: `*` is not a word
+  // character, so a trailing \b after it demands one and never matches. Inside
+  // the group it silently never fired, and every T* — the operator that moves
+  // to the next line — was ignored, putting a whole page's lines at one y.
+  const re =
+    /(-?\d*\.?\d+)|(\((?:\\.|[^\\()])*\)|<[0-9A-Fa-f\s]*>)|(T\*)|\b(BT|ET|Tm|Td|TD|TL|TJ|Tj)\b|(')|(")/g;
+
+  let nums = [];
+  let x = 0;
+  let y = 0;
+  let lineX = 0;
+  let lineY = 0;
+  let leading = 0;
+  let pending = "";
+  let pendingX = 0;
+  let pendingY = 0;
+
+  const flush = () => {
+    const text = pending.trim();
+    if (text) items.push({ x: pendingX, y: pendingY, text });
+    pending = "";
+  };
+
+  let m;
+  while ((m = re.exec(content)) !== null) {
+    if (m[1]) {
+      nums.push(Number(m[1]));
+      continue;
+    }
+    if (m[2]) {
+      const { text, undecodable: bad } = _decodeToken(m[2], toUnicode);
+      if (bad) undecodable = true;
+      if (!pending) {
+        pendingX = x;
+        pendingY = y;
+      }
+      pending += text;
+      nums = [];
+      continue;
+    }
+
+    const op = m[3] ?? m[4] ?? (m[5] ? "'" : '"');
+    switch (op) {
+      case "BT":
+        x = y = lineX = lineY = 0;
+        break;
+      case "ET":
+        flush();
+        break;
+      case "Tm":
+        flush();
+        if (nums.length >= 6) {
+          lineX = x = nums[nums.length - 2];
+          lineY = y = nums[nums.length - 1];
+        }
+        break;
+      case "Td":
+        flush();
+        if (nums.length >= 2) {
+          lineX = x = lineX + nums[nums.length - 2];
+          lineY = y = lineY + nums[nums.length - 1];
+        }
+        break;
+      case "TD":
+        flush();
+        if (nums.length >= 2) {
+          leading = -nums[nums.length - 1];
+          lineX = x = lineX + nums[nums.length - 2];
+          lineY = y = lineY + nums[nums.length - 1];
+        }
+        break;
+      case "T*":
+        flush();
+        lineY = y = lineY - leading;
+        x = lineX;
+        break;
+      case "TL":
+        if (nums.length >= 1) leading = nums[nums.length - 1];
+        break;
+      case "'":
+      case '"':
+        // Both show a string on the next line, so the position has already
+        // moved by the time the text lands.
+        flush();
+        lineY = y = lineY - leading;
+        x = lineX;
+        break;
+      default:
+        // Tj / TJ: the run ends here, at the position it started from.
+        flush();
+        break;
+    }
+    nums = [];
+  }
+  flush();
+
+  return { items, undecodable };
+}
+
+function _textFromContent(content, toUnicode) {
+  const parts = [];
+  let undecodable = false;
+
+  // Tj / TJ / ' / " operands, in document order. The TJ array holds strings
+  // interleaved with kerning numbers, which are dropped.
+  const re =
+    /(\((?:\\.|[^\\()])*\)|<[0-9A-Fa-f\s]*>)|(TJ|Tj|'|")|(\bTd\b|\bTD\b|\bT\*\b|\bET\b)/g;
+  let pending = "";
+  let m;
+
+  while ((m = re.exec(content)) !== null) {
+    if (m[1]) {
+      const { text, undecodable: bad } = _decodeToken(m[1], toUnicode);
+      if (bad) {
+        undecodable = true;
+        continue;
+      }
+      pending += text;
+    } else if (m[2]) {
+      if (pending) parts.push(pending);
+      pending = "";
+    } else if (m[3]) {
+      // A positioning operator ends the run; treat it as whitespace.
+      if (pending) parts.push(pending);
+      pending = "";
+      parts.push(" ");
+    }
+  }
+  if (pending) parts.push(pending);
+
+  return {
+    text: parts.join("").replace(/\s+/g, " ").trim(),
+    undecodable,
+  };
+}
+
+/**
+ * The page content streams a PDF's text lives in.
+ *
+ * Split out so the text reader and the table reader open a file exactly the
+ * same way — the encryption check and the "which streams are pages" rule
+ * especially, because a second copy of either would drift.
+ *
+ * @param {Uint8Array|ArrayBuffer} input
+ * @param {{ maxPages?: number }} [options]
+ * @returns {Promise<{contents: object[], toUnicode: Map, pageCount: number, limit: number}>}
+ */
+async function _openPdf(input, options = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const maxPages = Math.max(1, Number(options.maxPages) || 50);
+
+  const raw = _latin1(bytes);
+  if (!raw.startsWith("%PDF-")) {
+    throw new Error("Not a PDF: the file does not start with %PDF-.");
+  }
+  if (
+    /\/Encrypt\b/.test(raw.slice(-4096)) ||
+    /\/Encrypt\s+\d+\s+\d+\s+R/.test(raw)
+  ) {
+    throw new Error(
+      "This PDF is encrypted. Text extraction needs the decrypted file.",
+    );
+  }
+
+  const streams = await _readStreams(raw);
+  const toUnicode = _readToUnicode(streams);
+
+  // Content streams are the ones carrying text-showing operators. Mapping them
+  // to page numbers properly means walking the page tree; in practice writers
+  // emit them in page order, so they are numbered in the order they appear and
+  // that is what "page" means here.
+  const contents = streams.filter(
+    (s) => /\bBT\b/.test(s.data) && /(Tj|TJ)\b/.test(s.data),
+  );
+  const pageCount = contents.length;
+  return {
+    contents,
+    toUnicode,
+    pageCount,
+    limit: Math.min(pageCount, maxPages),
+  };
+}
+
+/**
+ * Text runs with their positions, page by page.
+ *
+ * What a table reader needs and the plain-text one throws away. Exported
+ * separately rather than folded into `extractPdfText` because most callers
+ * want the text and nothing else, and positions are several times the size.
+ *
+ * @param {Uint8Array|ArrayBuffer} input
+ * @param {{ maxPages?: number }} [options]
+ * @returns {Promise<{pages: Array<{page: number, items: Array<{x:number,y:number,text:string}>}>, pageCount: number, truncated: boolean, warnings: string[]}>}
+ */
+export async function extractPdfItems(input, options = {}) {
+  const { contents, toUnicode, pageCount, limit } = await _openPdf(
+    input,
+    options,
+  );
+  const warnings = [];
+  const pages = [];
+  let anyUndecodable = false;
+
+  for (let i = 0; i < limit; i++) {
+    const { items, undecodable } = _itemsFromContent(
+      contents[i].data,
+      toUnicode,
+    );
+    if (undecodable) anyUndecodable = true;
+    pages.push({ page: i + 1, items });
+  }
+
+  if (pageCount === 0) {
+    warnings.push(
+      "No text content streams found. A scanned PDF holds images, not text.",
+    );
+  }
+  if (anyUndecodable) {
+    warnings.push(
+      "Some pages use fonts with no /ToUnicode map and could not be decoded.",
+    );
+  }
+
+  return { pages, pageCount, truncated: pageCount > limit, warnings };
+}
+
+/**
+ * Extract text from a PDF.
+ *
+ * @param {Uint8Array|ArrayBuffer} input
+ * @param {{ maxPages?: number }} [options]
+ * @returns {Promise<PdfText>}
+ */
+export async function extractPdfText(input, options = {}) {
+  const warnings = [];
+  const { contents, toUnicode, pageCount, limit } = await _openPdf(
+    input,
+    options,
+  );
+  const pages = [];
+
+  for (let i = 0; i < limit; i++) {
+    const { text, undecodable } = _textFromContent(contents[i].data, toUnicode);
+    const page = { page: i + 1, text, chars: text.length };
+    if (!text && undecodable) {
+      page.note =
+        "Text is stored as glyph indices and the font ships no /ToUnicode map, so it cannot be decoded.";
+    } else if (!text) {
+      page.note = "No text on this page — it is probably a scanned image.";
+    }
+    pages.push(page);
+  }
+
+  if (pageCount === 0) {
+    warnings.push(
+      "No text content streams found. A scanned PDF holds images, not text.",
+    );
+  }
+  if (pages.some((p) => p.note?.includes("glyph indices"))) {
+    warnings.push(
+      "Some pages use fonts with no /ToUnicode map and could not be decoded.",
+    );
+  }
+
+  return {
+    pages,
+    text: pages
+      .map((p) => p.text)
+      .filter(Boolean)
+      .join("\n\n"),
+    pageCount,
+    truncated: pageCount > limit,
+    warnings,
+  };
+}
+
+// === END pdf-text.js ===

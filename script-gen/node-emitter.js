@@ -379,6 +379,17 @@ function _conditionNode(condition, config, esc) {
  */
 let _scope = "page";
 
+/** Playwright spells its modifier keys out; the panel collects short names. */
+const _PW_MODIFIER = {
+  ctrl: "Control",
+  control: "Control",
+  shift: "Shift",
+  alt: "Alt",
+  meta: "Meta",
+  cmd: "Meta",
+  command: "Meta",
+};
+
 /** The scoped locator for a selector, and the whole point of `_scope`. */
 const _loc = (sel) => `${_scope}.locator('${sel}')`;
 
@@ -475,8 +486,26 @@ function _emitNodeStepBody(step) {
     case "API":
       return _apiNode(config);
     case "CLICK": {
+      // Playwright takes the button and the modifiers as options, so the
+      // script says what the pipeline says. Its `modifiers` are capitalised
+      // key names; ours are the lower-case ones a person types.
+      const opts = [];
+      const btn = String(config.button || "left").toLowerCase();
+      if (btn !== "left") opts.push(`button: '${btn}'`);
+      const mods = (Array.isArray(config.modifiers) ? config.modifiers : [])
+        .map((m) => _PW_MODIFIER[String(m).toLowerCase()])
+        .filter(Boolean);
+      if (mods.length) {
+        opts.push(`modifiers: [${mods.map((m) => `'${m}'`).join(", ")}]`);
+      }
+      const clickArgs = opts.length ? `{ ${opts.join(", ")} }` : "";
+      const clickSel = esc(_sel(config.selector ?? ""));
       const lines = [
-        `await ${_verb(esc(_sel(config.selector ?? "")), `click('${esc(_sel(config.selector ?? ""))}')`, "click()")};`,
+        `await ${_verb(
+          clickSel,
+          `click('${clickSel}'${clickArgs ? `, ${clickArgs}` : ""})`,
+          `click(${clickArgs})`,
+        )};`,
       ];
       // Whatever the click was supposed to cause. The extension waits for the
       // same thing, so a script that carried straight on where the pipeline

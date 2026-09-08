@@ -15,6 +15,7 @@ const SOURCE = new URL("../../content/injector.js", import.meta.url);
 /** Functions the harness exposes to tests. Extend as more come under test. */
 const EXPOSED = [
   "_executeStep",
+  "_stepClick",
   "_stepExtract",
   "_stepIfElse",
   "_queryScoped",

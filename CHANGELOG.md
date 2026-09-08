@@ -19,6 +19,29 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — CLICK with the right button, the middle button, or keys held
+
+`CLICK` now takes a mouse button and a set of keys to hold. What it can do is
+narrower than it sounds, and the panel says so rather than leaving you to find
+out: an extension cannot make Chrome _react_ to a click. Opening a link in a
+background tab and showing the browser's own context menu are default behaviours
+the browser keeps for real clicks, and nothing a content script dispatches is
+real. What these reach is the page's own handlers — a custom context menu,
+ctrl-click multi-select, shift-click range selection — which is what they are
+wanted for most of the time.
+
+The event detail is the part worth getting right, and is easy to get wrong: a
+non-primary button fires `auxclick`, not `click`, so a middle click synthesised
+as a `click` reaches handlers that were not listening and misses the ones that
+were. A right click fires `contextmenu` and no click event of any kind — firing
+both would run the left-click handler too. `buttons` is cleared by the time the
+click lands, so a handler telling a drag from a click is not lied to. The
+checkbox-forcing and keyboard-activation fallbacks now run only for a plain left
+click: a right click on a checkbox opens a menu, it does not tick the box.
+
+Exported scripts pass the same button and modifiers to Playwright, which
+supports both natively.
+
 ### Added — CLICK can wait for what the click was supposed to cause
 
 "Load more" and "Next" finish _after_ the click returns. The next step then

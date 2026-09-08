@@ -508,6 +508,17 @@ function _conditionPy(condition, config) {
 let _pyScope = "page";
 
 /** The scoped locator for a selector. */
+/** Playwright spells its modifier keys out; the panel collects short names. */
+const _PY_MODIFIER = {
+  ctrl: "Control",
+  control: "Control",
+  shift: "Shift",
+  alt: "Alt",
+  meta: "Meta",
+  cmd: "Meta",
+  command: "Meta",
+};
+
 const _pyLoc = (sel) => `${_pyScope}.locator("${sel}")`;
 
 /**
@@ -597,9 +608,24 @@ function _emitStepBody(step) {
     case "API":
       return _emitApi(config);
     case "CLICK": {
+      const kw = [];
+      const btn = String(config.button || "left").toLowerCase();
+      if (btn !== "left") kw.push(`button="${btn}"`);
+      const mods = (Array.isArray(config.modifiers) ? config.modifiers : [])
+        .map((m) => _PY_MODIFIER[String(m).toLowerCase()])
+        .filter(Boolean);
+      if (mods.length) {
+        kw.push(`modifiers=[${mods.map((m) => `"${m}"`).join(", ")}]`);
+      }
+      const clickSel = _escStr(_sel(config.selector ?? ""));
+      const tail = kw.length ? `, ${kw.join(", ")}` : "";
       const lines = [
         `# CLICK: ${config.selector ?? ""}`,
-        `await ${_pyVerb(_escStr(_sel(config.selector ?? "")), `click("${_escStr(_sel(config.selector ?? ""))}")`, "click()")}`,
+        `await ${_pyVerb(
+          clickSel,
+          `click("${clickSel}"${tail})`,
+          `click(${kw.join(", ")})`,
+        )}`,
       ];
       // This used to wait for network idle after every click, unconditionally.
       // Neither the extension nor the Node script did, so the same pipeline

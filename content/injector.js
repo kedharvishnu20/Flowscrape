@@ -891,30 +891,95 @@
     } catch {}
   }
 
-  function _dispatchSyntheticClick(el) {
+  /** Which mouse button a name means, and the bitmask for "held down". */
+  const _BUTTONS = {
+    left: { button: 0, buttons: 1 },
+    middle: { button: 1, buttons: 4 },
+    right: { button: 2, buttons: 2 },
+  };
+
+  /** The event-init flags for the modifier keys held during a click. */
+  function _modifierInit(modifiers) {
+    const held = new Set(
+      (Array.isArray(modifiers) ? modifiers : []).map((m) =>
+        String(m).toLowerCase(),
+      ),
+    );
+    return {
+      ctrlKey: held.has("ctrl") || held.has("control"),
+      shiftKey: held.has("shift"),
+      altKey: held.has("alt"),
+      metaKey: held.has("meta") || held.has("cmd") || held.has("command"),
+    };
+  }
+
+  /**
+   * A mouse click, spelled out as the events a real one produces.
+   *
+   * The button matters more than it looks. A non-primary button does not fire
+   * `click` at all — the browser fires `auxclick` — so a middle click
+   * synthesised as a `click` event reached handlers that were not listening for
+   * it and missed the ones that were. A right click fires `contextmenu` and no
+   * click event of any kind.
+   *
+   * What this cannot do, and does not pretend to: make Chrome act on the click
+   * itself. Opening a link in a background tab, or showing the browser's own
+   * context menu, is default behaviour reserved for trusted events, and nothing
+   * a content script dispatches is trusted. So these are for pages that handle
+   * the events themselves — a custom context menu, ctrl-click multi-select,
+   * shift-click range selection — which is most of what they are wanted for.
+   *
+   * @param {Element} el
+   * @param {{button?: string, modifiers?: string[]}} [opts]
+   */
+  function _dispatchSyntheticClick(el, opts = {}) {
     if (!(el instanceof Element)) return;
     const r = el.getBoundingClientRect();
     const cx = Math.round(r.left + r.width / 2);
     const cy = Math.round(r.top + r.height / 2);
+    const name = String(opts.button || "left").toLowerCase();
+    const { button, buttons } = _BUTTONS[name] ?? _BUTTONS.left;
     const init = {
       bubbles: true,
       cancelable: true,
       view: window,
       clientX: cx,
       clientY: cy,
+      button,
+      buttons,
+      ..._modifierInit(opts.modifiers),
     };
+    // The button is released by the time the click lands, so `buttons` is 0 on
+    // everything after mouseup. A handler that reads it to tell a drag from a
+    // click would otherwise see a button still held.
+    const released = { ...init, buttons: 0 };
     try {
       el.dispatchEvent(
         new PointerEvent("pointerdown", { ...init, pointerId: 1 }),
       );
       el.dispatchEvent(new MouseEvent("mousedown", init));
       el.dispatchEvent(
-        new PointerEvent("pointerup", { ...init, pointerId: 1 }),
+        new PointerEvent("pointerup", { ...released, pointerId: 1 }),
       );
-      el.dispatchEvent(new MouseEvent("mouseup", init));
-      el.dispatchEvent(new MouseEvent("click", init));
+      el.dispatchEvent(new MouseEvent("mouseup", released));
+      if (name === "right") {
+        el.dispatchEvent(new MouseEvent("contextmenu", released));
+      } else if (name === "middle") {
+        el.dispatchEvent(new MouseEvent("auxclick", released));
+      } else {
+        el.dispatchEvent(new MouseEvent("click", released));
+      }
     } catch {
-      el.dispatchEvent(new MouseEvent("click", init));
+      el.dispatchEvent(
+        new MouseEvent(
+          name === "right"
+            ? "contextmenu"
+            : name === "middle"
+              ? "auxclick"
+              : "click",
+          released,
+        ),
+      );
     }
   }
 
@@ -971,9 +1036,19 @@
       // "whichever looks most clickable". A numbered paginator needs page 3 to
       // be the third link, not the one _pickBestClickMatch likes best.
       index = null,
+      // Which mouse button, and which keys held while clicking. Only for pages
+      // that handle the events themselves — see _dispatchSyntheticClick.
+      button = "left",
+      modifiers = [],
     },
     context = {},
   ) {
+    // `el.click()` is a plain left click and cannot be told otherwise, so any
+    // other button or any held modifier has to be spelled out as events.
+    const plain =
+      String(button || "left").toLowerCase() === "left" &&
+      !(Array.isArray(modifiers) && modifiers.length);
+    const mouse = { button, modifiers };
     let els = [];
     const renderedSelector = _normalizeScopedSelector(selector, context);
     const scopedRoot = _getScopedRoot(context);
@@ -1057,17 +1132,21 @@
       let fired = false;
       for (const candidate of candidates) {
         if (!_isInteractable(candidate)) continue;
-        try {
-          candidate.click();
-          fired = true;
-        } catch {}
-
-        if (!fired && candidate instanceof HTMLElement) {
-          _dispatchSyntheticClick(candidate);
-          fired = true;
+        if (plain) {
+          try {
+            candidate.click();
+            fired = true;
+          } catch {}
         }
 
         if (!fired && candidate instanceof HTMLElement) {
+          _dispatchSyntheticClick(candidate, mouse);
+          fired = true;
+        }
+
+        // Space/Enter is a stand-in for a left click and nothing else: a
+        // keyboard has no way to express "the right button".
+        if (plain && !fired && candidate instanceof HTMLElement) {
           _dispatchKeyboardActivate(candidate);
           fired = true;
         }
@@ -1078,7 +1157,10 @@
       if (fired) clicked++;
 
       // Some pages block native click on hidden radio/checkbox wrappers.
-      if (isCheck && target.checked === wasChecked) {
+      // Only for a plain click: a right click on a checkbox opens a menu, it
+      // does not tick the box, and forcing the state here would be the tool
+      // doing something the user did not ask for.
+      if (plain && isCheck && target.checked === wasChecked) {
         if (target.type.toLowerCase() === "radio") target.checked = true;
         else target.checked = !target.checked;
         target.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1087,7 +1169,7 @@
 
       // For delegated handlers (common on LI lists), also bubble a click on original matched node.
       if (target !== el && el instanceof HTMLElement) {
-        _dispatchSyntheticClick(el);
+        _dispatchSyntheticClick(el, mouse);
       }
     }
     return {
@@ -1095,6 +1177,7 @@
       matched: els.length,
       selector: renderedSelector || selector,
       usedRootFallback,
+      button: String(button || "left").toLowerCase(),
     };
   }
 

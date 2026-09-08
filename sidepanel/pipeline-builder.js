@@ -1598,6 +1598,27 @@ function _configFields(step) {
       "Inside a loop, click the item itself if the selector misses",
     );
 
+    const button = c.button || "left";
+    html += `<label>Mouse button</label>
+    <select id="cfg-${step.id}-button" data-id="${step.id}" data-key="button" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="left"${button === "left" ? " selected" : ""}>Left</option>
+      <option value="middle"${button === "middle" ? " selected" : ""}>Middle</option>
+      <option value="right"${button === "right" ? " selected" : ""}>Right</option>
+    </select>`;
+    html += `<label>Keys held while clicking</label>`;
+    html += memberToggle(step, "modifiers", "ctrl", "Ctrl");
+    html += memberToggle(step, "modifiers", "shift", "Shift");
+    html += memberToggle(step, "modifiers", "alt", "Alt");
+    html += memberToggle(step, "modifiers", "meta", "Cmd / Meta");
+    if (button !== "left" || (c.modifiers || []).length) {
+      html += hint(
+        "These reach the page's own handlers — a custom context menu, ctrl-click " +
+          "multi-select. They will not make Chrome open a tab or show its own menu: " +
+          "the browser keeps those reactions for real clicks, and an extension cannot " +
+          "fake one.",
+      );
+    }
+
     // "Load more" finishes after the click returns. Naming what to wait for
     // beats a WAIT step holding a guessed number of milliseconds.
     const waitAfter = c.waitAfter || "none";
@@ -2977,6 +2998,24 @@ function hint(text) {
   return `<p style="font-size:11px;color:var(--text-dim);margin:-4px 0 10px;">${esc(text)}</p>`;
 }
 
+/**
+ * A checkbox that adds or removes one value from an array in the config.
+ *
+ * `toggle` writes a boolean, which is wrong for a set: four separate booleans
+ * for four modifier keys is four config keys that then have to be reassembled
+ * everywhere they are read. This keeps the array the executor and both
+ * emitters already expect.
+ */
+function memberToggle(step, key, value, label) {
+  const list = Array.isArray(step.config[key]) ? step.config[key] : [];
+  const checked = list.includes(value) ? "checked" : "";
+  return `<div class="toggle-wrap">
+    <input type="checkbox" id="cfg-${step.id}-${key}-${value}" ${checked} data-id="${step.id}" data-key="${key}" data-member="${esc(value)}" class="cfg-bind">
+    <div class="toggle-switch"></div>
+    <span>${label}</span>
+  </div>`;
+}
+
 function toggle(step, key, label) {
   const checked = step.config[key] ? "checked" : "";
   return `<div class="toggle-wrap">
@@ -3196,7 +3235,15 @@ function bindConfigInputs(container = document) {
       const step = _findStepDeep(_pipeline.steps, e.target.dataset.id);
       if (!step) return;
       const key = e.target.dataset.key;
-      if (e.target.type === "checkbox") step.config[key] = e.target.checked;
+      const member = e.target.dataset.member;
+      if (member !== undefined) {
+        const list = Array.isArray(step.config[key])
+          ? step.config[key].filter((v) => v !== member)
+          : [];
+        if (e.target.checked) list.push(member);
+        step.config[key] = list;
+      } else if (e.target.type === "checkbox")
+        step.config[key] = e.target.checked;
       else if (e.target.type === "number")
         step.config[key] = parseFloat(e.target.value) || 0;
       else step.config[key] = e.target.value;

@@ -67,6 +67,12 @@ export const STEP_TYPES = Object.freeze({
       waitAfter: "none",
       waitSelector: "",
       waitTimeoutMs: 15000,
+      // Which button, and which keys held. For pages that handle the events
+      // themselves — a custom context menu, ctrl-click multi-select. Chrome
+      // reserves its own reactions (opening a tab, its native menu) for
+      // trusted events, and nothing a content script sends is trusted.
+      button: "left",
+      modifiers: [],
     },
   },
   FILL: {

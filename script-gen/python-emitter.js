@@ -596,13 +596,43 @@ function _emitStepBody(step) {
       ];
     case "API":
       return _emitApi(config);
-    case "CLICK":
-      return [
+    case "CLICK": {
+      const lines = [
         `# CLICK: ${config.selector ?? ""}`,
         `await ${_pyVerb(_escStr(_sel(config.selector ?? "")), `click("${_escStr(_sel(config.selector ?? ""))}")`, "click()")}`,
-        `await page.wait_for_load_state("networkidle")`,
-        "",
       ];
+      // This used to wait for network idle after every click, unconditionally.
+      // Neither the extension nor the Node script did, so the same pipeline
+      // read the page at two different moments depending on which language you
+      // exported — and on a page with a long-poll open, the Python script hung
+      // on a click that had already finished. The wait is now the one the step
+      // asks for, and nothing when it asks for none.
+      const after = config.waitAfter ?? "none";
+      const t =
+        Number(config.waitTimeoutMs) > 0 ? Number(config.waitTimeoutMs) : 15000;
+      const waitSel = _escStr(_sel(config.waitSelector ?? ""));
+      if (after === "load") {
+        lines.push(`await page.wait_for_load_state("load", timeout=${t})`);
+      } else if (after === "selector" && waitSel) {
+        lines.push(
+          _pyScope === "page"
+            ? `await page.wait_for_selector("${waitSel}", state="visible", timeout=${t})`
+            : `await ${_pyLoc(waitSel)}.first.wait_for(state="visible", timeout=${t})`,
+        );
+      } else if (after === "selector-gone" && waitSel) {
+        lines.push(
+          _pyScope === "page"
+            ? `await page.wait_for_selector("${waitSel}", state="hidden", timeout=${t})`
+            : `await ${_pyLoc(waitSel)}.first.wait_for(state="hidden", timeout=${t})`,
+        );
+      } else if (after === "settle") {
+        lines.push(
+          `await page.wait_for_load_state("networkidle", timeout=${t})`,
+        );
+      }
+      lines.push("");
+      return lines;
+    }
     case "WAIT": {
       const timeout = Number(config.timeout) || 15000;
       if (config.mode === "selector-visible") {

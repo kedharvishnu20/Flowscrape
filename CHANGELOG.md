@@ -19,6 +19,37 @@ pre-fix tree first to confirm it failed. The suite went from **zero tests to
 Chromium and drive it — which is what caught four of them, including the two
 worst.
 
+### Added — CLICK can wait for what the click was supposed to cause
+
+"Load more" and "Next" finish _after_ the click returns. The next step then
+read the rows that were already there, and the only answer was a `WAIT` step
+holding a guessed number of milliseconds — too small on a slow day, wasted time
+on a fast one. The failure is silent: the run carries on and the export is
+simply short.
+
+`CLICK` now names the thing to wait for instead of the time to wait — the page
+to finish loading, an element to appear, an element to disappear, or the page to
+stop changing — with its own timeout, and an element that never arrives fails
+the step rather than passing quietly.
+
+Two things came out of building it.
+
+A click on a real link destroys the document that was about to answer it. The
+worker read that as "the content script is missing", put it back, and delivered
+**the same click a second time** — to whatever happened to match on the page
+that had just replaced it. It is now read as what it is: the click navigated.
+The tab is given time to land whether or not a wait was configured, because the
+next step running against a half-replaced page is the other invisible failure.
+The two cases were indistinguishable because Chrome's actual wording for a
+mid-message teardown — "The message port closed before a response was
+received" — was missing from the pattern that recognised them.
+
+The Python emitter waited for network idle after **every** click, where neither
+the extension nor the Node script waited at all. The same pipeline read the page
+at two different moments depending on which language you exported it to, and on
+a page holding a long-poll open the Python script hung on a click that had
+already finished. All three now wait for exactly what the step asks for.
+
 ### Added — DEDUPE
 
 Duplicate rows are the normal outcome of scraping, not an exotic one: a

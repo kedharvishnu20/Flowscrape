@@ -864,9 +864,19 @@ function _capturesFor(runId) {
   return _finishedCaptures.get(runId) ?? { networks: [], screenshots: [] };
 }
 
-/** Chrome's ways of saying "there is no content script on that tab". */
+/**
+ * Chrome's ways of saying "nobody is going to answer that message".
+ *
+ * Two different facts wear the same shape. "Receiving end does not exist" means
+ * the message was never delivered — there is no content script — and the answer
+ * is to inject one and try again. "The message port closed before a response
+ * was received" means it *was* delivered and the document went away mid-answer,
+ * which on a CLICK is the click doing its job. The wording for that second case
+ * was missing here, so a click that followed a link surfaced as a raw Chrome
+ * error rather than as a navigation.
+ */
 const _GONE =
-  /Receiving end does not exist|message channel closed|Could not establish connection/i;
+  /Receiving end does not exist|message (channel|port) closed|Could not establish connection/i;
 
 /**
  * Send a step to a page, putting the content script back if it is not there.
@@ -926,7 +936,13 @@ async function _frameIdForUrl(tabId, frameUrl) {
   }
 }
 
-async function _sendToPage(tabId, payload) {
+async function _sendToPage(tabId, payload, opts = {}) {
+  // `retryOnGone: false` is for the one step that expects to lose the page it
+  // is talking to. Clicking a link tears the document down before it can
+  // answer, and the reinjection below would then deliver the same click to the
+  // *new* page — a second click nobody asked for, on whatever happens to match
+  // there. CLICK opts out and reads the teardown as "it navigated".
+  const { retryOnGone = true } = opts;
   await _ensureOnDemand(tabId, payload?.type);
 
   // A step whose selector was picked inside an iframe knows which one, so aim
@@ -944,7 +960,7 @@ async function _sendToPage(tabId, payload) {
           { frameId },
         );
       } catch (err) {
-        if (!_GONE.test(err.message)) throw err;
+        if (!_GONE.test(err.message) || !retryOnGone) throw err;
         await _ensureInjected(tabId);
         return chrome.tabs.sendMessage(
           tabId,
@@ -974,7 +990,7 @@ async function _sendToPage(tabId, payload) {
       to,
     );
   } catch (err) {
-    if (!_GONE.test(err.message)) throw err;
+    if (!_GONE.test(err.message) || !retryOnGone) throw err;
     await _ensureInjected(tabId);
     return chrome.tabs.sendMessage(
       tabId,
@@ -4025,6 +4041,126 @@ async function _executePaginate(
 }
 
 /**
+ * Click, then wait for whatever the click was supposed to cause.
+ *
+ * Two problems, one function.
+ *
+ * The first is that "Load more" and "Next" do their work *after* the click
+ * returns. Until now the only answer was a WAIT step with a guessed number of
+ * milliseconds — too small on a slow day and the next step reads the old rows,
+ * too large and every run pays for the worst case. `waitAfter` names the thing
+ * to wait for instead of the time to wait.
+ *
+ * The second is that a click on a real link destroys the document that was
+ * about to answer it. That is not an error, it is the intended outcome, so the
+ * teardown is read as "it navigated" and the tab is given time to land rather
+ * than the click being delivered a second time to the page that replaced it.
+ *
+ * @param {object} step  - a resolved CLICK step
+ * @param {number} tabId
+ * @param {string} runId
+ */
+async function _executeClick(step, tabId, runId) {
+  const config = step.config ?? {};
+  const waitAfter = String(config.waitAfter || "none");
+  const timeoutMs =
+    Number(config.waitTimeoutMs) > 0 ? Number(config.waitTimeoutMs) : 15000;
+
+  // Ping-and-inject before the send, so that a teardown afterwards can only
+  // mean the click navigated. Without it "there is no content script here"
+  // and "the click took the page away" arrive as the same error, and a click
+  // that never happened would be reported as a successful navigation.
+  await _ensureInjected(tabId);
+
+  let result = null;
+  let navigated = false;
+  try {
+    let resp = await _sendToPage(tabId, step, { retryOnGone: false });
+
+    // Same captcha question the generic path asks: a click that matched
+    // nothing is as often a wall as a bad selector.
+    if (
+      resp?.ok &&
+      _looksEmpty(resp.result) &&
+      (await _pauseForCaptcha(runId, tabId, "CLICK"))
+    ) {
+      if (await _awaitResume(runId)) {
+        resp = await _sendToPage(tabId, step, { retryOnGone: false });
+      }
+    }
+
+    if (!resp?.ok) throw new Error(resp?.error || "CLICK failed");
+    result = resp.result;
+  } catch (err) {
+    if (!_GONE.test(err.message)) throw err;
+    navigated = true;
+  }
+
+  // A navigation is waited for whether or not one was asked for: the next step
+  // running against a page halfway through being replaced is the failure this
+  // avoids, and it is invisible when it happens.
+  if (navigated || waitAfter === "load") {
+    const loaded = await _waitForTabLoad(tabId, timeoutMs);
+    if (!loaded) {
+      _broadcastLog(
+        "warn-log",
+        `CLICK: the page was still loading after ${Math.round(timeoutMs / 1000)}s — continuing anyway.`,
+        runId,
+      );
+    }
+  }
+
+  const passThrough = {
+    inFrame: config.inFrame,
+    frameUrl: config.frameUrl,
+    timeout: timeoutMs,
+  };
+
+  if (waitAfter === "selector" || waitAfter === "selector-gone") {
+    const selector = String(config.waitSelector || "").trim();
+    if (!selector) {
+      throw new Error(
+        'CLICK: "wait for an element" needs a selector to wait for.',
+      );
+    }
+    const resp = await _sendToPage(tabId, {
+      type: "WAIT",
+      config: {
+        ...passThrough,
+        mode: waitAfter === "selector" ? "selector-visible" : "selector-gone",
+        selector,
+      },
+    });
+    if (!resp?.ok) {
+      throw new Error(
+        resp?.error ||
+          `CLICK: "${selector}" never ${waitAfter === "selector" ? "appeared" : "went away"} after the click.`,
+      );
+    }
+  } else if (waitAfter === "settle") {
+    const resp = await _sendToPage(tabId, {
+      type: "WAIT",
+      config: {
+        ...passThrough,
+        mode: "DOM-stable",
+        quietMs: Number(config.quietMs) > 0 ? Number(config.quietMs) : 500,
+      },
+    });
+    if (!resp?.ok) {
+      throw new Error(
+        resp?.error ||
+          "CLICK: the page never stopped changing after the click.",
+      );
+    }
+  }
+
+  if (navigated) {
+    _broadcastLog("info-log", "CLICK: the click navigated the tab.", runId);
+  }
+  return { ...(result ?? {}), navigated };
+}
+
+/**
  * Execute one already-resolved step.
  *
  * This chain used to exist twice — once in _executeStepList for loop and branch
@@ -4068,6 +4204,10 @@ async function _dispatchStep(step, tabId, runId, ctx) {
       }
       return;
     }
+
+    case "CLICK":
+      await _executeClick(step, tabId, runId);
+      return;
 
     case "SCREENSHOT":
       await _captureScreenshot(tabId, step.config, runId);

@@ -60,6 +60,13 @@ export const STEP_TYPES = Object.freeze({
       all: false,
       fallbackToLoopItem: false,
       inFrame: false,
+      // What the click was supposed to cause. "Load more" and "Next" do their
+      // work after the click returns, and the only answer used to be a WAIT
+      // step with a guessed number of milliseconds.
+      // none | load | selector | selector-gone | settle
+      waitAfter: "none",
+      waitSelector: "",
+      waitTimeoutMs: 15000,
     },
   },
   FILL: {

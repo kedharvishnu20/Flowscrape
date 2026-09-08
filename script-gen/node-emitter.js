@@ -474,11 +474,43 @@ function _emitNodeStepBody(step) {
       ];
     case "API":
       return _apiNode(config);
-    case "CLICK":
-      return [
+    case "CLICK": {
+      const lines = [
         `await ${_verb(esc(_sel(config.selector ?? "")), `click('${esc(_sel(config.selector ?? ""))}')`, "click()")};`,
-        "",
       ];
+      // Whatever the click was supposed to cause. The extension waits for the
+      // same thing, so a script that carried straight on where the pipeline
+      // waited would read the page one state too early — the drift this whole
+      // family of steps is written to avoid.
+      const after = config.waitAfter ?? "none";
+      const t =
+        Number(config.waitTimeoutMs) > 0 ? Number(config.waitTimeoutMs) : 15000;
+      const waitSel = esc(_sel(config.waitSelector ?? ""));
+      if (after === "load") {
+        lines.push(`await page.waitForLoadState('load', { timeout: ${t} });`);
+      } else if (after === "selector" && waitSel) {
+        lines.push(
+          _scope === "page"
+            ? `await page.waitForSelector('${waitSel}', { state: 'visible', timeout: ${t} });`
+            : `await ${_loc(waitSel)}.first().waitFor({ state: 'visible', timeout: ${t} });`,
+        );
+      } else if (after === "selector-gone" && waitSel) {
+        lines.push(
+          _scope === "page"
+            ? `await page.waitForSelector('${waitSel}', { state: 'hidden', timeout: ${t} });`
+            : `await ${_loc(waitSel)}.first().waitFor({ state: 'hidden', timeout: ${t} });`,
+        );
+      } else if (after === "settle") {
+        // Same substitution the DOM-stable WAIT mode makes: Playwright has no
+        // "the DOM stopped changing", and network idle is what the mode is
+        // used for in practice.
+        lines.push(
+          `await page.waitForLoadState('networkidle', { timeout: ${t} });`,
+        );
+      }
+      lines.push("");
+      return lines;
+    }
     case "WAIT": {
       const timeout = Number(config.timeout) || 15000;
       if (config.mode === "selector-visible") {

@@ -1597,6 +1597,35 @@ function _configFields(step) {
       "fallbackToLoopItem",
       "Inside a loop, click the item itself if the selector misses",
     );
+
+    // "Load more" finishes after the click returns. Naming what to wait for
+    // beats a WAIT step holding a guessed number of milliseconds.
+    const waitAfter = c.waitAfter || "none";
+    html += `<label>After the click, wait for</label>
+    <select id="cfg-${step.id}-waitAfter" data-id="${step.id}" data-key="waitAfter" data-rerender="true" class="cfg-bind" style="margin-bottom:8px;">
+      <option value="none"${waitAfter === "none" ? " selected" : ""}>Nothing — carry straight on</option>
+      <option value="load"${waitAfter === "load" ? " selected" : ""}>The page to finish loading</option>
+      <option value="selector"${waitAfter === "selector" ? " selected" : ""}>An element to appear</option>
+      <option value="selector-gone"${waitAfter === "selector-gone" ? " selected" : ""}>An element to disappear</option>
+      <option value="settle"${waitAfter === "settle" ? " selected" : ""}>The page to stop changing</option>
+    </select>`;
+    if (waitAfter === "selector" || waitAfter === "selector-gone") {
+      html += selectorRow(step, "waitSelector", "Element to wait for");
+    }
+    if (waitAfter !== "none") {
+      html += field(
+        step,
+        "waitTimeoutMs",
+        "Give up after (ms)",
+        "number",
+        c.waitTimeoutMs ?? 15000,
+      );
+    }
+    html += hint(
+      "A click that follows a link waits for the new page whatever is chosen here — " +
+        "the next step running against a half-replaced page is the one failure you cannot see.",
+    );
+
     html += toggle(
       step,
       "optional",

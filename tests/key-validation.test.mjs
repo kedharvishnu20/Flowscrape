@@ -92,19 +92,27 @@ test("saving a key checks it, and says which of the three outcomes it got", () =
   assert.match(fn, /was rejected/);
 });
 
-test("all three save buttons go through it", () => {
-  for (const p of ["2captcha", "openai", "gemini"]) {
-    assert.match(
-      panelSrc,
-      new RegExp(`_saveAndValidateKey\\("${p}"`),
-      `${p} still has its own copy`,
-    );
-  }
-  // The three near-identical handlers collapsed into one call each.
+test("the surviving save button goes through it", () => {
+  // openai and gemini used to have their own copies here too, but they saved
+  // under the bare provider name and nothing ever read that slot — the only
+  // consumer of a model key reads "gateway:<provider>", the slot the AI
+  // Gateway section writes to. Those two call sites were removed along with
+  // their inputs rather than pointed at the right slot, since the Gateway
+  // section already covers that ground. 2captcha is the one key this
+  // function's caller actually consumes.
+  assert.match(panelSrc, /_saveAndValidateKey\("2captcha"/);
+  assert.ok(
+    !/_saveAndValidateKey\("openai"/.test(panelSrc),
+    "openai save handler should be gone — it wrote to a slot nothing reads",
+  );
+  assert.ok(
+    !/_saveAndValidateKey\("gemini"/.test(panelSrc),
+    "gemini save handler should be gone — it wrote to a slot nothing reads",
+  );
   assert.equal(
     (panelSrc.match(/_saveAndValidateKey\(/g) ?? []).length,
-    4,
-    "three call sites and the definition",
+    2,
+    "one call site and the definition",
   );
 });
 

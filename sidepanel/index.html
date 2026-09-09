@@ -2396,6 +2396,42 @@
 
         <!-- View: CONFIG -->
         <div id="view-config" class="view">
+          <!-- Ethics & consent: first in the list on purpose. These two
+               toggles decide whether a run ignores a site's stated wishes or
+               answers a challenge on the site's behalf, which makes them the
+               most consequential switches in the panel — a tool that pitches
+               itself as the honest scraper cannot bury them under key inputs. -->
+          <div class="accordion-section">
+            <div class="accordion-header">
+              <span>Ethics &amp; consent</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
+            </div>
+            <div class="accordion-content">
+              <p class="prose" style="font-size: 11px; margin: 0 0 10px">
+                Bypass Robots.txt lets a run ignore a site's robots.txt disallow
+                rules instead of refusing to visit those paths. Authorising
+                captcha answering is a per-run consent, checked only when the
+                pipeline actually contains a Solve Captcha step — and it is only
+                half of what that step needs: the other half is a per-domain
+                attestation set on the step itself, so turning this on here does
+                not by itself authorise anything.
+              </p>
+              <div class="toggle-wrap">
+                <input type="checkbox" id="bypass-robots" />
+                <div class="toggle-switch"></div>
+                <span>Bypass Robots.txt</span>
+              </div>
+              <!-- Half of what a SOLVE_CAPTCHA step needs; the other half is
+                   the per-domain attestation on the step itself. Off on every
+                   fresh panel, and read only when such a step exists. -->
+              <div class="toggle-wrap">
+                <input type="checkbox" id="authorize-captcha" />
+                <div class="toggle-switch"></div>
+                <span>Authorise captcha answering for this run</span>
+              </div>
+            </div>
+          </div>
+
           <!-- Schedules -->
           <div class="accordion-section">
             <div class="accordion-header">
@@ -2431,10 +2467,17 @@
             </div>
           </div>
 
-          <!-- API Keys -->
+          <!-- Captcha solver: the one key pair actually consumed from this
+               section. The OpenAI and Gemini inputs that used to live here
+               stored under the bare provider name, but the only code that
+               ever reads a model key reads it under "gateway:<provider>" —
+               the slot the AI Gateway section below writes to — so those two
+               inputs accepted a secret, reported success, and fed nothing.
+               Removed rather than wired up, because the Gateway section
+               already covers the same ground correctly. -->
           <div class="accordion-section">
             <div class="accordion-header">
-              <span>API Keys & Services</span>
+              <span>Captcha Solver</span>
               <span class="accordion-chevron" aria-hidden="true"></span>
             </div>
             <div class="accordion-content">
@@ -2444,30 +2487,12 @@
                 <input type="text" placeholder="API Key" id="key-2captcha" />
                 <button class="btn" id="btn-save-key-2captcha">Save</button>
               </div>
-              <label>OpenAI</label>
-              <div class="flex gap-2 mb-2">
-                <input type="text" placeholder="sk-..." id="key-openai" />
-                <button class="btn" id="btn-save-key-openai">Save</button>
-              </div>
-              <label>Gemini</label>
-              <div class="flex gap-2">
-                <input type="text" placeholder="AIzaSy..." id="key-gemini" />
-                <button class="btn" id="btn-save-key-gemini">Save</button>
-              </div>
-              <label style="margin-top: 16px">Ethics Engine</label>
-              <div class="toggle-wrap">
-                <input type="checkbox" id="bypass-robots" />
-                <div class="toggle-switch"></div>
-                <span>Bypass Robots.txt</span>
-              </div>
-              <!-- Half of what a SOLVE_CAPTCHA step needs; the other half is
-                   the per-domain attestation on the step itself. Off on every
-                   fresh panel, and read only when such a step exists. -->
-              <div class="toggle-wrap">
-                <input type="checkbox" id="authorize-captcha" />
-                <div class="toggle-switch"></div>
-                <span>Authorise captcha answering for this run</span>
-              </div>
+              <p class="prose" style="font-size: 11px; margin: 8px 0 0">
+                Model provider keys (OpenAI, Gemini, Anthropic, or a local
+                server) go in the "AI Gateway (Bring Your Own Key)" section
+                below — that is the slot every model-calling step actually reads
+                from.
+              </p>
             </div>
           </div>
 

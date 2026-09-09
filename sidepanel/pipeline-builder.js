@@ -823,16 +823,6 @@ function bindGlobalControls() {
       _saveAndValidateKey("2captcha", "2Captcha", "key-2captcha"),
     );
   document
-    .getElementById("btn-save-key-openai")
-    ?.addEventListener("click", () =>
-      _saveAndValidateKey("openai", "OpenAI", "key-openai"),
-    );
-  document
-    .getElementById("btn-save-key-gemini")
-    ?.addEventListener("click", () =>
-      _saveAndValidateKey("gemini", "Gemini", "key-gemini"),
-    );
-  document
     .getElementById("btn-sched-add")
     ?.addEventListener("click", () => _addSchedule());
   _renderSchedules();

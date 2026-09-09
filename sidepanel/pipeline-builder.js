@@ -40,6 +40,14 @@ SK.STORAGE_FILES = "fs_storage_files_v1";
 SK.UPLOAD_ACTIVITIES = "fs_upload_activities_v1";
 
 let _tabId = null;
+/**
+ * True when boot could not work out which tab this panel belongs to, so
+ * SK.PIPELINE is still the shared, un-suffixed key rather than a per-tab one.
+ * Anything saved while this holds is saved somewhere a correctly-bound boot
+ * will not look, so the flag exists to warn about it and to hand the work over
+ * once a tab does arrive.
+ */
+let _pipelineKeyUnbound = false;
 
 /**
  * The attestation for the domain in the active tab, as the worker holds it.
@@ -97,11 +105,53 @@ const elPaletteContent = document.getElementById("palette-content");
 const elBoardViewport = document.getElementById("board-viewport");
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Which tab this panel is driving.
+ *
+ * The board is stored per tab under `fs_active_pipeline_<tabId>` (E-13), so
+ * this answer decides which pipeline appears. Getting it wrong does not look
+ * like an error — it looks like the user's work is gone.
+ *
+ * A single `tabs.query({active, currentWindow})` was not reliable enough to
+ * carry that. The side panel can boot while the window has no settled active
+ * tab — during a window switch, as a tab is being replaced, or immediately
+ * after the panel itself reloads — and the query then resolves to an empty
+ * list. So: two query shapes, because `currentWindow` and `lastFocusedWindow`
+ * disagree exactly when focus is in motion, and a couple of short retries,
+ * because this is a race with the browser settling rather than a real absence.
+ *
+ * @returns {Promise<number|null>} the tab id, or null if it truly cannot be found
+ */
+async function _resolveTabId() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    for (const query of [
+      { active: true, currentWindow: true },
+      { active: true, lastFocusedWindow: true },
+    ]) {
+      const [tab] = await chrome.tabs.query(query).catch(() => []);
+      if (tab?.id != null) return tab.id;
+    }
+    // Short and bounded. This resolves on the first retry when it resolves at
+    // all; a longer wait would just delay an empty board.
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  return null;
+}
+
 async function init() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  _tabId = tab ? tab.id : null;
-  if (_tabId) {
+  _tabId = await _resolveTabId();
+  if (_tabId != null) {
     SK.PIPELINE = `fs_active_pipeline_${_tabId}`;
+  } else {
+    // Falling through to the bare `fs_active_pipeline` key is the dangerous
+    // part, and it used to happen in silence: the board loads empty, the user
+    // reasonably concludes their pipeline is gone, and the moment they touch
+    // anything, saveState writes to that shared key — so the next boot that
+    // *does* resolve the tab reads the real key and loses whatever they just
+    // did. Nothing here can bind to a tab that does not exist, but it can at
+    // least refuse to be quiet about it.
+    _pipelineKeyUnbound = true;
   }
 
   // Also listen for tab changes within the sidepanel to swap state
@@ -121,6 +171,28 @@ async function init() {
     _tabId = activeInfo.tabId;
     SK.PIPELINE = `fs_active_pipeline_${_tabId}`;
     const saved = (await chrome.storage.local.get(SK.PIPELINE))[SK.PIPELINE];
+
+    // A panel that booted without a tab has been writing to the shared key.
+    // Now that there is a real one to bind to, work already on the board is
+    // adopted into it rather than thrown away — clearing here would delete
+    // exactly the work the unbound boot put at risk, which is the failure this
+    // whole path exists to prevent. Only when the tab has nothing of its own:
+    // a tab with a saved pipeline keeps it.
+    if (_pipelineKeyUnbound) {
+      _pipelineKeyUnbound = false;
+      if (!saved?.steps && _pipeline.steps.length) {
+        await saveState();
+        notify(
+          "info-log",
+          `Board moved onto this tab (${_pipeline.steps.length} steps kept).`,
+        );
+        _expandedNodeIds.clear();
+        await _refreshCaptchaAttestation();
+        renderPipeline();
+        return;
+      }
+    }
+
     _pipeline = saved?.steps ? saved : { steps: [] };
     _expandedNodeIds.clear();
     // A different tab is very likely a different domain, and the attestation
@@ -141,6 +213,15 @@ async function init() {
   bindDelegatedEvents();
   bindKeyboardActivation();
   _loadGatewayConfig();
+
+  // Said only once the log pane is bound, and said at all because the failure
+  // it describes is otherwise indistinguishable from "my pipeline vanished".
+  if (_pipelineKeyUnbound) {
+    notify(
+      "warn-log",
+      "Could not tell which tab this panel belongs to, so the saved board for it could not be loaded. Click the page you want to work on and reopen the panel. Nothing has been deleted.",
+    );
+  }
 
   const savedState = await chrome.storage.local.get([
     SK.PIPELINE,

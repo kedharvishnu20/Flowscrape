@@ -30,6 +30,18 @@
  */
 
 import { logger } from "../utils/logger.js";
+import { scanRows, summarizeFindings } from "../ethics/pii-detector.js";
+import {
+  listSchedules,
+  getSchedule,
+  saveSchedule,
+  deleteSchedule,
+  markRun,
+  syncAlarms,
+  missedWindows,
+  scheduleIdFromAlarm,
+  MIN_PERIOD_MINUTES,
+} from "./scheduler.js";
 import { SeenKeys, filterRows, parseFields } from "../utils/row-dedupe.js";
 import { extractPdfText, extractPdfItems } from "../utils/pdf-text.js";
 import { tablesFromPages } from "../utils/pdf-tables.js";
@@ -51,7 +63,23 @@ import {
   permissionRefusal,
   permissionStatus,
 } from "./optional-permissions.js";
-import { initSessionKey } from "./api-key-manager.js";
+// Statically, not with a dynamic import().
+//
+// `import()` is disallowed outright in a ServiceWorkerGlobalScope — the HTML
+// spec forbids it, and Chrome throws "import() is disallowed on
+// ServiceWorkerGlobalScope". Nine call sites here used it, so the AI gateway's
+// save and test buttons, the API-key handlers and the captcha model path all
+// threw the moment they ran in a real browser. Every unit test passed: Node
+// allows dynamic import, so the worker harness never reproduced it. An
+// end-to-end check against a real Chromium is what finally surfaced it.
+import {
+  initSessionKey,
+  listProviders,
+  validateApiKey,
+  getApiKey,
+  setApiKey,
+  solveCaptcha,
+} from "./api-key-manager.js";
 import {
   applyHeaderRules,
   parseHeaderText,
@@ -64,7 +92,6 @@ import {
   deleteSession,
   listSessions,
 } from "./session-store.js";
-import { setApiKey } from "./api-key-manager.js";
 import {
   loadPool,
   selectProxy,
@@ -121,11 +148,31 @@ import {
 import { emitPython } from "../script-gen/python-emitter.js";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { runLlmLayer } from "./llm-extractor.js";
+import {
+  parseSchema,
+  weightsFor,
+  mapNodeToSchema,
+} from "../utils/extraction-schema.js";
+import { groundFields } from "../utils/extraction-grounding.js";
+import { judgeSelectors, toExtractStep } from "../utils/selector-learning.js";
+import {
+  buildProvenance,
+  summarise as summariseProvenance,
+  provenanceColumn,
+} from "../utils/extraction-provenance.js";
 // Non-secret AI-gateway settings (provider/model/baseUrl). The key itself
 // never lives here — it goes through api-key-manager.js's encrypted,
 // session-only storage under provider id `gateway:<provider>`, same as every
 // other credential this extension holds (K-17).
-import { GATEWAY_STORAGE_KEY as STORAGE_GATEWAY_KEY } from "./gateway-config.js";
+import {
+  GATEWAY_STORAGE_KEY as STORAGE_GATEWAY_KEY,
+  readGatewayConfig,
+} from "./gateway-config.js";
+import {
+  askVision,
+  testConnection,
+  GATEWAY_PROVIDERS,
+} from "../utils/ai-gateway.js";
 import {
   formatRows,
   formatMeta,
@@ -440,6 +487,14 @@ async function _bootstrap() {
     });
   }
 
+  // Alarms do not survive an extension reload, and a schedule with no alarm
+  // never runs — silently, which is the worst way for a scheduler to fail.
+  // Re-armed every time the worker starts, which also clears any alarm whose
+  // schedule was deleted while the worker was down.
+  await syncAlarms().catch((err) =>
+    logger.error(MODULE, "alarm-sync-fail", { error: err.message }),
+  );
+
   logger.info(MODULE, "sw-bootstrapped", {});
 }
 
@@ -498,6 +553,17 @@ function _stopHeartbeat() {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  const scheduleId = scheduleIdFromAlarm(alarm.name);
+  if (scheduleId) {
+    _runSchedule(scheduleId).catch((err) => {
+      logger.error(MODULE, "schedule-run-failed", {
+        id: scheduleId,
+        error: err.message,
+      });
+    });
+    return;
+  }
+
   if (alarm.name === "fs_sw_heartbeat") {
     logger.debug(MODULE, "heartbeat", { active: _runStates.size > 0 });
     // The worker may have been restarted by this very alarm, in which case the
@@ -1771,10 +1837,24 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   // Default on for pipelines saved before the toggle was honoured.
   const useLlm = config.useLlm !== false;
 
+  // What is being asked for. An empty schema is the product default, so every
+  // pipeline saved before schemas existed behaves exactly as it did.
+  const { fields, isDefault, rejected } = parseSchema(config.schema);
+  for (const bad of rejected) {
+    _broadcastLog(
+      "warn-log",
+      `AUTO_EXTRACT: "${bad}" is not usable as a field name and was left out.`,
+      runId,
+    );
+  }
+
   // ── Layer 1 & 2: run in-page smart-extractor ──────────────────────────────
   const l12Resp = await _sendToPage(tabId, {
     type: "AUTO_EXTRACT",
-    config: { confidenceThreshold: threshold },
+    config: {
+      confidenceThreshold: threshold,
+      schema: isDefault ? null : fields,
+    },
   }).catch((err) => ({ ok: false, error: err.message }));
 
   if (!l12Resp?.ok) {
@@ -1784,6 +1864,16 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
   }
 
   let extraction = l12Resp.result;
+
+  // A schema of the user's own: the page reported the site's structured-data
+  // keys, and the matching happens here because the matcher is an ES module a
+  // classic content script cannot import.
+  if (!isDefault) {
+    extraction = _applySchema(extraction, fields, threshold, runId);
+  }
+
+  // Set only when a model answered and proposed selectors for its answer.
+  let llmSelectors = null;
 
   // ── Layer 3: LLM fallback if confidence is still low ──────────────────────
   if (extraction.needsLlm && !useLlm) {
@@ -1807,9 +1897,51 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     let llmResult = null;
     let llmError = null;
     try {
-      llmResult = await runLlmLayer(extraction.simplifiedDom);
+      llmResult = await runLlmLayer(
+        extraction.simplifiedDom,
+        {
+          fields,
+          isDefault,
+          // Only for a schema the user named: the product prompt has its own
+          // fixed shape, and widening it is a change to the path every saved
+          // pipeline already runs.
+          wantSelectors: !isDefault && config.learnSelectors !== false,
+        },
+        // The URL is part of the cache key, so an answer is never served for a
+        // page it was not given for.
+        { url: await _tabUrl(tabId), cache: config.cache !== false },
+      );
     } catch (err) {
       llmError = err.message;
+    }
+
+    // Everything the model said has to be on the page it was shown. The text
+    // is already in hand, so this costs a string comparison and rules out the
+    // failure the prompt can only ask about: a column of plausible values the
+    // page never contained.
+    if (llmResult?.result && config.grounded !== false) {
+      const checked = groundFields(
+        llmResult.result,
+        llmResult.fields ?? fields,
+        extraction.simplifiedDom,
+      );
+      llmResult.result = checked.result;
+      llmResult.grounding = checked.how;
+      for (const { field, value } of checked.dropped) {
+        // Named, with what was claimed: "the model made something up" is only
+        // useful if you can see what, and on which field.
+        _broadcastLog(
+          "warn-log",
+          `AUTO_EXTRACT: dropped "${field}" — the model answered ${JSON.stringify(value)}, ` +
+            "which is not on the page it was shown. An empty cell cannot be acted on by mistake; a made-up one can.",
+          runId,
+        );
+      }
+      // A field the model invented is a field nothing answered, so its
+      // confidence has to fall with it or the merge would prefer the hole.
+      for (const { field } of checked.dropped) {
+        if (llmResult.perField) llmResult.perField[field] = 0;
+      }
     }
 
     if (llmResult?.error) {
@@ -1822,11 +1954,14 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
         runId,
       );
     } else if (llmResult) {
+      llmSelectors = llmResult.selectors ?? null;
       // LLM wins field-by-field where it has higher confidence
       extraction = _mergeLlmOverL12(extraction, llmResult);
       _broadcastLog(
         "info-log",
-        `AUTO_EXTRACT: the model answered — overall confidence now ${extraction.overallConfidence}%.`,
+        llmResult.cached
+          ? `AUTO_EXTRACT: answered from cache — this page has not changed since the model last read it (confidence ${extraction.overallConfidence}%).`
+          : `AUTO_EXTRACT: the model answered — overall confidence now ${extraction.overallConfidence}%.`,
         runId,
       );
     } else if (llmError) {
@@ -1859,6 +1994,38 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     _broadcastLog("warn-log", warning, runId);
   }
 
+  // Selectors the model proposed, checked in the page.
+  //
+  // Checked, not trusted: run each one and keep it only if it produces the
+  // value the model reported. What survives is offered as an ordinary EXTRACT
+  // step, which scrapes this site deterministically and for free from then on
+  // — and, unlike AUTO_EXTRACT, exports to a Playwright script.
+  if (llmSelectors && Object.keys(llmSelectors).length) {
+    await _learnSelectors(llmSelectors, extraction.result ?? {}, tabId, runId);
+  }
+
+  // Which layer answered each field, and what that is worth.
+  //
+  // The row carries one `_extractionMethod`, taken from whichever layer
+  // answered first — untrue of any real page, where `name` comes from the
+  // site's JSON-LD and `price` from a guess at the markup. Both fields are
+  // kept as they were so no existing export changes shape; the per-field
+  // record goes to the panel beside them.
+  const provenance = buildProvenance({
+    fields: extraction.fields ?? Object.keys(extraction.result ?? {}),
+    result: extraction.result ?? {},
+    perField: extraction.perField,
+    from: extraction.from,
+    grounding: extraction.grounding,
+  });
+
+  _broadcastProvenance(provenance, runId, tabId);
+  _broadcastLog(
+    "info-log",
+    `AUTO_EXTRACT: ${summariseProvenance(provenance)}`,
+    runId,
+  );
+
   // Build the final row — include confidence metadata as hidden fields
   const row = {
     ...extraction.result,
@@ -1866,7 +2033,253 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
     _extractionMethod: extraction.method,
   };
 
+  // Off by default: provenance is per field and a CSV cell is not, so adding
+  // it to every row would change the shape of every export that exists for a
+  // detail most runs never look at.
+  if (config.provenance) row._provenance = provenanceColumn(provenance);
+
   return row;
+}
+
+/**
+ * Say once, per run, if what is being collected carries personal data.
+ *
+ * Not a block. The user asked for these rows and may well be entitled to
+ * them — a directory of businesses is full of email addresses and scraping it
+ * is not by itself a problem. What they should not do is find out afterwards,
+ * from someone else, that the file they exported and shared had personal data
+ * in it.
+ *
+ * Two things it will not do. It will not print the value: a warning about
+ * personal data that puts that data in the log, and from there into a
+ * screenshot in a bug report, has made things worse rather than better. The
+ * detector reports a type, a column and a row index, and that is all that is
+ * passed on. And it will not repeat itself: a 500-row scrape warning 500 times
+ * is the same as not warning at all, so the run stops scanning once it has
+ * said so — which also keeps a long run from paying for a check whose answer
+ * cannot change.
+ */
+function _checkRowsForPii(runState, runId, rows) {
+  if (!runState || runState.piiWarned) return;
+  if (!Array.isArray(rows) || rows.length === 0) return;
+
+  const findings = scanRows(rows);
+  if (findings.length === 0) return;
+
+  runState.piiWarned = true;
+  const columns = [...new Set(findings.map((f) => f.field))];
+  _broadcastLog(
+    "warn-log",
+    `Ethics · PII: these rows contain personal data (${summarizeFindings(findings)}) ` +
+      `in ${columns.length === 1 ? "column" : "columns"} ${columns.join(", ")}. ` +
+      "The run is continuing — this is a note, not a block. Check what you are " +
+      "allowed to keep and share before exporting.",
+    runId,
+  );
+  logger.warn(MODULE, "pii-in-rows", {
+    types: [...new Set(findings.map((f) => f.type))],
+    columns,
+    // Never the values. The detector is built not to carry them and this must
+    // not undo that.
+  });
+}
+
+/**
+ * Check the model's selectors in the page, and offer what survives.
+ *
+ * The page runs them and reports what each found; the judging happens here,
+ * because `content/injector.js` is a classic content script and cannot import
+ * `utils/selector-learning.js`. A field whose value grounding dropped has a
+ * null value by now, so its selector is never judged — a selector "verified"
+ * against something the model invented has been checked against nothing.
+ *
+ * Nothing is added to the pipeline: the panel offers it and the user decides.
+ * A step appearing in a pipeline nobody added is worse than not offering one.
+ */
+async function _learnSelectors(selectors, values, tabId, runId) {
+  let probed;
+  try {
+    // Not through `_sendToPage`: that helper rewrites the outer type to
+    // "step:execute" because everything it carries is a step, and a probe is
+    // not one. Same shape as the structure detector's own path — make sure the
+    // script is there, then address the message directly.
+    await _ensureInjected(tabId);
+    const resp = await chrome.tabs.sendMessage(tabId, {
+      type: "FS_PROBE_SELECTORS",
+      payload: { selectors },
+    });
+    probed = resp?.ok ? resp.result : null;
+  } catch (err) {
+    logger.warn(MODULE, "probe-failed", { error: err.message });
+    probed = null;
+  }
+  if (!probed) return;
+
+  const { verified, how, fragile } = judgeSelectors({
+    selectors,
+    values,
+    probe: (_sel, field) => probed[field] ?? { count: 0, text: null },
+  });
+
+  const kept = Object.keys(verified);
+  if (kept.length === 0) {
+    // Said once, quietly. A model that proposed nothing usable costs nothing
+    // beyond the request that was being made anyway.
+    const tried = Object.keys(how).length;
+    if (tried) {
+      _broadcastLog(
+        "info-log",
+        `AUTO_EXTRACT: none of the ${tried} selector(s) the model proposed matched the value it reported, so none were kept.`,
+        runId,
+      );
+    }
+    return;
+  }
+
+  _broadcastLog(
+    "info-log",
+    `AUTO_EXTRACT: ${kept.length} selector(s) checked against the page and verified (${kept.join(", ")}). ` +
+      "Save them as an EXTRACT step and this site is scraped without a model from then on." +
+      (fragile.length
+        ? ` ${fragile.join(", ")} rely on position rather than a class or id, so they will break if the page is restructured.`
+        : ""),
+    runId,
+  );
+
+  const step = toExtractStep(verified);
+  if (!step) return;
+  chrome.runtime
+    .sendMessage({
+      type: "pipeline:selectors",
+      payload: { step, verified, fragile, how, runId, tabId },
+    })
+    .catch(() => {});
+}
+
+/**
+ * The URL of a tab, or "" if it cannot be read.
+ *
+ * Part of the AI cache key. A failure here has to be a cache miss rather than
+ * a failed step, so it never throws.
+ */
+async function _tabUrl(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return tab?.url ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Send the per-field record to the panel.
+ *
+ * Its own message rather than a log line: a log line is a sentence, and this
+ * is a table the panel renders as one — and as nodes, because every value in
+ * it came off a page.
+ */
+function _broadcastProvenance(provenance, runId, tabId) {
+  chrome.runtime
+    .sendMessage({
+      type: "pipeline:provenance",
+      payload: { provenance, runId, tabId },
+    })
+    .catch(() => {});
+}
+
+/**
+ * Fill a user's schema from what the page reported.
+ *
+ * The free layers answer for the fields they were taught. Layer 1's product
+ * normaliser knows `name` and `price`; layer 2's heuristics know the same
+ * seven. A field neither was written for gets **no opinion** rather than a
+ * guess — a heuristic answering for a column it was never taught is exactly
+ * the failure this three-layer arrangement exists to avoid, and it would be
+ * indistinguishable from a real answer in the export.
+ *
+ * What generalises for free is the site's own structured data: a page that
+ * publishes `datePublished` answers a request for `published date` with no
+ * model and no cost. That is why the page now reports the raw node.
+ *
+ * @param {object} extraction - what the page returned
+ * @param {string[]} fields
+ * @param {number} threshold - below this, ask a model
+ * @param {string} runId
+ * @returns {object} the same shape, re-keyed to the schema
+ */
+function _applySchema(extraction, fields, threshold, runId) {
+  const structured = mapNodeToSchema(extraction.structuredNode, fields);
+  const meta = mapNodeToSchema(extraction.metaNode, fields);
+  const product = extraction.result ?? {};
+  const productConf = extraction.perField ?? {};
+
+  const result = {};
+  const perField = {};
+  const from = {};
+
+  for (const field of fields) {
+    // JSON-LD first: a publisher's assertion about its own page beats a meta
+    // tag the CMS filled in, and both beat a guess from the markup.
+    if (structured.values[field] != null) {
+      result[field] = structured.values[field];
+      perField[field] = 95;
+      from[field] = `json-ld:${structured.matchedKeys[field]}`;
+      continue;
+    }
+    if (meta.values[field] != null) {
+      result[field] = meta.values[field];
+      perField[field] = 85;
+      from[field] = `meta:${meta.matchedKeys[field]}`;
+      continue;
+    }
+    // The product heuristics, but only where the field is one they know.
+    const known = Object.prototype.hasOwnProperty.call(product, field);
+    if (known && product[field] != null && product[field] !== "") {
+      result[field] = product[field];
+      perField[field] = productConf[field] ?? 50;
+      from[field] = "heuristic";
+      continue;
+    }
+    result[field] = null;
+    perField[field] = 0;
+    from[field] = "none";
+  }
+
+  const weights = weightsFor(fields, false);
+  let total = 0;
+  let sum = 0;
+  for (const field of fields) {
+    total += weights[field] ?? 1;
+    sum += (perField[field] ?? 0) * (weights[field] ?? 1);
+  }
+  const overallConfidence = total ? Math.round(sum / total) : 0;
+
+  const answered = fields.filter((f) => result[f] != null).length;
+  _broadcastLog(
+    "info-log",
+    `AUTO_EXTRACT: the page answered ${answered} of ${fields.length} field(s) for free` +
+      (answered
+        ? ` (${fields.filter((f) => result[f] != null).join(", ")})`
+        : "") +
+      ".",
+    runId,
+  );
+
+  return {
+    ...extraction,
+    result,
+    perField,
+    from,
+    fields,
+    overallConfidence,
+    // Re-decided here: the page cannot know whether the free layers covered a
+    // schema it has no rules for, so its own needsLlm is about products only.
+    // Either reason is enough: a low score, or a field nothing answered.
+    // A schema of five fields where four came back at 95 still averages well
+    // above the threshold while one column is entirely empty.
+    needsLlm: overallConfidence < threshold || answered < fields.length,
+    method: answered ? "structured+heuristic" : "none",
+  };
 }
 
 /**
@@ -1874,7 +2287,12 @@ async function _executeAutoExtract(config = {}, tabId, runId, ctx = {}) {
  * has higher per-field confidence.
  */
 function _mergeLlmOverL12(l12, llm) {
-  const fieldList = [
+  // Whatever was asked for. `l12.fields` is set by _applySchema for a custom
+  // schema; without one it is the product default, which is where the list
+  // used to be spelled out. A merge over a hardcoded list would have dropped
+  // every field a user named for themselves — the model would answer and the
+  // answer would be discarded on the way back.
+  const fieldList = l12.fields ?? [
     "name",
     "price",
     "originalPrice",
@@ -1890,6 +2308,7 @@ function _mergeLlmOverL12(l12, llm) {
 
   const mergedResult = { ...(l12.result || {}) };
   const mergedPerField = { ...(l12.perField || {}) };
+  const mergedFrom = { ...(l12.from || {}) };
   const mergedWarnings = [...(l12.warnings || []), ...(llm.warnings || [])];
 
   for (const field of fieldList) {
@@ -1910,30 +2329,34 @@ function _mergeLlmOverL12(l12, llm) {
     ) {
       mergedResult[field] = llmVal;
       mergedPerField[field] = llmConf;
+      // Or the row would keep layer 1's label on a value layer 3 replaced,
+      // which is the exact untruth per-field provenance exists to remove.
+      mergedFrom[field] = "llm";
     }
   }
 
-  // Recompute overall confidence after merge
-  const weights = {
-    name: 30,
-    price: 25,
-    images: 15,
-    brand: 10,
-    description: 10,
-    sku: 5,
-    availability: 5,
-  };
+  // Recompute overall confidence after merge, over the fields that were
+  // actually asked for. The product weights were hardcoded here, so a custom
+  // schema summed seven fields it does not have and reported 0% however well
+  // the model had answered.
+  const weights = weightsFor(fieldList, !l12.fields);
   let totalWeight = 0,
     weightedSum = 0;
-  for (const [field, weight] of Object.entries(weights)) {
+  for (const field of fieldList) {
+    const weight = weights[field] ?? 0;
     totalWeight += weight;
     weightedSum += (mergedPerField[field] || 0) * weight;
   }
-  const overallConfidence = Math.round(weightedSum / totalWeight);
+  const overallConfidence = totalWeight
+    ? Math.round(weightedSum / totalWeight)
+    : 0;
 
   return {
+    ...l12,
     result: mergedResult,
     perField: mergedPerField,
+    from: mergedFrom,
+    grounding: llm.grounding || l12.grounding,
     overallConfidence,
     method: llm.method || l12.method,
     warnings: mergedWarnings,
@@ -2129,7 +2552,7 @@ async function _doExport(runId, config) {
   // one advantage over a real append: a page that gains a column mid-week gets
   // that column, where an append to a written CSV could only drop it.
   let rowsToWrite = allRows;
-  let stem = `flowscrape_export_${ts}`;
+  let stem = `verquill_export_${ts}`;
   if (config.append) {
     if (!APPENDABLE_FORMATS.includes(fmt)) {
       throw new Error(
@@ -2141,7 +2564,7 @@ async function _doExport(runId, config) {
     const name = datasetName(config.dataset);
     const { added, total, dropped } = await appendDatasetRows(name, allRows);
     rowsToWrite = await readDataset(name);
-    stem = `flowscrape_${name}`;
+    stem = `verquill_${name}`;
     _broadcastLog(
       dropped ? "warn-log" : "info-log",
       `EXPORT: added ${added} row${added === 1 ? "" : "s"} to "${name}" ` +
@@ -2189,7 +2612,7 @@ async function _doExport(runId, config) {
     const zipBytes = _buildZip(zipFiles);
     await chrome.downloads.download({
       url: _bytesToDataUrl(zipBytes, "application/zip"),
-      filename: `flowscrape_export_${ts}.zip`,
+      filename: `verquill_export_${ts}.zip`,
       saveAs: false,
     });
     // A short export is never silent: if the capture buffers filled, the count
@@ -2462,6 +2885,12 @@ const STORAGE_DEDUPE_PREFIX = "fs_seen_";
  * @returns {Promise<{kept: object[], dropped: number}>}
  */
 async function _collectRows(runState, runId, rows) {
+  // The one place every row passes on its way to storage, whichever step
+  // produced it. Ethics gate 2 used to sit at preflight, filtering for a step
+  // type that does not exist, and could not have worked even spelled
+  // correctly: rows do not exist before the page has been read.
+  _checkRowsForPii(runState, runId, rows);
+
   const dedupe = runState?.dedupe;
   const { kept, dropped } = dedupe
     ? filterRows(rows, dedupe.seen, dedupe.fields)
@@ -2865,7 +3294,7 @@ async function _executeDownloadFile(step, tabId, runId, ctx = {}) {
   const queue = targets.slice(0, Math.min(limit, DOWNLOAD_HARD_CAP));
   const template =
     String(authored.filename ?? config.filename ?? "").trim() ||
-    "flowscrape/{{file.name}}";
+    "verquill/{{file.name}}";
   const domain = _runDomain(runState);
 
   const files = [];
@@ -4851,7 +5280,6 @@ async function _askGatewayForCaptcha(tabId, found, runId) {
   // and the "a local server needs no key" exception — this used to be spelled
   // out here and again in the extraction layer, which is two chances for the
   // free path to work in one place and be refused in the other.
-  const { readGatewayConfig } = await import("./gateway-config.js");
   const config = await readGatewayConfig();
   if (!config) return null;
   const apiKey = config.apiKey;
@@ -4869,7 +5297,6 @@ async function _askGatewayForCaptcha(tabId, found, runId) {
   if (!grabbed) return { error: "no captcha image was found on the page" };
   if (grabbed.error) return { error: grabbed.error };
 
-  const { askVision } = await import("../utils/ai-gateway.js");
   _broadcastLog(
     "info-log",
     `SOLVE_CAPTCHA is asking your ${config.provider} model to read the image (${grabbed.width}×${grabbed.height}).`,
@@ -5330,7 +5757,7 @@ async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
     // Pace the run. Ethics gate 3 warns about request volume and nothing
     // enforced it — rate-limiter.js was imported for two form-fill handlers
     // that are themselves unreachable (audit F-09), while the emitted Python
-    // told the reader "MIN_DELAY_MS = 800  # Floor enforced by FlowScrape
+    // told the reader "MIN_DELAY_MS = 800  # Floor enforced by Verquill
     // ethics engine", which was not true of the extension. It is now.
     if (RATE_LIMITED_STEPS.has(resolvedStep.type)) {
       await acquire(_runDomain(runState));
@@ -5512,6 +5939,120 @@ _registerHandler("content:detect", async (payload, sender) => {
   });
   if (!resp?.ok) throw new Error(resp?.error || "Could not read the page");
   return resp.result;
+});
+
+// ── Schedules ────────────────────────────────────────────────────────────────
+//
+// A schedule is a stored pipeline and an alarm. The run happens in the browser
+// the user already has open, which is what makes this free — and what makes
+// the two limits worth stating rather than burying: Chrome has to be running,
+// and a minute is the floor Chrome will honour.
+
+/** Schedules currently mid-run, so one cannot start a second copy of itself. */
+const _scheduleRuns = new Set();
+
+/**
+ * Fire one schedule.
+ *
+ * Opens the page in a background tab, runs the pipeline through the same
+ * handler the Run button uses — enforcement, ethics gates and all — and closes
+ * the tab afterwards.
+ */
+async function _runSchedule(id) {
+  const schedule = await getSchedule(id);
+  if (!schedule) {
+    // The alarm outlived its schedule. Clear it rather than firing forever for
+    // something the user deleted and can no longer see.
+    await chrome.alarms.clear(`fs_schedule_${id}`);
+    return;
+  }
+  if (!schedule.enabled) return;
+
+  if (_scheduleRuns.has(id)) {
+    // An hourly run over a slow site can still be going when the next hour
+    // comes round. Two copies of one pipeline on one tab is not a schedule
+    // running twice, it is a mess — and the site gets double the traffic.
+    _broadcastLog(
+      "warn-log",
+      `Schedule "${schedule.name}" is already running, so this firing was skipped.`,
+      null,
+    );
+    return;
+  }
+
+  const missed = missedWindows(schedule, Date.now());
+  if (missed > 0) {
+    // Named rather than made up for. A gap in the data that looks like the
+    // site having had no results is the failure this line exists to prevent;
+    // running the missed windows back to back would be a worse one.
+    _broadcastLog(
+      "warn-log",
+      `Schedule "${schedule.name}": ${missed} run(s) were missed, most likely because Chrome was not running. ` +
+        "They are not being made up — running them back to back would hammer the site.",
+      null,
+    );
+  }
+
+  _scheduleRuns.add(id);
+  let tab = null;
+  try {
+    // Not focused: a schedule that steals the window every hour is unusable.
+    tab = await chrome.tabs.create({ url: schedule.url, active: false });
+    // The same wait every navigation uses. A pipeline started against a
+    // half-loaded page fails on step 1 for a reason that has nothing to do
+    // with the pipeline.
+    if (!(await _waitForTabLoad(tab.id))) {
+      throw new Error("The scheduled page did not finish loading.");
+    }
+
+    const start = _handlers.get(MSG.PIPELINE_START);
+    const result = await start(
+      {
+        pipeline: schedule.pipeline,
+        tabId: tab.id,
+        targetOrigin: new URL(schedule.url).origin,
+      },
+      {},
+    );
+    await markRun(id, "started");
+    _broadcastLog(
+      "info-log",
+      `Schedule "${schedule.name}" started (run ${result?.runId ?? "?"}).`,
+      result?.runId ?? null,
+    );
+  } catch (err) {
+    await markRun(id, `failed: ${err.message}`);
+    _broadcastLog(
+      "error-log",
+      `Schedule "${schedule.name}" failed to start: ${err.message}`,
+      null,
+    );
+    if (tab?.id) await chrome.tabs.remove(tab.id).catch(() => {});
+  } finally {
+    _scheduleRuns.delete(id);
+  }
+}
+
+_registerHandler("schedule:list", async () => ({
+  schedules: await listSchedules(),
+  minPeriodMinutes: MIN_PERIOD_MINUTES,
+}));
+
+_registerHandler("schedule:save", async (payload) => {
+  const saved = await saveSchedule(payload?.schedule ?? payload);
+  await syncAlarms();
+  return saved;
+});
+
+_registerHandler("schedule:delete", async (payload) => {
+  const removed = await deleteSchedule(payload?.id);
+  await syncAlarms();
+  return { removed };
+});
+
+_registerHandler("schedule:run", async (payload) => {
+  await _runSchedule(payload?.id);
+  return { started: true };
 });
 
 _registerHandler("content:ensure", async (payload, sender) => {
@@ -5763,7 +6304,6 @@ _registerHandler(MSG.PROXY_TEST, async (payload) => {
 });
 
 _registerHandler(MSG.CAPTCHA_SOLVE, async (payload) => {
-  const { solveCaptcha } = await import("./api-key-manager.js");
   const token = await solveCaptcha(payload);
   return { token };
 });
@@ -5776,8 +6316,6 @@ _registerHandler(MSG.CAPTCHA_SOLVE, async (payload) => {
 // ever validated: all six _validate* functions in api-key-manager.js were
 // unreachable, and saving a bad key gave the same "saved" as a good one (F-03).
 _registerHandler(MSG.KEY_GET, async (payload) => {
-  const { listProviders, validateApiKey } =
-    await import("./api-key-manager.js");
   const providers = await listProviders();
   if (!payload?.validate) return { providers };
 
@@ -5827,7 +6365,6 @@ _registerHandler(MSG.CHECKPOINT_SAVE, async (payload) => {
 
 // Wire up API key save buttons
 _registerHandler("key:set", async (payload) => {
-  const { setApiKey } = await import("./api-key-manager.js");
   await setApiKey(payload.provider, payload.value);
   return { ok: true };
 });
@@ -5842,7 +6379,6 @@ _registerHandler("key:set", async (payload) => {
 // extraction paths another part of this codebase owns, and conflating the two
 // would mean changing one silently changes the other's behavior.
 _registerHandler("gateway:save", async (payload) => {
-  const { GATEWAY_PROVIDERS } = await import("../utils/ai-gateway.js");
   const { provider, apiKey, model, baseUrl } = payload ?? {};
   if (!GATEWAY_PROVIDERS[provider]) {
     return { ok: false, error: `Unknown provider "${provider}"` };
@@ -5851,7 +6387,6 @@ _registerHandler("gateway:save", async (payload) => {
   // base URL is the common thing to change, and re-pasting the key every time
   // would be needless friction (and a needless chance to fat-finger it).
   if (apiKey) {
-    const { setApiKey } = await import("./api-key-manager.js");
     await setApiKey(`gateway:${provider}`, apiKey);
   }
   await chrome.storage.local.set({
@@ -5885,8 +6420,6 @@ _registerHandler("gateway:config-get", async () => {
 });
 
 _registerHandler("gateway:test", async (payload) => {
-  const { testConnection } = await import("../utils/ai-gateway.js");
-  const { getApiKey } = await import("./api-key-manager.js");
   const { provider, apiKey, model, baseUrl } = payload ?? {};
   // The field may be blank because the user is testing a key saved earlier —
   // fall back to storage rather than treating "blank box" as "no key".

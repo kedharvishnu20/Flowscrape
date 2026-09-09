@@ -64,7 +64,7 @@
 
   // ── Shadow DOM host ────────────────────────────────────────────────────────────
   const _host = document.createElement("div");
-  _host.id = "flowscrape-v3-host";
+  _host.id = "verquill-v3-host";
   _host.style.cssText =
     "position:fixed;top:0;left:0;z-index:2147483647;pointer-events:none;";
   const _shadow = _host.attachShadow({ mode: "closed" });
@@ -500,6 +500,7 @@
     // (C-09) — so "is it there yet?" became a question that needed an answer.
     "fs:ping",
     "FS_DETECT_STRUCTURE",
+    "FS_PROBE_SELECTORS",
   ]);
 
   // Registered once per document: the __fsInjected guard at the top of this file
@@ -550,9 +551,47 @@
         return detect();
       }
 
+      // Run the selectors a model proposed and report what each one finds.
+      //
+      // Only reports. Whether a selector is worth keeping is decided in the
+      // worker, where utils/selector-learning.js lives — this file is a
+      // classic content script and cannot import a module. The page observes,
+      // the worker judges, the same as IF_ELSE and ASSERT.
+      case "FS_PROBE_SELECTORS":
+        return _probeSelectors(payload);
+
       default:
         throw new Error(`Unhandled event type: ${type}`);
     }
+  }
+
+  /**
+   * What each of a set of CSS selectors finds on this page.
+   *
+   * @param {{selectors: Record<string, string>}} payload
+   * @returns {Record<string, {count: number, text: string|null, error?: string}>}
+   */
+  function _probeSelectors({ selectors = {} } = {}) {
+    const found = {};
+    for (const [field, selector] of Object.entries(selectors)) {
+      const sel = String(selector ?? "").trim();
+      if (!sel) continue;
+      try {
+        const nodes = document.querySelectorAll(sel);
+        const first = nodes[0];
+        found[field] = {
+          count: nodes.length,
+          // The text as EXTRACT would read it, so what is verified here is
+          // what the saved step will actually produce.
+          text: first ? (first.textContent ?? "").trim() : null,
+        };
+      } catch (err) {
+        // A model occasionally answers with a sentence. One dropped field,
+        // never a failed step.
+        found[field] = { count: 0, text: null, error: err.message };
+      }
+    }
+    return found;
   }
 
   // ── Step execution ────────────────────────────────────────────────────────────
@@ -771,7 +810,7 @@
    * then returns the result including a `simplifiedDom` string if the SW should
    * escalate to the LLM layer.
    *
-   * @param {object} config - { confidenceThreshold?: number }
+   * @param {object} config - { confidenceThreshold?: number, schema?: string[] }
    * @returns {Promise<object>} Extraction result
    */
   async function _stepAutoExtract(config = {}) {
@@ -793,6 +832,10 @@
     // Run synchronously — pure DOM reads, no awaits needed inside
     const result = window.__fsSmartExtract({
       confidenceThreshold: config.confidenceThreshold ?? 70,
+      // Already parsed by the worker: this file forwards it rather than
+      // reading the raw config, so "what counts as a field name" has one
+      // definition and it is not in the page.
+      schema: Array.isArray(config.schema) ? config.schema : null,
     });
 
     return result;
@@ -3469,6 +3512,6 @@
   // content_scripts directly. We load it dynamically so it self-initialises
   // (overlayEngine.init() is called at the bottom of overlay-engine.js).
   import(chrome.runtime.getURL("content/overlay-engine.js")).catch((err) => {
-    console.warn("[FlowScrape] overlay-engine failed to load:", err.message);
+    console.warn("[Verquill] overlay-engine failed to load:", err.message);
   });
 })();

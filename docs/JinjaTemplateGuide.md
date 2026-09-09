@@ -1,8 +1,8 @@
-# Jinja-style Templates in FlowScrape v3
+# Jinja-style Templates in Verquill v3
 
 This document explains how to use template variables in pipeline step configuration values.
 
-> FlowScrape supports `{{ ... }}` placeholders in string configs and resolves them through a simple object-lookup resolver (in `background/service-worker.js`).
+> Verquill supports `{{ ... }}` placeholders in string configs and resolves them through a simple object-lookup resolver (in `background/service-worker.js`).
 
 ## 1. Template resolver behavior
 
@@ -117,7 +117,7 @@ The resolver now supports array access for loop item arrays.
 
 Child steps inside a `LOOP` are now automatically scoped to the current loop item. That means a `CLICK` or `EXTRACT` child can use a descendant selector like `a.product-link` and it will resolve inside the current item, not the whole page.
 
-If a child selector is just a number like `1`, `2`, or `3`, FlowScrape treats it as `:scope > *:nth-child(n)` inside the current loop item, so `1` means first child, `2` means second child, and so on.
+If a child selector is just a number like `1`, `2`, or `3`, Verquill treats it as `:scope > *:nth-child(n)` inside the current loop item, so `1` means first child, `2` means second child, and so on.
 
 Do not use object templates like `{{item}}` or `{{loop.current}}` directly as selector text. Use a descendant selector (for example `a.product-link`) or leave selector empty to target the current loop item root.
 

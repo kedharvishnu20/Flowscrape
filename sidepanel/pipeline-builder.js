@@ -27,6 +27,7 @@ import {
 } from "../exporters/row-formatters.js";
 import { exportRows } from "../exporters/text-exporters.js";
 import { parseListLines } from "../utils/loop-items.js";
+import { analyzePipeline, VERDICT } from "../utils/pipeline-capabilities.js";
 
 const MSG = {
   PIPELINE_START: "pipeline:start",
@@ -39,6 +40,14 @@ SK.STORAGE_FILES = "fs_storage_files_v1";
 SK.UPLOAD_ACTIVITIES = "fs_upload_activities_v1";
 
 let _tabId = null;
+/**
+ * True when boot could not work out which tab this panel belongs to, so
+ * SK.PIPELINE is still the shared, un-suffixed key rather than a per-tab one.
+ * Anything saved while this holds is saved somewhere a correctly-bound boot
+ * will not look, so the flag exists to warn about it and to hand the work over
+ * once a tab does arrive.
+ */
+let _pipelineKeyUnbound = false;
 
 /**
  * The attestation for the domain in the active tab, as the worker holds it.
@@ -59,7 +68,20 @@ const STEP_REGISTRY = Object.fromEntries(
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _pipeline = { steps: [] };
-let _expandedNodeId = null;
+/**
+ * Which step cards are open.
+ *
+ * This was a single id, so opening one card closed whichever was already
+ * open. Configuring a LOOP with five children under that rule is a cycle of
+ * open, read, close, open — and comparing two steps' settings, which is what
+ * you are actually doing when a selector works in one place and not another,
+ * was impossible. A set costs nothing and removes the restriction.
+ *
+ * Deliberately not persisted. It describes where you are in a piece of work,
+ * not what the pipeline is, and a panel that reopened nine cards from
+ * yesterday would be answering a question nobody asked.
+ */
+const _expandedNodeIds = new Set();
 let _insertCtx = { index: -1, parentId: "", branchKey: "" };
 let _runState = {
   active: false,
@@ -83,11 +105,53 @@ const elPaletteContent = document.getElementById("palette-content");
 const elBoardViewport = document.getElementById("board-viewport");
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Which tab this panel is driving.
+ *
+ * The board is stored per tab under `fs_active_pipeline_<tabId>` (E-13), so
+ * this answer decides which pipeline appears. Getting it wrong does not look
+ * like an error — it looks like the user's work is gone.
+ *
+ * A single `tabs.query({active, currentWindow})` was not reliable enough to
+ * carry that. The side panel can boot while the window has no settled active
+ * tab — during a window switch, as a tab is being replaced, or immediately
+ * after the panel itself reloads — and the query then resolves to an empty
+ * list. So: two query shapes, because `currentWindow` and `lastFocusedWindow`
+ * disagree exactly when focus is in motion, and a couple of short retries,
+ * because this is a race with the browser settling rather than a real absence.
+ *
+ * @returns {Promise<number|null>} the tab id, or null if it truly cannot be found
+ */
+async function _resolveTabId() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    for (const query of [
+      { active: true, currentWindow: true },
+      { active: true, lastFocusedWindow: true },
+    ]) {
+      const [tab] = await chrome.tabs.query(query).catch(() => []);
+      if (tab?.id != null) return tab.id;
+    }
+    // Short and bounded. This resolves on the first retry when it resolves at
+    // all; a longer wait would just delay an empty board.
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  return null;
+}
+
 async function init() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  _tabId = tab ? tab.id : null;
-  if (_tabId) {
+  _tabId = await _resolveTabId();
+  if (_tabId != null) {
     SK.PIPELINE = `fs_active_pipeline_${_tabId}`;
+  } else {
+    // Falling through to the bare `fs_active_pipeline` key is the dangerous
+    // part, and it used to happen in silence: the board loads empty, the user
+    // reasonably concludes their pipeline is gone, and the moment they touch
+    // anything, saveState writes to that shared key — so the next boot that
+    // *does* resolve the tab reads the real key and loses whatever they just
+    // did. Nothing here can bind to a tab that does not exist, but it can at
+    // least refuse to be quiet about it.
+    _pipelineKeyUnbound = true;
   }
 
   // Also listen for tab changes within the sidepanel to swap state
@@ -107,8 +171,30 @@ async function init() {
     _tabId = activeInfo.tabId;
     SK.PIPELINE = `fs_active_pipeline_${_tabId}`;
     const saved = (await chrome.storage.local.get(SK.PIPELINE))[SK.PIPELINE];
+
+    // A panel that booted without a tab has been writing to the shared key.
+    // Now that there is a real one to bind to, work already on the board is
+    // adopted into it rather than thrown away — clearing here would delete
+    // exactly the work the unbound boot put at risk, which is the failure this
+    // whole path exists to prevent. Only when the tab has nothing of its own:
+    // a tab with a saved pipeline keeps it.
+    if (_pipelineKeyUnbound) {
+      _pipelineKeyUnbound = false;
+      if (!saved?.steps && _pipeline.steps.length) {
+        await saveState();
+        notify(
+          "info-log",
+          `Board moved onto this tab (${_pipeline.steps.length} steps kept).`,
+        );
+        _expandedNodeIds.clear();
+        await _refreshCaptchaAttestation();
+        renderPipeline();
+        return;
+      }
+    }
+
     _pipeline = saved?.steps ? saved : { steps: [] };
-    _expandedNodeId = null;
+    _expandedNodeIds.clear();
     // A different tab is very likely a different domain, and the attestation
     // belongs to the domain rather than to the panel.
     await _refreshCaptchaAttestation();
@@ -127,6 +213,15 @@ async function init() {
   bindDelegatedEvents();
   bindKeyboardActivation();
   _loadGatewayConfig();
+
+  // Said only once the log pane is bound, and said at all because the failure
+  // it describes is otherwise indistinguishable from "my pipeline vanished".
+  if (_pipelineKeyUnbound) {
+    notify(
+      "warn-log",
+      "Could not tell which tab this panel belongs to, so the saved board for it could not be loaded. Click the page you want to work on and reopen the panel. Nothing has been deleted.",
+    );
+  }
 
   const savedState = await chrome.storage.local.get([
     SK.PIPELINE,
@@ -259,14 +354,14 @@ async function _downloadRunRows(runId) {
   const written = [];
   try {
     if (rows.length > 0) {
-      await exportRows(rows, "csv", `flowscrape_${runId}.csv`);
+      await exportRows(rows, "csv", `verquill_${runId}.csv`);
       written.push(`${rows.length} row${rows.length === 1 ? "" : "s"}`);
     }
     if (networks.length > 0) {
       // A separate file, not merged: an API capture and an extracted row have
       // nothing in common but the run they came from, and one CSV holding both
       // would have a column for every field of each.
-      await exportRows(networks, "csv", `flowscrape_${runId}_api.csv`);
+      await exportRows(networks, "csv", `verquill_${runId}_api.csv`);
       written.push(
         `${networks.length} captured request${networks.length === 1 ? "" : "s"}`,
       );
@@ -625,7 +720,7 @@ function bindGlobalControls() {
       if (!ok) return;
 
       _pipeline.steps = [];
-      _expandedNodeId = null;
+      _expandedNodeIds.clear();
       await chrome.storage.local.remove(SK.PIPELINE);
       saveState();
       renderPipeline();
@@ -809,15 +904,9 @@ function bindGlobalControls() {
       _saveAndValidateKey("2captcha", "2Captcha", "key-2captcha"),
     );
   document
-    .getElementById("btn-save-key-openai")
-    ?.addEventListener("click", () =>
-      _saveAndValidateKey("openai", "OpenAI", "key-openai"),
-    );
-  document
-    .getElementById("btn-save-key-gemini")
-    ?.addEventListener("click", () =>
-      _saveAndValidateKey("gemini", "Gemini", "key-gemini"),
-    );
+    .getElementById("btn-sched-add")
+    ?.addEventListener("click", () => _addSchedule());
+  _renderSchedules();
   document
     .getElementById("btn-gateway-save")
     ?.addEventListener("click", () => _saveGatewayConfig());
@@ -901,7 +990,7 @@ function bindGlobalControls() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `flowscrape_${format}.${format === "python" ? "py" : "mjs"}`;
+        a.download = `verquill_${format}.${format === "python" ? "py" : "mjs"}`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -932,8 +1021,18 @@ function bindGlobalControls() {
       const parsed = JSON.parse(text);
       const normalized = _normalizeImportedPipeline(parsed);
 
+      // The file came from outside this panel, so it is somebody else's
+      // program until proven otherwise. Nothing is written to state until the
+      // review below returns true — and for the one refused combination it
+      // never asks, it just declines.
+      const accepted = await _reviewImport(normalized, file.name);
+      if (!accepted) {
+        logToMonitor("warn-log", `Did not load ${file.name}.`);
+        return;
+      }
+
       _pipeline = normalized;
-      _expandedNodeId = null;
+      _expandedNodeIds.clear();
       await saveState();
       renderPipeline();
       logToMonitor(
@@ -962,7 +1061,7 @@ function bindGlobalControls() {
         ..._pipeline,
         meta: {
           exportedAt: new Date().toISOString(),
-          source: "flowscrape-sidepanel",
+          source: "verquill-sidepanel",
         },
       };
       const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -971,7 +1070,7 @@ function bindGlobalControls() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `flowscrape_pipeline_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      a.download = `verquill_pipeline_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1186,6 +1285,99 @@ function _nextStepId() {
   return `s_${Date.now()}${Math.floor(Math.random() * 1000)}`;
 }
 
+/**
+ * Show what an imported pipeline can do, and get an answer.
+ *
+ * Resolves true only when the person said yes to something they were shown.
+ * A pipeline that reads credentials *and* talks to a site it never declared
+ * resolves false without offering a button at all — that pairing is the shape
+ * of account theft and has no version worth confirming. Everything short of it
+ * is disclosed and left to the reader, because a gate that fires on everything
+ * is one people learn to click through, and then it protects nobody.
+ *
+ * A pipeline with nothing worth saying loads with no interruption.
+ */
+function _reviewImport(pipeline, filename) {
+  const analysis = analyzePipeline(pipeline);
+  if (analysis.verdict === VERDICT.ALLOW) return Promise.resolve(true);
+
+  const overlay = document.getElementById("import-review-overlay");
+  const body = document.getElementById("import-review-body");
+  const title = document.getElementById("import-review-title");
+  const accept = document.getElementById("btn-import-accept");
+  const reject = document.getElementById("btn-import-reject");
+  const close = document.getElementById("btn-import-cancel");
+
+  // No overlay in the document (a stripped test harness) is not a reason to
+  // load an unreviewed pipeline. Fail closed and say why.
+  if (!overlay || !body || !accept) {
+    logToMonitor(
+      "error-log",
+      "Cannot review this import, so it was not loaded.",
+    );
+    return Promise.resolve(false);
+  }
+
+  const blocked = analysis.verdict === VERDICT.BLOCKED;
+  overlay.classList.toggle("blocked", blocked);
+  title.textContent = blocked
+    ? "This pipeline was refused"
+    : "Before you load this";
+
+  const caps = analysis.capabilities
+    .map(
+      (c) =>
+        `<div class="imp-cap imp-${c.severity}">
+           <div class="imp-cap-rule"></div>
+           <div>
+             <div class="imp-cap-title">${esc(c.title)}</div>
+             <div class="imp-cap-detail">${esc(c.detail)}</div>
+           </div>
+         </div>`,
+    )
+    .join("");
+
+  body.innerHTML = blocked
+    ? `<div class="imp-verdict imp-blocked">
+         <b>Refused — not loaded</b>
+         ${esc(analysis.blockedReason)}
+       </div>${caps}`
+    : `<div class="imp-verdict imp-review">
+         <b>Read this first</b>
+         ${esc(filename)} can do the following. None of it is refused, but it is
+         worth agreeing to on purpose.
+       </div>${caps}`;
+
+  // A refused pipeline gets no "load anyway": the whole point is that this one
+  // is not the reader's call to make under a persuasive listing.
+  accept.style.display = blocked ? "none" : "";
+  reject.textContent = blocked ? "Close" : "Don't load";
+
+  overlay.classList.add("open");
+  (blocked ? reject : accept).focus();
+
+  return new Promise((resolve) => {
+    const finish = (result) => {
+      overlay.classList.remove("open", "blocked");
+      accept.removeEventListener("click", onAccept);
+      reject.removeEventListener("click", onReject);
+      close?.removeEventListener("click", onReject);
+      document.removeEventListener("keydown", onKey);
+      resolve(result);
+    };
+    const onAccept = () => finish(!blocked);
+    const onReject = () => finish(false);
+    const onKey = (e) => {
+      if (e.key === "Escape") finish(false);
+    };
+
+    accept.addEventListener("click", onAccept);
+    reject.addEventListener("click", onReject);
+    close?.addEventListener("click", onReject);
+    document.addEventListener("keydown", onKey);
+  });
+}
+
 function _normalizeImportedPipeline(source) {
   const input = source?.pipeline?.steps ? source.pipeline : source;
   if (!input || typeof input !== "object" || !Array.isArray(input.steps)) {
@@ -1308,7 +1500,7 @@ function _addStep(type) {
       : _pipeline.steps.splice(Math.max(0, index), 0, newStep);
   }
   elPalette.classList.remove("open");
-  _expandedNodeId = newStep.id;
+  _expandedNodeIds.add(newStep.id);
   saveState();
   renderPipeline();
 }
@@ -1334,18 +1526,44 @@ function renderPipeline() {
     _makeKeyboardAccessible(elCanvas);
     return;
   }
+  // Drop ids for steps that no longer exist. Removing a LOOP takes its
+  // children with it, so pruning at the point of removal would mean walking
+  // the deleted subtree; doing it here is one pass and self-healing, and it
+  // also covers Clear and import. Without it the set grows for the life of the
+  // panel and a re-used id would open a card nobody opened.
+  const live = new Set();
+  const collect = (steps) => {
+    for (const s of steps || []) {
+      live.add(s.id);
+      collect(s.children);
+      collect(s.ifBranch);
+      collect(s.elseBranch);
+    }
+  };
+  collect(_pipeline.steps);
+  for (const id of _expandedNodeIds)
+    if (!live.has(id)) _expandedNodeIds.delete(id);
+
+  // innerHTML discards the scrolled position along with the nodes. A redraw
+  // happens on add, remove and reorder — all of which the user performed at a
+  // particular place in a long pipeline, and none of which is a reason to send
+  // them back to the top.
+  const viewport = elCanvas.closest("#board-viewport");
+  const scrollTop = viewport?.scrollTop ?? 0;
+
   let html = `<div class="insert-step top-insert" data-action="open-palette" data-index="0" data-parent-id="" data-branch="">+</div>`;
   _pipeline.steps.forEach((step, i) => {
     html += renderStepNode(step, i, _pipeline.steps.length, "", "");
   });
   elCanvas.innerHTML = html;
+  if (viewport) viewport.scrollTop = scrollTop;
   bindConfigInputs();
   bindDragAndDrop();
   _makeKeyboardAccessible(elCanvas);
 }
 
 function renderStepNode(step, index, total, parentId, branchKey) {
-  const isExpanded = _expandedNodeId === step.id;
+  const isExpanded = _expandedNodeIds.has(step.id);
 
   let html = `<div class="node-wrapper" data-index="${index}" data-id="${step.id}" data-parent-id="${parentId}" data-branch="${branchKey}">`;
   // One custom property carries the step's category colour; the stylesheet
@@ -1355,7 +1573,7 @@ function renderStepNode(step, index, total, parentId, branchKey) {
   html += `<div class="node-card ${isExpanded ? "expanded" : ""}" style="--step-color:var(--step-${step.type});" draggable="true" data-drag-id="${step.id}" data-step-type="${step.type}">`;
   html += `<div class="node-header" data-action="toggle-expand" data-id="${step.id}">
     <div class="node-title-group">
-      <div class="node-title">${step.type} <span class="node-status-icon running-spinner">⏳</span></div>
+      <div class="node-title">${stepCardTitle(step)}<span class="node-status-icon running-spinner">⏳</span></div>
       <div class="node-subtitle">${getStepSubtitle(step)}</div>
     </div>
     <div class="node-actions">
@@ -1403,6 +1621,39 @@ function renderStepNode(step, index, total, parentId, branchKey) {
   html += `<div class="insert-step" data-action="open-palette" data-index="${index + 1}" data-parent-id="${parentId}" data-branch="${branchKey}">+</div>`;
   html += `</div>`; // end .node-wrapper
   return html;
+}
+
+/**
+ * The card's human-facing name.
+ *
+ * The registry has carried an `icon` and a `desc` for every step type since it
+ * was written, and the card used neither: it rendered `step.type`, so the most
+ * visible text in the builder was AUTO_EXTRACT, UPLOAD_ACTIVITY and
+ * PAGINATE_PROBE. The friendly name already existed and was being thrown away.
+ *
+ * The enum is demoted rather than dropped. It is what the docs, the exported
+ * Playwright script and the run log all call the step, so someone reading any
+ * of those needs to be able to find it on the board.
+ */
+function stepCardTitle(step) {
+  const meta = STEP_TYPES[step.type] || {};
+  const glyph = meta.icon
+    ? `<span class="node-glyph" aria-hidden="true">${meta.icon}</span>`
+    : "";
+  // An unregistered type has no friendly name to fall back on, so it shows the
+  // raw one rather than the word "undefined".
+  const label = meta.desc || step.type;
+
+  // The chip is only worth its space when the name does not already contain
+  // the enum. "Smart Auto-Extract AUTO_EXTRACT" and "Loop / Repeat LOOP" say
+  // the same thing twice; "Read the page's structured data" genuinely does not
+  // tell you it is PAGE_DATA, which is what the exported script will call it.
+  const flatten = (s) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const chip = flatten(label).includes(flatten(step.type))
+    ? ""
+    : `<span class="node-type">${esc(step.type)}</span>`;
+
+  return `${glyph}<span class="node-label">${esc(label)}</span>${chip}`;
 }
 
 function getStepSubtitle(step) {
@@ -2199,12 +2450,16 @@ function _configFields(step) {
 
     const canAppend = APPENDABLE_FORMATS.includes(c.format || "csv");
     if (canAppend) {
-      html += appendToggle(step);
+      html += toggle(step, "append", "Add to a dataset instead of a new file", {
+        rerender: true,
+      });
     } else if (c.append) {
       // The toggle is on and the format cannot carry it. Say so here rather
       // than letting the run fail at the last step, after all the scraping.
       html += `<p style="font-size:11px;color:var(--red);margin:0 0 8px;">Appending is on, but ${esc(formatMeta(c.format).label)} cannot be added to a file a run at a time — a JSON array, an XML tree and a Markdown table each have to be rewritten whole. Choose ${esc(APPENDABLE_FORMATS.join(", ").toUpperCase())}, or turn appending off.</p>`;
-      html += appendToggle(step);
+      html += toggle(step, "append", "Add to a dataset instead of a new file", {
+        rerender: true,
+      });
     }
 
     if (canAppend && c.append) {
@@ -2452,7 +2707,7 @@ function _configFields(step) {
   // ── AUTO_EXTRACT ──
   if (step.type === "AUTO_EXTRACT") {
     html += `<div class="step-note">
-      <div class="step-note-title">Smart Product Auto-Extractor</div>
+      <div class="step-note-title">Smart Auto-Extractor</div>
       <p class="prose">Product pages. The first layers run in the page and cost nothing; a model is asked only when they cannot answer confidently.</p>
       <ol class="step-note-layers">
         <li>JSON-LD / Schema.org</li>
@@ -2461,6 +2716,24 @@ function _configFields(step) {
         <li>Whichever model you set up under Settings &rarr; AI gateway</li>
       </ol>
     </div>`;
+
+    html += `<label>Fields to look for</label>
+    <textarea id="cfg-${step.id}-schema" data-id="${step.id}" data-key="schema" data-rerender="true" class="cfg-bind" rows="3" placeholder="Leave empty for a product page. Or name your own: title, author, published date" style="margin-bottom:8px;">${esc(c.schema || "")}</textarea>`;
+    if (String(c.schema || "").trim()) {
+      html += hint(
+        "The page's own structured data answers these for free wherever it " +
+          "publishes them — a site that says datePublished answers a request " +
+          "for \u201cpublished date\u201d with no model and no cost. The product " +
+          "heuristics only have an opinion about product fields, so anything " +
+          "else falls to the model, and a field nothing can answer stays empty " +
+          "rather than being guessed at.",
+      );
+    } else {
+      html += hint(
+        "Empty means the product fields: name, price, brand, description, sku, " +
+          "availability, rating, images and the rest.",
+      );
+    }
 
     html += field(
       step,
@@ -2479,6 +2752,63 @@ function _configFields(step) {
       step,
       "useLlm",
       "Ask a model when the on-page layers are not confident",
+    );
+
+    // Default on, and the label for turning it off says what that means
+    // rather than "disable verification".
+    html += toggle(
+      step,
+      "grounded",
+      "Only keep answers that are actually on the page",
+      { rerender: true },
+    );
+    if (c.grounded === false) {
+      html += `<p style="font-size:11px;color:var(--amber,#d97706);margin:-4px 0 10px;">
+        With this off, a value the model invented is kept and exported like any
+        other. Nothing downstream can tell the difference.</p>`;
+    } else {
+      html += hint(
+        "Every value the model returns is looked for in the page text it was " +
+          "shown; anything that is not there is dropped and named in the log. " +
+          "It rules out invention, not confusion — a real value in the wrong " +
+          "column still passes, which is what the confidence figure is for.",
+      );
+    }
+
+    html += toggle(
+      step,
+      "learnSelectors",
+      "Ask the model for selectors, and offer the ones that check out",
+    );
+    html += hint(
+      "Each selector is run in the page and kept only if it produces the " +
+        "value the model reported. What survives is offered as an EXTRACT " +
+        "step \u2014 after that the site is scraped with no model at all, and " +
+        "the pipeline exports to a Playwright or Python script, which this " +
+        "step cannot.",
+    );
+
+    html += toggle(
+      step,
+      "cache",
+      "Reuse the model's answer for a page that has not changed",
+    );
+    html += hint(
+      "The page text is the key, so a page that changed is asked again and a " +
+        "page that did not costs nothing the second time. Switching model or " +
+        "changing the fields asks again too \u2014 a different question. Only " +
+        "answers are kept, never the page text.",
+    );
+
+    html += toggle(
+      step,
+      "provenance",
+      "Add a column recording where each field came from",
+    );
+    html += hint(
+      "The panel shows this for every run either way. The column puts it in " +
+        "the file too, as one cell per row — useful when someone else has " +
+        "to check the data and cannot see the run that produced it.",
     );
 
     html += `<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(99,102,241,0.1);font-size:11px;color:var(--text-dim);">
@@ -2677,7 +3007,7 @@ function _configFields(step) {
       "filename",
       "Save as",
       "text",
-      c.filename ?? "flowscrape/{{file.name}}",
+      c.filename ?? "verquill/{{file.name}}",
     );
     html += hint(
       "A template. {{file.name}}, {{file.stem}}, {{file.ext}}, {{file.index}} " +
@@ -3167,20 +3497,19 @@ function memberToggle(step, key, value, label) {
   </div>`;
 }
 
-/** The append switch, which reveals the dataset box, so it must re-render. */
-function appendToggle(step) {
-  const checked = step.config.append ? "checked" : "";
-  return `<div class="toggle-wrap">
-    <input type="checkbox" id="cfg-${step.id}-append" ${checked} data-id="${step.id}" data-key="append" data-rerender="true" class="cfg-bind">
-    <div class="toggle-switch"></div>
-    <span>Add to a dataset instead of a new file</span>
-  </div>`;
-}
-
-function toggle(step, key, label) {
+/**
+ * A checkbox bound to one boolean in the step's config.
+ *
+ * `rerender` is for a switch that reveals or hides something else — the
+ * dataset name, a warning about what turning a check off means. Without it the
+ * box appears only after some unrelated edit redraws the card, which reads as
+ * the toggle not working.
+ */
+function toggle(step, key, label, { rerender = false } = {}) {
   const checked = step.config[key] ? "checked" : "";
+  const redraw = rerender ? ' data-rerender="true"' : "";
   return `<div class="toggle-wrap">
-    <input type="checkbox" id="cfg-${step.id}-${key}" ${checked} data-id="${step.id}" data-key="${key}" class="cfg-bind">
+    <input type="checkbox" id="cfg-${step.id}-${key}" ${checked} data-id="${step.id}" data-key="${key}"${redraw} class="cfg-bind">
     <div class="toggle-switch"></div>
     <span>${label}</span>
   </div>`;
@@ -3936,14 +4265,40 @@ function bindDelegatedEvents() {
 }
 
 // ── Step actions ──────────────────────────────────────────────────────────────
+/**
+ * Open or close one card.
+ *
+ * This used to call renderPipeline(), which rebuilds the whole canvas with
+ * innerHTML and then rebinds every config input and drag handler on it. That
+ * was pure waste: `.node-config` is rendered for every card whether it is open
+ * or not, and `.expanded` only flips a `display` rule (see the CSS). So the
+ * rebuild changed nothing about what was on screen while costing the scroll
+ * position, any text selection, and the identity of every node in the canvas —
+ * on a forty-step pipeline, to show one card.
+ *
+ * Toggling the class does the same job and touches one element. renderPipeline
+ * is still right for add, remove and reorder, which genuinely change the tree.
+ */
 function _toggleExpand(id) {
-  _expandedNodeId = _expandedNodeId === id ? null : id;
-  renderPipeline();
+  const wasOpen = _expandedNodeIds.has(id);
+  if (wasOpen) _expandedNodeIds.delete(id);
+  else _expandedNodeIds.add(id);
+
+  const card = elCanvas.querySelector(
+    `.node-wrapper[data-id="${CSS.escape(id)}"] > .node-card`,
+  );
+  // No card in the DOM means the state and the canvas have diverged, which a
+  // class toggle cannot repair. Fall back to the redraw rather than leaving a
+  // card that answers clicks by doing nothing.
+  if (card) card.classList.toggle("expanded", !wasOpen);
+  else renderPipeline();
 }
 function _removeStep(e, id) {
   e.stopPropagation();
   _removeStepDeep(_pipeline.steps, id);
-  if (_expandedNodeId === id) _expandedNodeId = null;
+  // Only the removed step forgets it was open. Clearing the set here would
+  // close every other card as a side effect of deleting one.
+  _expandedNodeIds.delete(id);
   saveState();
   renderPipeline();
 }
@@ -4482,7 +4837,7 @@ async function _offerPageData(tabId) {
     },
   };
   _pipeline.steps.push(stepNode);
-  _expandedNodeId = stepNode.id;
+  _expandedNodeIds.add(stepNode.id);
   saveState();
   renderPipeline();
   notify(
@@ -4749,7 +5104,7 @@ async function _insertDetectedTable(table) {
   }
 
   _pipeline.steps.push(loop);
-  _expandedNodeId = extract.id;
+  _expandedNodeIds.add(extract.id);
   saveState();
   renderPipeline();
   notify(
@@ -5101,6 +5456,14 @@ function listenToSystem() {
         );
       }
     }
+    if (msg.type === "pipeline:provenance") {
+      renderProvenance(msg.payload?.provenance);
+    }
+
+    if (msg.type === "pipeline:selectors") {
+      offerLearnedSelectors(msg.payload);
+    }
+
     if (msg.type === "pipeline:log") {
       logToMonitor(msg.payload.level, msg.payload.message);
       if (msg.payload.level === "error-log") {
@@ -5199,6 +5562,282 @@ function logToMonitor(levelClass, message) {
     logs.removeChild(logs.firstElementChild);
   }
 
+  logs.scrollTop = logs.scrollHeight;
+}
+
+/**
+ * Schedule the pipeline currently on the board.
+ *
+ * The pipeline is copied into the schedule rather than referenced. A schedule
+ * pointing at "whatever is on the board" would change meaning every time the
+ * user edits something, and would run a half-built pipeline at 3am.
+ */
+async function _addSchedule() {
+  const url = document.getElementById("sched-url")?.value?.trim() ?? "";
+  const every = Number(document.getElementById("sched-every")?.value ?? 60);
+
+  if (!_pipeline.steps?.length) {
+    return logToMonitor(
+      "warn-log",
+      "There is no pipeline on the board to schedule.",
+    );
+  }
+
+  const res = await chrome.runtime.sendMessage({
+    type: "schedule:save",
+    payload: {
+      schedule: {
+        name: _pipeline.name || new URL(url || "https://x.test").hostname,
+        url,
+        everyMinutes: every,
+        pipeline: { name: _pipeline.name, steps: _pipeline.steps },
+      },
+    },
+  });
+
+  if (!res?.ok) {
+    return logToMonitor(
+      "error-log",
+      res?.error ?? "Could not save the schedule.",
+    );
+  }
+  if (res.result?.note) {
+    // Said, not silently applied: a schedule firing at a rate other than the
+    // number the user typed is how they conclude the feature is broken.
+    logToMonitor("warn-log", res.result.note);
+  }
+  logToMonitor(
+    "info-log",
+    `Scheduled "${res.result.name}" every ${res.result.everyMinutes} minute(s). ` +
+      "It only fires while Chrome is running.",
+  );
+  await _renderSchedules();
+}
+
+/** Draw the stored schedules, with what each one last did. */
+async function _renderSchedules() {
+  const box = document.getElementById("sched-list");
+  if (!box) return;
+  const res = await chrome.runtime
+    .sendMessage({ type: "schedule:list" })
+    .catch(() => null);
+  box.replaceChildren();
+  const list = res?.ok ? (res.result.schedules ?? []) : [];
+
+  if (list.length === 0) {
+    const none = document.createElement("p");
+    none.className = "prose";
+    none.textContent = "No schedules yet.";
+    box.appendChild(none);
+    return;
+  }
+
+  for (const s of list) {
+    const row = document.createElement("div");
+    row.className = "flex gap-2 mb-2";
+    row.style.cssText = "align-items:baseline;font-size:11px;";
+
+    const label = document.createElement("span");
+    // Built as nodes: the name comes from a pipeline the user may have
+    // imported, and the URL is theirs to type.
+    label.textContent = `${s.name} — every ${s.everyMinutes} min — ${s.url}`;
+    label.style.flex = "1";
+
+    const state = document.createElement("span");
+    state.textContent = s.lastRunAt
+      ? `last: ${new Date(s.lastRunAt).toLocaleString()}${s.lastStatus && s.lastStatus !== "started" ? ` (${s.lastStatus})` : ""}`
+      : "never run";
+    state.style.color = "var(--text-dim)";
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.className = "btn";
+    toggleBtn.textContent = s.enabled ? "Pause" : "Resume";
+    toggleBtn.addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({
+        type: "schedule:save",
+        payload: { schedule: { ...s, enabled: !s.enabled } },
+      });
+      await _renderSchedules();
+    });
+
+    const del = document.createElement("button");
+    del.className = "btn";
+    del.textContent = "Delete";
+    del.addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({
+        type: "schedule:delete",
+        payload: { id: s.id },
+      });
+      await _renderSchedules();
+    });
+
+    row.append(label, state, toggleBtn, del);
+    box.appendChild(row);
+  }
+}
+
+/**
+ * Offer the selectors the model proposed and the page confirmed.
+ *
+ * Offered, not added. A step appearing in a pipeline nobody put there is worse
+ * than not offering one, however good the selectors are — and the whole point
+ * of this feature is that the user ends up with a pipeline they can read.
+ *
+ * What it buys them, said plainly on the button: after this the site is
+ * scraped with no model at all, which also means the pipeline exports to a
+ * Playwright or Python script. AUTO_EXTRACT never could.
+ */
+function offerLearnedSelectors(payload) {
+  const logs = document.getElementById("mon-logs");
+  if (!logs || !payload?.step) return;
+  const fields = payload.step.config?.fields ?? [];
+  if (fields.length === 0) return;
+
+  const box = document.createElement("div");
+  box.className = "log-entry info-log learned-selectors";
+
+  const head = document.createElement("div");
+  head.className = "log-msg";
+  head.style.fontWeight = "600";
+  head.textContent = `${fields.length} selector(s) verified against this page`;
+  box.appendChild(head);
+
+  for (const f of fields) {
+    const line = document.createElement("div");
+    line.style.cssText =
+      "display:flex;gap:8px;font-size:11px;padding-left:8px;";
+    const name = document.createElement("span");
+    name.className = "mono";
+    name.textContent = f.name;
+    name.style.cssText = "min-width:96px;color:var(--text-main);";
+    const sel = document.createElement("span");
+    sel.className = "mono";
+    sel.textContent = f.selector;
+    sel.style.color = "var(--text-dim)";
+    line.append(name, sel);
+    if ((payload.fragile ?? []).includes(f.name)) {
+      const warn = document.createElement("span");
+      // Kept, and said out loud: it works now and will break on a redesign,
+      // which is not the same as a selector that is wrong today.
+      warn.textContent =
+        "position-based — will break if the page is restructured";
+      warn.style.color = "var(--amber,#d97706)";
+      line.appendChild(warn);
+    }
+    box.appendChild(line);
+  }
+
+  const note = document.createElement("p");
+  note.style.cssText =
+    "font-size:11px;color:var(--text-dim);margin:6px 0 6px 8px;";
+  note.textContent =
+    "Each of these was run in the page and produced the value the model " +
+    "reported. Saved as an EXTRACT step, this site is scraped with no model " +
+    "at all \u2014 and the pipeline exports to a script, which AUTO_EXTRACT cannot.";
+  box.appendChild(note);
+
+  const btn = document.createElement("button");
+  btn.className = "btn";
+  btn.style.marginLeft = "8px";
+  btn.textContent = "Save as an EXTRACT step";
+  btn.addEventListener("click", () => {
+    const stepNode = {
+      id: _nextStepId(),
+      type: "EXTRACT",
+      config: { ...defaultConfig("EXTRACT"), ...payload.step.config },
+    };
+    _pipeline.steps.push(stepNode);
+    _expandedNodeIds.add(stepNode.id);
+    saveState();
+    renderPipeline();
+    btn.disabled = true;
+    btn.textContent = "Added";
+    logToMonitor(
+      "info-log",
+      `Added an EXTRACT step with ${fields.length} verified selector(s). ` +
+        "It runs on its own, with no model.",
+    );
+  });
+  box.appendChild(btn);
+
+  logs.appendChild(box);
+  while (logs.childElementCount > MAX_LOG_ENTRIES) {
+    logs.removeChild(logs.firstElementChild);
+  }
+  logs.scrollTop = logs.scrollHeight;
+}
+
+/**
+ * The per-field record for one AUTO_EXTRACT row.
+ *
+ * A row's single confidence figure says how the extraction went on average.
+ * This says which cells to look at: the ones a heuristic guessed, and the
+ * ones a model answered without the page backing it up.
+ *
+ * Built as nodes for the same reason every other log line is: every value in
+ * here came off a page, and the panel's CSP stops inline script but not
+ * markup injection.
+ */
+function renderProvenance(rows) {
+  const logs = document.getElementById("mon-logs");
+  if (!logs || !Array.isArray(rows) || rows.length === 0) return;
+
+  const box = document.createElement("div");
+  box.className = "log-entry info-log fs-provenance";
+
+  const head = document.createElement("div");
+  head.className = "log-msg";
+  head.textContent = "Where each field came from";
+  head.style.fontWeight = "600";
+  box.appendChild(head);
+
+  for (const r of rows) {
+    const line = document.createElement("div");
+    line.style.cssText =
+      "display:flex;gap:8px;align-items:baseline;font-size:11px;padding-left:8px;";
+
+    const name = document.createElement("span");
+    name.className = "mono";
+    name.textContent = r.field;
+    name.style.cssText = "min-width:96px;color:var(--text-main);";
+
+    const src = document.createElement("span");
+    src.textContent = r.label;
+    // A field nothing answered is dimmed rather than hidden: an absent column
+    // is the thing a person spends an afternoon looking for.
+    src.style.color =
+      r.trust === "none"
+        ? "var(--text-dim)"
+        : r.trust === "model"
+          ? "var(--amber,#d97706)"
+          : "var(--text-dim)";
+
+    line.append(name, src);
+
+    if (r.trust !== "none") {
+      const conf = document.createElement("span");
+      conf.className = "mono";
+      conf.textContent = `${r.confidence}%`;
+      conf.style.cssText = "margin-left:auto;color:var(--text-dim);";
+      line.appendChild(conf);
+    }
+
+    if (r.note) {
+      const note = document.createElement("span");
+      note.textContent = r.verified ? "\u2713 verified" : r.note;
+      note.style.color = r.verified
+        ? "var(--green,#16a34a)"
+        : "var(--text-dim)";
+      line.appendChild(note);
+    }
+
+    box.appendChild(line);
+  }
+
+  logs.appendChild(box);
+  while (logs.childElementCount > MAX_LOG_ENTRIES) {
+    logs.removeChild(logs.firstElementChild);
+  }
   logs.scrollTop = logs.scrollHeight;
 }
 

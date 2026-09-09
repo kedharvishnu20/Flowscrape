@@ -1,4 +1,4 @@
-# FlowScrape
+# Verquill
 
 A Chrome MV3 extension for visual web automation and data extraction. You build
 a pipeline of steps on a node board in the side panel, run it against the active
@@ -24,7 +24,7 @@ No build step. No bundler. Plain ES modules, loaded directly by Chrome.
 1. Open Chrome → `chrome://extensions/`
 2. Enable **Developer mode**
 3. **Load unpacked** → select this folder
-4. Click the FlowScrape icon; the side panel opens
+4. Click the Verquill icon; the side panel opens
 
 Chrome 120 or newer.
 
@@ -180,7 +180,7 @@ boundaries do not move for CSS:
   or its position instead.
 - **Shadow roots.** CSS cannot cross into a web component. Writing
   `app-root >>> .price` searches inside open shadow roots; a plain selector that
-  finds nothing also falls back to searching them. `>>>` is FlowScrape's own
+  finds nothing also falls back to searching them. `>>>` is Verquill's own
   notation, resolved by its own code, and the exported scripts translate it to
   Playwright's `>>`. Closed shadow roots are unreachable to anything outside
   them, and the tool says so rather than pretending.
@@ -211,7 +211,7 @@ is still there for anything detection misses.
 
 Most sites publish their content as structured data for search engines: JSON-LD,
 Schema.org microdata, Open Graph tags. It is already typed, already named, and
-it does not break when a designer renames a class. FlowScrape ignored all of it
+it does not break when a designer renames a class. Verquill ignored all of it
 and asked for CSS selectors describing the same data.
 
 `PAGE_DATA` reads it. No selectors at all. It handles what real pages do: a
@@ -308,12 +308,12 @@ or exempt API steps is an open question.
 
 ## Storage and secrets
 
-| Where                       | What                                                                                               |
-| --------------------------- | -------------------------------------------------------------------------------------------------- |
-| `chrome.storage.session`    | API keys (AES-GCM ciphertext) and the key that encrypts them                                       |
-| `chrome.storage.local`      | Pipelines per tab, overlay prefs, proxy pool metadata, the file library (base64, budgeted to 8 MB) |
-| IndexedDB (`flowscrape_v3`) | Result rows, run cursors                                                                           |
-| Module scope                | Nothing that has to survive a worker restart                                                       |
+| Where                     | What                                                                                               |
+| ------------------------- | -------------------------------------------------------------------------------------------------- |
+| `chrome.storage.session`  | API keys (AES-GCM ciphertext) and the key that encrypts them                                       |
+| `chrome.storage.local`    | Pipelines per tab, overlay prefs, proxy pool metadata, the file library (base64, budgeted to 8 MB) |
+| IndexedDB (`verquill_v3`) | Result rows, run cursors                                                                           |
+| Module scope              | Nothing that has to survive a worker restart                                                       |
 
 API keys live for one browser session and are cleared when Chrome closes.
 
@@ -401,13 +401,13 @@ See [`mcp/README.md`](mcp/README.md).
 
 ## Docs
 
-| File                                                                   | What it is                            |
-| ---------------------------------------------------------------------- | ------------------------------------- |
-| [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md)                           | Full issue inventory, with fix status |
-| [`docs/flowscrape-master-manual.md`](docs/flowscrape-master-manual.md) | Per-function reference (partly stale) |
-| [`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md)             | Template syntax                       |
-| [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)               | Platform constraints                  |
-| [`docs/TEST_CHECKLIST.md`](docs/TEST_CHECKLIST.md)                     | Manual browser checks                 |
+| File                                                               | What it is                            |
+| ------------------------------------------------------------------ | ------------------------------------- |
+| [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md)                       | Full issue inventory, with fix status |
+| [`docs/verquill-master-manual.md`](docs/verquill-master-manual.md) | Per-function reference (partly stale) |
+| [`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md)         | Template syntax                       |
+| [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)           | Platform constraints                  |
+| [`docs/TEST_CHECKLIST.md`](docs/TEST_CHECKLIST.md)                 | Manual browser checks                 |
 
 ---
 

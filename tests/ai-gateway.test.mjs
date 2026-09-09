@@ -1,6 +1,6 @@
 // Tests for K-17 — the bring-your-own-key gateway.
 //
-// FlowScrape's promise is "scrape without paying"; everything a free layer
+// Verquill's promise is "scrape without paying"; everything a free layer
 // (smart-extractor, structured-data, robots/ethics gates) can do is built
 // elsewhere. This module is the escape hatch for what nothing free can do:
 // one interface — askVision/askText — over four providers (Anthropic,

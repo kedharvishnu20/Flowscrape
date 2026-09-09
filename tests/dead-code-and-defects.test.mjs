@@ -17,7 +17,7 @@
 // F-09: rate-limiter.js was imported for two form-fill handlers that are
 // themselves unreachable. Ethics gate 3 warned about request volume and nothing
 // enforced it — while the emitted Python told its reader "MIN_DELAY_MS = 800 #
-// Floor enforced by FlowScrape ethics engine".
+// Floor enforced by Verquill ethics engine".
 //
 // B-33: the three captcha pollers recursed once per attempt, 25 frames deep,
 // with an undocumented two-minute budget.
@@ -199,7 +199,7 @@ test("the save-dialog exporter is reached instead of deleted", async () => {
   )[0];
   assert.match(
     fn,
-    /await exportRows\(rows, "csv", `flowscrape_\$\{runId\}\.csv`\)/,
+    /await exportRows\(rows, "csv", `verquill_\$\{runId\}\.csv`\)/,
   );
   assert.match(
     fn,

@@ -358,7 +358,7 @@ export const STEP_TYPES = Object.freeze({
       selector: "",
       attr: "auto",
       url: "",
-      filename: "flowscrape/{{file.name}}",
+      filename: "verquill/{{file.name}}",
       max: 25,
       inFrame: false,
     },
@@ -450,9 +450,37 @@ export const STEP_TYPES = Object.freeze({
   AUTO_EXTRACT: {
     icon: "🤖",
     cat: "Data",
-    desc: "Smart product auto-extract",
+    desc: "Smart auto-extract",
     runsIn: "background",
-    def: { confidenceThreshold: 70, useLlm: true },
+    def: {
+      confidenceThreshold: 70,
+      useLlm: true,
+      // The fields to look for, comma- or newline-separated. Empty means the
+      // product default, so every pipeline saved before this behaves exactly
+      // as it did. Naming your own turns "smart product auto-extract" into
+      // "smart auto-extract" — the structured-data and model layers generalise,
+      // the product heuristics keep their opinion to the fields they know.
+      schema: "",
+      // Check every value the model returns against the page text it was
+      // shown, and drop what is not there. On by default: the prompt can only
+      // ask a model not to invent, and this can check.
+      grounded: true,
+      // Add the per-field record to the exported row as one cell.
+      //
+      // Off by default: provenance is per field and a CSV cell is not, so
+      // every export that exists would change shape for a detail most runs
+      // never look at. The panel shows it either way.
+      provenance: false,
+      // Reuse an answer the model already gave for this exact page. The page
+      // text is the key, so a page that changed is asked again and there is no
+      // staleness window to get wrong.
+      cache: true,
+      // Ask the model for a CSS selector per field as well as the value. Each
+      // one is checked in the page and only kept if it produces the value the
+      // model reported; what survives is offered as an EXTRACT step, which
+      // scrapes the site without a model — and exports to a script.
+      learnSelectors: true,
+    },
     // Not expressible in an exported script: the first two layers are an
     // in-page extractor with no standalone equivalent, and the third asks a
     // model the script has no configuration for.

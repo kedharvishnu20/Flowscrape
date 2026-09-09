@@ -2,7 +2,7 @@
 //
 // Most real sites embed JSON-LD, Schema.org microdata, or Open Graph tags:
 // clean, typed, already-structured data, put there deliberately for machines to
-// read. FlowScrape ignored all of it and asked the user for CSS selectors
+// read. Verquill ignored all of it and asked the user for CSS selectors
 // instead — selectors that break the next time the site's designer touches a
 // class name, describing data the site was handing out for free.
 //

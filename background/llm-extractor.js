@@ -34,7 +34,9 @@
 
 import { askText } from "../utils/ai-gateway.js";
 import { readGatewayConfig, describeGateway } from "./gateway-config.js";
+import { mapModelKeys } from "../utils/extraction-schema.js";
 import { logger } from "../utils/logger.js";
+import { cacheKey, readCache, writeCache } from "../checkpoint/ai-cache.js";
 
 const MODULE = "llm-extractor";
 
@@ -110,13 +112,85 @@ Return a JSON object with exactly this structure:
  *   model could not be reached or did not answer usefully. Null rather than a
  *   throw: this layer is a bonus, and a run must survive it failing.
  */
-export async function llmExtract(simplifiedDom, config) {
+/**
+ * The prompt for a schema the user named themselves.
+ *
+ * Built rather than templated: the product prompt spells out eleven keys and a
+ * confidence block, and a page of court listings needs none of them. The
+ * instruction to use null and never guess carries over unchanged — it is the
+ * part that keeps an empty column empty instead of plausible.
+ *
+ * @param {string[]} fields
+ * @param {string} dom
+ */
+function _schemaPrompt(fields, dom, wantSelectors = false) {
+  const shape = fields
+    .map((f) => `  ${JSON.stringify(f)}: string or null`)
+    .join(",\n");
+  const conf = fields
+    .map((f) => `    ${JSON.stringify(f)}: integer`)
+    .join(",\n");
+  const sel = fields
+    .map((f) => `    ${JSON.stringify(f)}: string or null`)
+    .join(",\n");
+
+  // Asking for "a selector" gets nth-child chains that verify today and break
+  // when the site adds a banner. Asking for a stable one gets classes and
+  // attributes more often — and the ones that still come back positional are
+  // kept and labelled rather than trusted.
+  const selectorRules = wantSelectors
+    ? `
+- selectors: a CSS selector that matches exactly ONE element holding that value.
+- Prefer a class, id or data attribute over a position. Do not use :nth-child
+  or a long chain of bare tag names — those break when the page changes.
+- Use null for a selector you are not confident about. A wrong selector is
+  worse than none.`
+    : "";
+
+  const selectorBlock = wantSelectors
+    ? `,
+  "selectors": {
+${sel}
+  }`
+    : "";
+
+  return `You are a precise data extraction engine for web pages.
+Extract exactly these fields from the page content below.
+Rules:
+- Return ONLY a single valid JSON object. No markdown, no explanation, no code fences.
+- Use null (not an empty string) for a field the page does not state.
+- Copy values as the page writes them; do not reformat, convert or summarise.
+- Never infer or invent. If you are not certain, use null.
+- confidence values are integers 0-100.${selectorRules}
+
+---PAGE CONTENT START---
+${dom}
+---PAGE CONTENT END---
+
+Return a JSON object with exactly this structure:
+{
+${shape},
+  "confidence": {
+${conf}
+  }${selectorBlock}
+}`;
+}
+
+/**
+ * Ask the configured model for the page's data.
+ *
+ * @param {string} simplifiedDom - stripped page text
+ * @param {{fields: string[], isDefault: boolean}} schema
+ * @param {import("../utils/ai-gateway.js").GatewayConfig} config
+ */
+export async function llmExtract(simplifiedDom, config, schema = null) {
   if (!simplifiedDom || !config) return null;
 
-  const prompt = `${SYSTEM_INSTRUCTION}\n\n${PROMPT_TEMPLATE.replace(
-    "{dom}",
-    simplifiedDom.slice(0, MAX_DOM_CHARS),
-  )}`;
+  const dom = simplifiedDom.slice(0, MAX_DOM_CHARS);
+  const prompt =
+    schema && !schema.isDefault
+      ? _schemaPrompt(schema.fields, dom, schema.wantSelectors === true)
+      : `${SYSTEM_INSTRUCTION}\n\n${PROMPT_TEMPLATE.replace("{dom}", dom)}`;
 
   const said = await askText(
     { prompt },
@@ -133,7 +207,10 @@ export async function llmExtract(simplifiedDom, config) {
     return { error: said.error, code: said.code };
   }
 
-  const parsed = _parseAndValidate(said.text);
+  const parsed =
+    schema && !schema.isDefault
+      ? _parseSchemaAnswer(said.text, schema.fields)
+      : _parseAndValidate(said.text);
   if (parsed) parsed.model = said.model ?? config.model ?? null;
   return parsed;
 }
@@ -288,11 +365,18 @@ function _arrayOfStrings(v) {
 /**
  * Run layer 3 with whatever model the user configured, if any.
  *
+ * Also where the cache sits, because this is the point at which the provider
+ * and model are known — and both are part of the question. Putting it in the
+ * executor instead would mean reading the gateway settings twice and getting
+ * the key wrong the day someone switches provider.
+ *
  * @param {string} simplifiedDom
+ * @param {{fields: string[], isDefault: boolean}|null} schema
+ * @param {{url?: string, cache?: boolean}} [opts]
  * @returns {Promise<object|null>} null when no model is configured — which is
  *   the default, and not a failure.
  */
-export async function runLlmLayer(simplifiedDom) {
+export async function runLlmLayer(simplifiedDom, schema = null, opts = {}) {
   const config = await readGatewayConfig();
   if (!config) {
     logger.info(MODULE, "no-model-configured", {
@@ -300,8 +384,115 @@ export async function runLlmLayer(simplifiedDom) {
     });
     return null;
   }
+
+  const useCache = opts.cache !== false;
+  const dom = String(simplifiedDom ?? "").slice(0, MAX_DOM_CHARS);
+  const fields = schema && !schema.isDefault ? schema.fields : [];
+
+  let key = null;
+  if (useCache && dom) {
+    key = await cacheKey({
+      url: opts.url ?? "",
+      dom,
+      fields,
+      provider: config.provider,
+      model: config.model,
+      baseUrl: config.baseUrl,
+    });
+    const hit = await readCache(key);
+    if (hit?.value) {
+      logger.info(MODULE, "cache-hit", { model: hit.model });
+      // Marked, not disguised: a run that says "the model answered" when the
+      // answer came out of a store is telling the user something untrue about
+      // where their data came from.
+      return { ...hit.value, cached: true };
+    }
+  }
+
   logger.info(MODULE, "asking", { model: describeGateway(config) });
-  return llmExtract(simplifiedDom, config);
+  const out = await llmExtract(simplifiedDom, config, schema);
+
+  // Only a real answer. A rate limit, a local server not started yet, a reply
+  // that would not parse — all transient, and all would otherwise become this
+  // page's permanent answer.
+  if (!out?.error && out?.result && key) {
+    await writeCache(key, out, { url: opts.url ?? "", model: out.model ?? "" });
+  }
+  return out;
+}
+
+/**
+ * Read a model's answer for a schema the user named.
+ *
+ * The key mapping is the same one the structured-data path uses: a model asked
+ * for "published date" may answer with "publishedDate", and insisting on the
+ * exact spelling would throw away a correct answer.
+ *
+ * @param {string} raw
+ * @param {string[]} fields
+ */
+function _parseSchemaAnswer(raw, fields) {
+  const cleaned = String(raw ?? "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "");
+
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    logger.warn(MODULE, "invalid-json", { sample: cleaned.slice(0, 200) });
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+
+  const values = mapModelKeys(parsed, fields);
+  const confidence = parsed.confidence ?? {};
+  const result = {};
+  const perField = {};
+  for (const field of fields) {
+    const v = values[field];
+    result[field] = v === undefined || v === "" ? null : v;
+    const c = Number(
+      confidence[field] ?? mapModelKeys(confidence, [field])[field],
+    );
+    // A field the model answered but did not score is taken at a middling 60
+    // rather than 0: a zero would lose to an empty free layer, which is the
+    // opposite of what the answer is worth.
+    perField[field] = Number.isFinite(c)
+      ? Math.max(0, Math.min(100, Math.round(c)))
+      : result[field] != null
+        ? 60
+        : 0;
+  }
+
+  const answered = fields.filter((f) => result[f] != null).length;
+  const overallConfidence = fields.length
+    ? Math.round(
+        fields.reduce((sum, f) => sum + perField[f], 0) / fields.length,
+      )
+    : 0;
+
+  logger.info(MODULE, "schema-extraction-done", {
+    answered,
+    of: fields.length,
+    overallConfidence,
+  });
+
+  return {
+    result,
+    perField,
+    fields,
+    // Carried through unjudged. Whether a selector is worth keeping is decided
+    // by running it in the page, which cannot happen here.
+    selectors: mapModelKeys(parsed.selectors ?? {}, fields),
+    overallConfidence,
+    method: "llm",
+    warnings: [],
+    needsLlm: false,
+  };
 }
 
 // === END llm-extractor.js ===

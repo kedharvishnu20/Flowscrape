@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FlowScrape v3</title>
+    <title>Verquill v3</title>
     <!--
     Fonts are bundled, not fetched. MV3's extension-page CSP does not allow
     remote stylesheets, so the previous <link> to fonts.googleapis.com was
@@ -45,7 +45,7 @@
       }
 
       /*
-       * FlowScrape is a measuring instrument, not a dashboard.
+       * Verquill is a measuring instrument, not a dashboard.
        *
        * It lives in a 400px strip beside a live web page, and people keep it
        * open for hours while a run works through a site. So it is designed
@@ -918,6 +918,38 @@
         display: flex;
         align-items: center;
         gap: 6px;
+        /* So the name below can truncate instead of pushing the type chip and
+           the status glyph out of a 400px strip. */
+        min-width: 0;
+      }
+
+      /* The registry's own glyph for the step. Carries the category before the
+         name is read, the same job the colour bar does down the left edge. */
+      .node-glyph {
+        font-size: 12px;
+        line-height: 1;
+        flex: none;
+      }
+
+      .node-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /*
+       * The raw step type, demoted to a chip. The card leads with the human
+       * name now, but the docs, the exported script and the run log all call
+       * the step by this, so it stays findable.
+       */
+      .node-type {
+        flex: none;
+        font-size: 8.5px;
+        letter-spacing: 0.06em;
+        color: var(--text-dim);
+        border: 1px solid var(--bg-border);
+        padding: 1px 4px;
       }
 
       /*
@@ -1055,6 +1087,107 @@
 
       #step-palette-overlay.open #step-palette {
         transform: translateY(0);
+      }
+
+      /* Import review — the same bottom sheet the palette uses, because it is
+         the same kind of moment: the panel is asking before it acts. */
+      #import-review-overlay {
+        position: absolute;
+        inset: 0;
+        background: rgba(10, 9, 8, 0.82);
+        z-index: 120;
+        display: none;
+        align-items: flex-end;
+      }
+
+      #import-review-overlay.open {
+        display: flex;
+      }
+
+      #import-review {
+        background: var(--bg-raised);
+        width: 100%;
+        border-top: 1px solid var(--accent);
+        padding: 12px 12px 16px;
+        display: flex;
+        flex-direction: column;
+        max-height: 88%;
+        overflow-y: auto;
+      }
+
+      #import-review-overlay.blocked #import-review {
+        border-top-color: var(--red);
+      }
+
+      .imp-verdict {
+        border: 1px solid var(--bg-border);
+        padding: 10px 11px;
+        margin-bottom: 12px;
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+
+      .imp-verdict.imp-blocked {
+        border-color: var(--red);
+        background: rgba(255, 92, 58, 0.1);
+      }
+
+      .imp-verdict.imp-review {
+        border-color: var(--accent);
+        background: var(--accent-dim);
+      }
+
+      .imp-verdict b {
+        display: block;
+        font-size: 11px;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        margin-bottom: 5px;
+      }
+
+      .imp-blocked b {
+        color: var(--red);
+      }
+      .imp-review b {
+        color: var(--accent);
+      }
+
+      .imp-cap {
+        display: grid;
+        grid-template-columns: 3px 1fr;
+        gap: 10px;
+        padding: 9px 0;
+        border-bottom: 1px solid var(--hairline);
+      }
+
+      .imp-cap:last-child {
+        border-bottom: 0;
+      }
+
+      .imp-cap-rule {
+        background: var(--text-dim);
+      }
+      .imp-danger .imp-cap-rule {
+        background: var(--red);
+      }
+      .imp-notice .imp-cap-rule {
+        background: var(--accent);
+      }
+
+      .imp-cap-title {
+        font-size: 12.5px;
+        font-weight: 500;
+      }
+
+      .imp-danger .imp-cap-title {
+        color: var(--red);
+      }
+
+      .imp-cap-detail {
+        font-size: 11.5px;
+        color: var(--text-muted);
+        margin-top: 2px;
+        line-height: 1.45;
       }
 
       .palette-search {
@@ -1433,6 +1566,21 @@
         margin-bottom: 6px;
         background: var(--bg-raised);
         overflow: hidden;
+        /*
+         * The view these sit in is a flex column, so a section inherits
+         * flex-shrink: 1 and gives up height rather than overflowing. With two
+         * accordions open the stack no longer fit, every section was squeezed
+         * a little, and `overflow: hidden` above quietly sliced the bottom off
+         * whichever one ran past its shrunk height — the AI Gateway's Save and
+         * Test Connection buttons were cut in half. Worse, because nothing
+         * overflowed, the view's own `overflow-y: auto` saw nothing to scroll
+         * and no scrollbar ever appeared, so the buttons were unreachable
+         * rather than merely ugly.
+         *
+         * Refusing to shrink is what lets the content overflow, which is what
+         * gives the view something to scroll.
+         */
+        flex-shrink: 0;
       }
 
       .accordion-header {
@@ -2056,7 +2204,7 @@
       <header id="header">
         <div class="logo-container">
           <div class="logo-bolt" aria-hidden="true"></div>
-          FlowScrape
+          Verquill
         </div>
         <div class="nav-pills">
           <div
@@ -2295,30 +2443,26 @@
 
         <!-- View: CONFIG -->
         <div id="view-config" class="view">
-          <!-- API Keys -->
+          <!-- Ethics & consent: first in the list on purpose. These two
+               toggles decide whether a run ignores a site's stated wishes or
+               answers a challenge on the site's behalf, which makes them the
+               most consequential switches in the panel — a tool that pitches
+               itself as the honest scraper cannot bury them under key inputs. -->
           <div class="accordion-section">
             <div class="accordion-header">
-              <span>API Keys & Services</span>
+              <span>Ethics &amp; consent</span>
               <span class="accordion-chevron" aria-hidden="true"></span>
             </div>
             <div class="accordion-content">
-              <p>Keys are stored in volatile session memory only.</p>
-              <label>2Captcha</label>
-              <div class="flex gap-2 mb-2">
-                <input type="text" placeholder="API Key" id="key-2captcha" />
-                <button class="btn" id="btn-save-key-2captcha">Save</button>
-              </div>
-              <label>OpenAI</label>
-              <div class="flex gap-2 mb-2">
-                <input type="text" placeholder="sk-..." id="key-openai" />
-                <button class="btn" id="btn-save-key-openai">Save</button>
-              </div>
-              <label>Gemini</label>
-              <div class="flex gap-2">
-                <input type="text" placeholder="AIzaSy..." id="key-gemini" />
-                <button class="btn" id="btn-save-key-gemini">Save</button>
-              </div>
-              <label style="margin-top: 16px">Ethics Engine</label>
+              <p class="prose" style="font-size: 11px; margin: 0 0 10px">
+                Bypass Robots.txt lets a run ignore a site's robots.txt disallow
+                rules instead of refusing to visit those paths. Authorising
+                captcha answering is a per-run consent, checked only when the
+                pipeline actually contains a Solve Captcha step — and it is only
+                half of what that step needs: the other half is a per-domain
+                attestation set on the step itself, so turning this on here does
+                not by itself authorise anything.
+              </p>
               <div class="toggle-wrap">
                 <input type="checkbox" id="bypass-robots" />
                 <div class="toggle-switch"></div>
@@ -2332,6 +2476,70 @@
                 <div class="toggle-switch"></div>
                 <span>Authorise captcha answering for this run</span>
               </div>
+            </div>
+          </div>
+
+          <!-- Schedules -->
+          <div class="accordion-section">
+            <div class="accordion-header">
+              <span>Schedules</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
+            </div>
+            <div class="accordion-content">
+              <p>
+                Run the pipeline on this board on a timer. There is no server:
+                <b>Chrome has to be running</b> for a schedule to fire, so one
+                set for 3am runs at 3am if this machine is awake and does not if
+                it is shut. A window that passes while the browser is closed is
+                reported as missed rather than made up for &mdash; running the
+                missed hours back to back would hammer the site.
+              </p>
+              <label>Page to open</label>
+              <input
+                type="text"
+                id="sched-url"
+                placeholder="https://example.com/products"
+              />
+              <label>Run every (minutes)</label>
+              <input type="number" id="sched-every" min="1" value="60" />
+              <p class="prose" id="sched-floor">
+                Chrome will not fire an alarm more often than once a minute.
+              </p>
+              <div class="flex gap-2 mb-2">
+                <button class="btn" id="btn-sched-add">
+                  Schedule this pipeline
+                </button>
+              </div>
+              <div id="sched-list"></div>
+            </div>
+          </div>
+
+          <!-- Captcha solver: the one key pair actually consumed from this
+               section. The OpenAI and Gemini inputs that used to live here
+               stored under the bare provider name, but the only code that
+               ever reads a model key reads it under "gateway:<provider>" —
+               the slot the AI Gateway section below writes to — so those two
+               inputs accepted a secret, reported success, and fed nothing.
+               Removed rather than wired up, because the Gateway section
+               already covers the same ground correctly. -->
+          <div class="accordion-section">
+            <div class="accordion-header">
+              <span>Captcha Solver</span>
+              <span class="accordion-chevron" aria-hidden="true"></span>
+            </div>
+            <div class="accordion-content">
+              <p>Keys are stored in volatile session memory only.</p>
+              <label>2Captcha</label>
+              <div class="flex gap-2 mb-2">
+                <input type="text" placeholder="API Key" id="key-2captcha" />
+                <button class="btn" id="btn-save-key-2captcha">Save</button>
+              </div>
+              <p class="prose" style="font-size: 11px; margin: 8px 0 0">
+                Model provider keys (OpenAI, Gemini, Anthropic, or a local
+                server) go in the "AI Gateway (Bring Your Own Key)" section
+                below — that is the slot every model-calling step actually reads
+                from.
+              </p>
             </div>
           </div>
 
@@ -2515,6 +2723,39 @@
 
           <!-- Populated dynamically by pipeline-builder.js -->
           <div id="palette-content"></div>
+        </div>
+      </div>
+
+      <!--
+        Import review. A pipeline from anywhere but this panel is a program
+        somebody else wrote, and it can read cookies, set headers and call
+        APIs. It is shown for what it can do before it is loaded, and the one
+        combination that has no innocent version — credentials plus a
+        destination the pipeline never declared — is refused here rather than
+        warned about, because a warning is a thing people click through.
+      -->
+      <div id="import-review-overlay">
+        <div id="import-review">
+          <div
+            class="flex justify-between items-center"
+            style="margin-bottom: 12px"
+          >
+            <h2 style="margin: 0" id="import-review-title">
+              Before you load this
+            </h2>
+            <button class="btn-icon" id="btn-import-cancel">✕</button>
+          </div>
+          <div id="import-review-body"></div>
+          <!-- "Don't load" rather than "Cancel": a control should say what
+               happens, and the panel already has a Cancel on the clear
+               dialog — two buttons with one word between them is how a test,
+               and a person in a hurry, picks the wrong one. -->
+          <div class="flex gap-2" style="margin-top: 14px">
+            <button class="btn" id="btn-import-reject">Don't load</button>
+            <button class="btn btn-accent" id="btn-import-accept">
+              Load anyway
+            </button>
+          </div>
         </div>
       </div>
     </div>

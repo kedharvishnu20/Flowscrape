@@ -104,7 +104,7 @@
    */
   function relSelector(el, root) {
     // A shadow boundary is not expressible in CSS, so the path is emitted with
-    // FlowScrape's piercing combinator and resolved by _queryScoped. Built
+    // Verquill's piercing combinator and resolved by _queryScoped. Built
     // outermost-first by walking hosts, because the two sides of a boundary are
     // separate trees and `parentElement` is null at the top of each.
     const host = el.getRootNode?.()?.host;

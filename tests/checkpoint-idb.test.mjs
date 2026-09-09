@@ -1,7 +1,7 @@
 // Regression tests for audit finding A-03.
 //
 // cursor-store.js and row-buffer.js each used to call
-// indexedDB.open('flowscrape_v3', 1) with their own onupgradeneeded handler
+// indexedDB.open('verquill_v3', 1) with their own onupgradeneeded handler
 // declaring different object stores. Only the first opener runs an upgrade, so
 // whichever module opened the database first decided which stores existed.
 // row-buffer won that race in practice, `cursors` was never created, and every
@@ -32,7 +32,7 @@ test("row-buffer opening first still creates every store", async () => {
     // Deliberately spelled out rather than read from the schema: a store
     // dropped from STORES by accident would still match a list derived from
     // STORES, and this test exists to notice exactly that.
-    ["cursors", "data_rows", "datasets", "row_buffer"],
+    ["ai_cache", "cursors", "data_rows", "datasets", "row_buffer"],
     "the store row-buffer does not declare must still exist",
   );
   assert.equal(db.version, schema.DB_VERSION);

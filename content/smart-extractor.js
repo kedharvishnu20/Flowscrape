@@ -356,6 +356,107 @@ function _readJsonLd() {
   return null;
 }
 
+/** How much of a page's raw structured node is worth carrying to the worker. */
+const MAX_NODE_KEYS = 60;
+const MAX_NODE_CHARS = 20000;
+
+/**
+ * The richest structured-data node on the page, whatever its type.
+ *
+ * `_readJsonLd` above looks for `@type: Product` and nothing else, which is
+ * right for the product extractor and useless for a page of articles, job
+ * adverts or court listings. A schema naming its own fields needs the node
+ * itself — the worker matches the requested names against the site's keys,
+ * because the fuzzy matcher is an ES module and this file is a classic content
+ * script that cannot import one.
+ *
+ * "Richest" is simply the most keys: a page usually carries one substantial
+ * node and several stubs (a WebSite with a name and a url, a
+ * BreadcrumbList), and the substantial one is the one being described.
+ *
+ * @returns {object|null} a flat-ish node, capped in size
+ */
+function _readAnyStructuredNode() {
+  const nodes = [];
+
+  const collect = (data, depth = 0) => {
+    if (!data || depth > 4) return;
+    if (Array.isArray(data)) {
+      for (const item of data) collect(item, depth + 1);
+      return;
+    }
+    if (typeof data !== "object") return;
+    if (Array.isArray(data["@graph"])) {
+      for (const item of data["@graph"]) collect(item, depth + 1);
+    }
+    // A node worth reporting says what it is and carries some content.
+    const keys = Object.keys(data).filter((k) => !k.startsWith("@"));
+    if (keys.length > 0) nodes.push(data);
+  };
+
+  for (const script of _qsa(document, 'script[type="application/ld+json"]')) {
+    try {
+      collect(JSON.parse(script.textContent || ""));
+    } catch {
+      /* malformed JSON-LD — skip */
+    }
+  }
+
+  if (nodes.length === 0) return null;
+  nodes.sort(
+    (a, b) =>
+      Object.keys(b).filter((k) => !k.startsWith("@")).length -
+      Object.keys(a).filter((k) => !k.startsWith("@")).length,
+  );
+
+  const chosen = nodes[0];
+  const out = {};
+  let budget = MAX_NODE_CHARS;
+  for (const key of Object.keys(chosen).slice(0, MAX_NODE_KEYS)) {
+    const value = chosen[key];
+    // Cheap size guard rather than a deep walk: this crosses a message
+    // boundary, and a page embedding its whole catalogue in one node would
+    // otherwise send all of it.
+    let text;
+    try {
+      text = JSON.stringify(value) ?? "";
+    } catch {
+      continue; // circular or unserialisable — not something to report
+    }
+    if (text.length > budget) continue;
+    budget -= text.length;
+    out[key] = value;
+  }
+  if (chosen["@type"]) out["@type"] = chosen["@type"];
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * The Open Graph and standard meta tags, as a node of their own.
+ *
+ * A page with no JSON-LD often still names its author, its publish date and
+ * its section in meta tags. Reported under the bare name — `og:title` becomes
+ * `title` — because that is the name a user would type.
+ */
+function _readMetaNode() {
+  const out = {};
+  for (const meta of _qsa(document, "meta[property], meta[name]")) {
+    const raw = (
+      meta.getAttribute("property") ||
+      meta.getAttribute("name") ||
+      ""
+    ).trim();
+    const content = (meta.getAttribute("content") || "").trim();
+    if (!raw || !content) continue;
+    // og:title, article:published_time, twitter:creator → title,
+    // published_time, creator.
+    const key = raw.replace(/^(og|article|twitter|product|book|profile):/, "");
+    if (!key || key.includes(":")) continue;
+    if (!(key in out)) out[key] = content;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function _findProductInLd(data) {
   if (!data) return null;
 
@@ -950,9 +1051,16 @@ function _mergeResults(layer1, layer2) {
     merged[field] = isEmpty(sv) ? (isEmpty(hv) ? null : hv) : sv;
   }
 
-  // Build per-field confidence (structured = 95+, heuristic = as-scored)
+  // Build per-field confidence (structured = 95+, heuristic = as-scored) and,
+  // beside it, which layer actually answered.
+  //
+  // The row used to carry one `method` for all of it, taken from whichever
+  // layer answered first. That is untrue of any real page: `name` from the
+  // site's JSON-LD and `price` from a guess at the markup are not the same
+  // kind of claim, and one label hides which cells are which.
   const l1Conf = layer1?.confidence ?? 0;
   const perField = {};
+  const from = {};
 
   for (const field of fieldList) {
     const sv = structured[field];
@@ -971,8 +1079,12 @@ function _mergeResults(layer1, layer2) {
           : layer1?.method === "microdata"
             ? 95
             : 90;
+      from[field] = layer1?.method || "json-ld";
     } else {
+      // The value, not the score, decides the source: a field nothing found
+      // is empty, not a guess that happened to score zero.
       perField[field] = hp;
+      from[field] = isEmpty(heuristic[field]) ? "none" : "heuristic";
     }
   }
 
@@ -1013,7 +1125,14 @@ function _mergeResults(layer1, layer2) {
           ? "og-meta"
           : "heuristic";
 
-  return { result: merged, perField, overallConfidence, method, warnings };
+  return {
+    result: merged,
+    perField,
+    from,
+    overallConfidence,
+    method,
+    warnings,
+  };
 }
 
 // ── Simplified DOM for LLM ────────────────────────────────────────────────────
@@ -1061,6 +1180,9 @@ function _buildSimplifiedDom() {
  */
 function fsSmartExtract(config = {}) {
   const threshold = config.confidenceThreshold ?? CONF.LAYER_ESCALATE;
+  // A schema the worker resolved. Present only when the user asked for fields
+  // of their own; the product path below is untouched without it.
+  const schema = Array.isArray(config.schema) ? config.schema : null;
 
   // Layer 1: Structured data (fast, always run first)
   const layer1 = _runLayer1();
@@ -1075,17 +1197,33 @@ function fsSmartExtract(config = {}) {
   const needsLlm = merged.overallConfidence < threshold;
 
   // Build simplified DOM string only if LLM is needed (saves memory otherwise)
-  const simplifiedDom = needsLlm ? _buildSimplifiedDom() : "";
+  //
+  // With a schema it is always built: the worker cannot judge whether the
+  // free layers answered a field this file has no rules for, so the decision
+  // to escalate is made there and the text has to be in hand for it.
+  const simplifiedDom = needsLlm || schema ? _buildSimplifiedDom() : "";
 
-  return {
+  const out = {
     result: merged.result,
     perField: merged.perField,
+    from: merged.from,
     overallConfidence: merged.overallConfidence,
     method: merged.method,
     warnings: merged.warnings,
     needsLlm,
     simplifiedDom,
   };
+
+  if (schema) {
+    // The site's own keys, for the worker to match the requested names
+    // against. Two nodes rather than one merged node so their provenance
+    // stays distinguishable: JSON-LD is a publisher's assertion about the
+    // page, a meta tag is whatever the CMS filled in.
+    out.structuredNode = _readAnyStructuredNode();
+    out.metaNode = _readMetaNode();
+  }
+
+  return out;
 }
 
 // Expose to window so injector.js can call it without module boundary

@@ -1,11 +1,71 @@
-bin/
+# Everything here is produced by building, running or testing the extension.
+# None of it is the project; all of it comes back from a fresh clone plus
+# `npm install`.
+
+# ── Dependencies ─────────────────────────────────────────────────────────────
+# Unqualified, so it also catches mcp/node_modules.
 node_modules/
+bin/
+.npm/
 
-# Playwright's browser download; this repo uses the pre-installed one
+# ── Build output ─────────────────────────────────────────────────────────────
+# `npm run build` writes the store package here. The loose patterns cover
+# `--out .`, which drops the zip wherever you were standing.
+dist/
+verquill-*.zip
+*.crx
+
+# ── Chrome extension signing key ─────────────────────────────────────────────
+# Packing an unpacked extension in chrome://extensions writes a .pem beside it.
+# That key IS the extension's identity on the Web Store — anyone holding it can
+# publish an update to your listing. It must never be committed, and the
+# pattern is deliberately broad rather than one filename.
+*.pem
+key.pem
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# The extension keeps API keys in encrypted session storage rather than on
+# disk, so nothing here writes a .env. This is a guard against a habit, not a
+# description of the build.
+.env
+.env.*
+!.env.example
+
+# ── Test and tooling artefacts ───────────────────────────────────────────────
+# Playwright's own output. The e2e harness puts its browser profile in the OS
+# temp directory, so that one never lands in the repo.
 test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+coverage/
+.nyc_output/
 
-# Scratch git worktrees the agent harness creates
+# Scratch git worktrees the agent harness creates.
 .claude/worktrees/
+# Per-machine permission overrides; the shared settings.json stays tracked.
+.claude/settings.local.json
 
 # Scratch scripts the MCP runner writes and removes.
 .fs-mcp-runs/
+
+# One-off scripts written next to the code and deleted after, named so that a
+# forgotten one cannot be committed by accident.
+*.tmp.mjs
+*.tmp.js
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# ── Editor and OS ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+._*
+Thumbs.db
+desktop.ini

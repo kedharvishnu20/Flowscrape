@@ -27,6 +27,33 @@ const PRODUCTS = `<!doctype html><html><head><title>Shop</title></head><body>
   </script>
 </body></html>`;
 
+// A page that is not a product: the case AUTO_EXTRACT could not express at all
+// before schemas. Its JSON-LD uses the site's own key names, which is what the
+// worker has to match a user's field names against.
+const ARTICLE = `<!doctype html><html><head><title>Court listing</title>
+  <meta property="og:section" content="Chancery Division">
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"Article",
+   "headline":"Acme Ltd v Bloggs",
+   "datePublished":"2026-01-02",
+   "author":{"@type":"Person","name":"Ada Lovelace"},
+   "keywords":["contract","damages"]}
+  </script></head><body>
+  <h1>Acme Ltd v Bloggs</h1><p>Judgment of the court.</p>
+  <nav><a href="/">Home</a></nav>
+  <span class="court">Chancery Division</span>
+</body></html>`;
+
+// A business directory: the ordinary, legitimate scrape that happens to come
+// back full of personal data. Nobody is doing anything wrong here, which is
+// exactly why the run should mention it before the file is exported and shared.
+const DIRECTORY = `<!doctype html><html><body>
+  <ul>
+    <li class="row"><span class="who">Ada Lovelace</span><span class="mail">ada@example.com</span></li>
+    <li class="row"><span class="who">Grace Hopper</span><span class="mail">grace@example.com</span></li>
+  </ul>
+</body></html>`;
+
 // An upload widget with no file input at all — the shape that made
 // UPLOAD_ACTIVITY fail with "Upload input not found" on a page that was
 // perfectly willing to take the file. It does what a real dropzone must:
@@ -258,9 +285,11 @@ test.before(async () => {
     "/apipage": APIPAGE,
     "/api/items": '{"items":[1,2,3]}',
     "/track/px": "ok",
+    "/article": ARTICLE,
     "/dropzone": DROPZONE,
     "/framed": FRAMED,
     "/framed-inner": FRAMED_INNER,
+    "/directory": DIRECTORY,
   });
   env = await launch();
 });
@@ -753,6 +782,530 @@ test("PDF_EXTRACTION reads a real table back as rows", async () => {
       ["Doohickey", "7.99", "Sold out"],
     ],
   );
+});
+
+test("AUTO_EXTRACT answers a schema that has nothing to do with products", async () => {
+  // The whole point of generalising it: a court listing, asked for the fields a
+  // court listing has. The page publishes them as JSON-LD under its own key
+  // names, so the free layer answers and no model is consulted at all.
+  const { tabId, page } = await onSite("/article");
+  const res = await env.send("step:execute", {
+    step: step("AUTO_EXTRACT", {
+      schema: "headline, published date, author, keywords",
+      useLlm: false,
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  const row = res.result;
+  assert.equal(row.headline, "Acme Ltd v Bloggs");
+  assert.equal(
+    row["published date"],
+    "2026-01-02",
+    'the site calls it datePublished; the user called it "published date"',
+  );
+  assert.equal(
+    row.author,
+    "Ada Lovelace",
+    "a nested Person node should give up its name rather than [object Object]",
+  );
+  assert.equal(row.keywords, "contract, damages");
+  await page.close();
+});
+
+test("AUTO_EXTRACT leaves a field nothing answered empty rather than guessing", async () => {
+  const { tabId, page } = await onSite("/article");
+  const res = await env.send("step:execute", {
+    step: step("AUTO_EXTRACT", {
+      schema: "headline, defendant solicitor",
+      useLlm: false,
+    }),
+    tabId,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.result.headline, "Acme Ltd v Bloggs");
+  assert.equal(
+    res.result["defendant solicitor"],
+    null,
+    "a heuristic answering for a field it was never taught is indistinguishable from a real answer",
+  );
+  await page.close();
+});
+
+test("a scrape that comes back with personal data says so, once", async () => {
+  // Ethics gate 2 filtered the pipeline for a step type that does not exist,
+  // so it never fired on any pipeline. Worse than a no-op: it reported having
+  // run. The check now happens where the rows are.
+  const { tabId, page } = await onSite("/directory");
+  await env.panel.evaluate(() => {
+    globalThis.__fsPii = [];
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (
+        msg?.type === "pipeline:log" &&
+        /Ethics . PII/.test(msg.payload?.message ?? "")
+      ) {
+        globalThis.__fsPii.push(msg.payload.message);
+      }
+    });
+  });
+
+  const started = await env.send("pipeline:start", {
+    tabId,
+    targetOrigin: site.origin,
+    pipeline: {
+      name: "directory",
+      steps: [
+        step("EXTRACT", {
+          fields: [
+            { name: "who", selector: ".who", type: "text" },
+            { name: "mail", selector: ".mail", type: "text" },
+          ],
+        }),
+      ],
+    },
+  });
+  assert.equal(started.ok, true, JSON.stringify(started));
+
+  const runId = started.result.runId;
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 200));
+    const st = await env.send("pipeline:status", { runId });
+    if (st.ok && st.result.known && !st.result.active) break;
+  }
+  await page.close();
+
+  const warnings = await env.panel.evaluate(() => globalThis.__fsPii ?? []);
+  assert.equal(warnings.length, 1, "it should say so exactly once");
+  assert.match(warnings[0], /Email/);
+  assert.match(warnings[0], /mail/, "the column is what makes it actionable");
+  // The rule this whole area has: never the value. A warning that puts an
+  // email address into the log, and from there into a screenshot in a bug
+  // report, has made things worse.
+  assert.ok(
+    !warnings[0].includes("ada@example.com"),
+    "the warning carries the address it was warning about",
+  );
+});
+
+test("a schedule fires and runs the pipeline it was saved with", async () => {
+  // The claim both reviews said was missing, proved rather than described: no
+  // server, no subscription, and the pipeline runs on a timer in the browser
+  // that is already open.
+  //
+  // One minute is the floor Chrome honours, which is too long for a check, so
+  // the alarm is fired directly — the same entry point Chrome uses. What that
+  // proves is everything after the alarm: the tab opens, the pipeline runs,
+  // the rows land, and the schedule records that it ran.
+  const list0 = await env.send("schedule:list", {});
+  assert.equal(list0.ok, true, JSON.stringify(list0));
+
+  const saved = await env.send("schedule:save", {
+    schedule: {
+      name: "e2e nightly",
+      url: site.url("/"),
+      everyMinutes: 60,
+      pipeline: {
+        name: "e2e nightly",
+        steps: [
+          step("EXTRACT", {
+            fields: [{ name: "title", selector: "#title", type: "text" }],
+          }),
+        ],
+      },
+    },
+  });
+  assert.equal(saved.ok, true, JSON.stringify(saved));
+  const id = saved.result.id;
+
+  try {
+    // An alarm exists for it, which is the half that decides whether the
+    // schedule ever fires at all.
+    const armed = await env.sw.evaluate(
+      (name) =>
+        new Promise((resolve) => {
+          chrome.alarms.getAll((all) =>
+            resolve(all.map((a) => a.name).includes(name)),
+          );
+        }),
+      `fs_schedule_${id}`,
+    );
+    assert.equal(armed, true, "the schedule was stored with no alarm");
+
+    const before = (await env.send("schedule:list", {})).result.schedules.find(
+      (s) => s.id === id,
+    );
+    assert.equal(before.lastRunAt, null);
+
+    const fired = await env.send("schedule:run", { id });
+    assert.equal(fired.ok, true, JSON.stringify(fired));
+
+    const after = (await env.send("schedule:list", {})).result.schedules.find(
+      (s) => s.id === id,
+    );
+    assert.ok(after.lastRunAt, "the schedule did not record having run");
+    assert.equal(
+      after.lastStatus,
+      "started",
+      `the scheduled run failed: ${after.lastStatus}`,
+    );
+  } finally {
+    await env.send("schedule:delete", { id });
+    const gone = await env.sw.evaluate(
+      (name) =>
+        new Promise((resolve) => {
+          chrome.alarms.getAll((all) =>
+            resolve(all.map((a) => a.name).includes(name)),
+          );
+        }),
+      `fs_schedule_${id}`,
+    );
+    // An alarm outliving its schedule fires forever for something the user
+    // deleted and can no longer see.
+    assert.equal(gone, false, "the alarm outlived the schedule");
+  }
+});
+
+test("the row records which layer answered each field", async () => {
+  // A row carried one `_extractionMethod` for all of it, taken from whichever
+  // layer answered first. On this page that would say "json-ld" while half the
+  // columns came from somewhere else entirely.
+  const { tabId, page } = await onSite("/article");
+  const res = await env.send("step:execute", {
+    step: step("AUTO_EXTRACT", {
+      schema: "headline, defendant solicitor",
+      useLlm: false,
+      provenance: true,
+    }),
+    tabId,
+  });
+  await page.close();
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  const cell = res.result._provenance;
+  assert.ok(cell, "the column was asked for and is not there");
+  assert.match(
+    cell,
+    /headline=json-ld\(headline\)/,
+    "the site's own key is the part a person can go and check",
+  );
+  assert.match(
+    cell,
+    /defendant solicitor=none/,
+    "a field nothing answered must not borrow the page's authority",
+  );
+  assert.ok(
+    !/\n/.test(cell),
+    "a newline inside a CSV cell is a support ticket",
+  );
+});
+
+test("the column is not there unless the step was asked for it", async () => {
+  const { tabId, page } = await onSite("/article");
+  const res = await env.send("step:execute", {
+    step: step("AUTO_EXTRACT", { schema: "headline", useLlm: false }),
+    tabId,
+  });
+  await page.close();
+  assert.equal(res.result._provenance, undefined);
+  assert.equal(
+    typeof res.result._confidence,
+    "number",
+    "the fields every existing export already has must stay",
+  );
+});
+
+test("the same page is not sent to the model twice", async () => {
+  // The one part of this that costs anything, not paid for twice. A local
+  // server counts the requests: two identical runs, one call.
+  const http = await import("node:http");
+  let calls = 0;
+  const model = http.createServer((req, res) => {
+    calls++;
+    req.on("data", () => {});
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          model: "fake-local",
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  headline: "Acme Ltd v Bloggs",
+                  confidence: { headline: 90 },
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+  });
+  await new Promise((r) => model.listen(0, "127.0.0.1", r));
+  const port = model.address().port;
+
+  try {
+    const saved = await env.send("gateway:save", {
+      provider: "openai-compatible",
+      apiKey: "",
+      model: "fake-local",
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+    });
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    const run = async (config) => {
+      const { tabId, page } = await onSite("/article");
+      const res = await env.send("step:execute", {
+        step: step("AUTO_EXTRACT", {
+          schema: "headline, defendant solicitor",
+          useLlm: true,
+          ...config,
+        }),
+        tabId,
+      });
+      await page.close();
+      assert.equal(res.ok, true, JSON.stringify(res));
+      return res.result;
+    };
+
+    const first = await run({});
+    assert.equal(calls, 1, "the model should have been asked once");
+    assert.equal(first.headline, "Acme Ltd v Bloggs");
+
+    const second = await run({});
+    assert.equal(calls, 1, "the second run asked again for an unchanged page");
+    assert.equal(
+      second.headline,
+      "Acme Ltd v Bloggs",
+      "a cached answer has to be the same answer, not an empty one",
+    );
+
+    // The question changed, so the cache must not answer it. A field the page
+    // cannot answer for free, or the free layers would settle it and the model
+    // would not be asked either way.
+    await run({ schema: "headline, defendant address" });
+    assert.equal(calls, 2, "a different schema is a different question");
+
+    // And the switch means what it says.
+    await run({ cache: false });
+    assert.equal(calls, 3, "the step was told not to use the cache");
+  } finally {
+    await env.send("gateway:save", {
+      provider: "gemini",
+      apiKey: "",
+      model: "gemini-2.0-flash",
+      baseUrl: "",
+    });
+    await new Promise((r) => model.close(r));
+  }
+});
+
+test("a selector the model proposed is checked in the page before it is offered", async () => {
+  // The end of the story this project tells about AI: the model is asked once,
+  // its selectors are tested against the page, and what survives is an
+  // ordinary EXTRACT step that runs for free ever after.
+  //
+  // The model here proposes one selector that is right and one that points at
+  // the site's navigation while reporting a plausible value. Saved unchecked,
+  // the second would produce a pipeline that runs, reports success, and fills
+  // a column with the word "Home".
+  const http = await import("node:http");
+  const model = http.createServer((req, res) => {
+    req.on("data", () => {});
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          model: "fake-local",
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  headline: "Acme Ltd v Bloggs",
+                  court: "Chancery Division",
+                  confidence: { headline: 90, court: 88 },
+                  selectors: {
+                    headline: "h1",
+                    // Real element, real text on the page — and the wrong
+                    // element for this field.
+                    court: "nav a",
+                  },
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+  });
+  await new Promise((r) => model.listen(0, "127.0.0.1", r));
+  const port = model.address().port;
+
+  try {
+    const saved = await env.send("gateway:save", {
+      provider: "openai-compatible",
+      apiKey: "",
+      model: "fake-local",
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+    });
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    // Listen for the offer the worker broadcasts, from the panel's own page.
+    await env.panel.evaluate(() => {
+      globalThis.__fsSelectorOffers = [];
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (msg?.type === "pipeline:selectors") {
+          globalThis.__fsSelectorOffers.push(msg.payload);
+        }
+      });
+    });
+
+    const { tabId, page } = await onSite("/article");
+    const res = await env.send("step:execute", {
+      step: step("AUTO_EXTRACT", {
+        schema: "headline, court",
+        useLlm: true,
+        cache: false,
+        learnSelectors: true,
+      }),
+      tabId,
+    });
+    await page.close();
+    assert.equal(res.ok, true, JSON.stringify(res));
+
+    const offers = await env.panel.evaluate(
+      () => globalThis.__fsSelectorOffers ?? [],
+    );
+    assert.equal(offers.length, 1, "the panel was never offered the step");
+    const offer = offers[0];
+
+    assert.equal(
+      offer.verified.headline,
+      "h1",
+      "a selector that produces the reported value should survive",
+    );
+    assert.equal(
+      offer.verified.court,
+      undefined,
+      "a selector pointing at the navigation reached the offer",
+    );
+    assert.equal(offer.how.court, "wrong-value");
+
+    // And what is offered is a step the pipeline can actually run.
+    assert.equal(offer.step.type, "EXTRACT");
+    assert.deepEqual(offer.step.config.fields, [
+      { name: "headline", selector: "h1", type: "text" },
+    ]);
+
+    // The point of all of it: that step runs on its own, with no model.
+    const standalone = await onSite("/article");
+    const ran = await env.send("step:execute", {
+      step: step("EXTRACT", offer.step.config),
+      tabId: standalone.tabId,
+    });
+    await standalone.page.close();
+    assert.equal(ran.ok, true, JSON.stringify(ran));
+    const rows = Array.isArray(ran.result) ? ran.result : [ran.result];
+    assert.equal(rows[0].headline, "Acme Ltd v Bloggs");
+  } finally {
+    await env.send("gateway:save", {
+      provider: "gemini",
+      apiKey: "",
+      model: "gemini-2.0-flash",
+      baseUrl: "",
+    });
+    await new Promise((r) => model.close(r));
+  }
+});
+
+test("a value the model invented is dropped, not exported", async () => {
+  // The strongest claim this project makes about its AI layer, proved rather
+  // than asserted — and proved with no key and no cost, against a local server
+  // standing in for Ollama.
+  //
+  // The model is told to answer one field truthfully and one falsely. The
+  // truthful one must survive; the false one must not reach the row, because
+  // an empty cell cannot be acted on by mistake and a fabricated one can.
+  const http = await import("node:http");
+  let asked = false;
+  const model = http.createServer((req, res) => {
+    asked = true;
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          model: "fake-local",
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  // On the page.
+                  headline: "Acme Ltd v Bloggs",
+                  // Not on the page, and entirely plausible.
+                  "defendant solicitor": "Hopper & Co LLP",
+                  confidence: {
+                    headline: 90,
+                    "defendant solicitor": 88,
+                  },
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+  });
+  await new Promise((r) => model.listen(0, "127.0.0.1", r));
+  const modelPort = model.address().port;
+
+  try {
+    const saved = await env.send("gateway:save", {
+      provider: "openai-compatible",
+      apiKey: "",
+      model: "fake-local",
+      baseUrl: `http://127.0.0.1:${modelPort}/v1`,
+    });
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    const { tabId, page } = await onSite("/article");
+    const res = await env.send("step:execute", {
+      step: step("AUTO_EXTRACT", {
+        schema: "headline, defendant solicitor",
+        useLlm: true,
+        grounded: true,
+      }),
+      tabId,
+    });
+    await page.close();
+
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(asked, true, "the local model should have been consulted");
+    assert.equal(
+      res.result.headline,
+      "Acme Ltd v Bloggs",
+      "a true answer must survive the check",
+    );
+    assert.equal(
+      res.result["defendant solicitor"],
+      null,
+      "the model invented a solicitor and it reached the row",
+    );
+  } finally {
+    // Put the gateway back to a provider with no key, so nothing after this
+    // finds a model configured.
+    await env.send("gateway:save", {
+      provider: "anthropic",
+      apiKey: "",
+      model: "",
+      baseUrl: "",
+    });
+    model.closeAllConnections?.();
+    await new Promise((r) => model.close(r));
+  }
 });
 
 // ── the steps that only a real browser can prove ─────────────────────────────

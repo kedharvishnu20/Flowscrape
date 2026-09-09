@@ -1,11 +1,11 @@
-# FlowScrape Master Manual
+# Verquill Master Manual
 
 > **Partly stale.** Written against commit b2baae8 and not fully updated since.
 > Where it disagrees with the code, the code is right; where it disagrees with
 > [ISSUE_AUDIT.md](ISSUE_AUDIT.md), the audit is right. Sections 5, 7 and 8
 > describe functions that have since changed.
 
-This is the single authoritative document for FlowScrape v3.
+This is the single authoritative document for Verquill v3.
 
 It is written for two audiences at once:
 
@@ -14,9 +14,9 @@ It is written for two audiences at once:
 
 It consolidates the content previously split across multiple docs.
 
-## 1. What FlowScrape v3 Is
+## 1. What Verquill v3 Is
 
-FlowScrape v3 is a Manifest V3 Chrome extension for browser automation, extraction, checkpointing, and export.
+Verquill v3 is a Manifest V3 Chrome extension for browser automation, extraction, checkpointing, and export.
 
 It also ships with a standalone MCP server so external clients can inspect the repository, validate and emit pipelines, scan for PII, check robots permissions, and manage reusable pipeline files.
 
@@ -93,7 +93,7 @@ The extension is defined in [manifest.json](../manifest.json).
 ### 4.1 Important manifest fields
 
 - `manifest_version`: `3`
-- `name`: `FlowScrape v3`
+- `name`: `Verquill v3`
 - `version`: `3.0.0`
 - `minimum_chrome_version`: `120`
 - `background.service_worker`: `background/service-worker.js`
@@ -719,7 +719,7 @@ Source: [ethics/robots-parser.js](../ethics/robots-parser.js)
 Key state and behavior:
 
 - `CACHE_TTL_MS = 15 minutes`
-- `FS_USER_AGENT = 'FlowScrape'`
+- `FS_USER_AGENT = 'Verquill'`
 - `_cache` map stores parsed robots content
 
 Behavior:
@@ -891,7 +891,7 @@ Important constants:
 
 - `FLUSH_INTERVAL_MS = 30000`
 - `FLUSH_ROWS_COUNT = 50`
-- `DB_NAME = 'flowscrape_v3'`
+- `DB_NAME = 'verquill_v3'`
 - `STORE_ROWS = 'data_rows'`
 
 Main exports:
@@ -913,7 +913,7 @@ Important state:
 
 Important constants:
 
-- `DB_NAME = 'flowscrape_v3'`
+- `DB_NAME = 'verquill_v3'`
 - `DB_VERSION = 1`
 - `STORE_CURSORS = 'cursors'`
 
@@ -1217,7 +1217,7 @@ Source: [mcp/server.mjs](../mcp/server.mjs)
 
 ### 18.1 Purpose
 
-The MCP server exposes the FlowScrape workspace to external clients with:
+The MCP server exposes the Verquill workspace to external clients with:
 
 - file listing
 - file read/write
@@ -1312,11 +1312,11 @@ http://localhost:3000/mcp
 CLI examples:
 
 ```bash
-npm start -- --root "c:\MY SPACE\MY LAPTOP\project works\fully automated web scraper\flowscrape-v3"
+npm start -- --root "c:\MY SPACE\MY LAPTOP\project works\fully automated web scraper\verquill-v3"
 ```
 
 ```bash
-npm run start:http -- --root "c:\MY SPACE\MY LAPTOP\project works\fully automated web scraper\flowscrape-v3" --port 3000
+npm run start:http -- --root "c:\MY SPACE\MY LAPTOP\project works\fully automated web scraper\verquill-v3" --port 3000
 ```
 
 ### 18.7 Pipeline file storage model

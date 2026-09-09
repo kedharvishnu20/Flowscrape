@@ -480,3 +480,128 @@ test("a page with nothing repeating returns no tables, not a bad guess", async (
   }
   await page.close();
 });
+
+// ── expanding a card ─────────────────────────────────────────────────────────
+//
+// Two defects lived here. Only one card could be open at a time, so comparing
+// two steps' settings — what you are doing when a selector works in one place
+// and not another — was impossible. And opening one called renderPipeline(),
+// which rebuilds the whole canvas with innerHTML and rebinds every config input
+// and drag handler on it, in order to change a `display` rule.
+//
+// These drive the real panel because that is the only place the claim can be
+// settled: reading the source shows a class being toggled, not that the canvas
+// survived it.
+
+/** Clear the board and put `n` CLICK steps on it. */
+async function _freshSteps(n) {
+  await env.panel
+    .locator('.nav-pill[data-tab="pipeline"]')
+    .click()
+    .catch(() => {});
+  if ((await env.panel.locator(".node-card").count()) > 0) {
+    await env.panel.locator("#btn-clear-pipeline").click();
+    await env.panel
+      .locator("text=Clear the pipeline?")
+      .waitFor({ timeout: 3000 });
+    await env.panel.locator("button", { hasText: "Clear" }).last().click();
+    await env.panel
+      .locator(".node-card")
+      .first()
+      .waitFor({ state: "detached" });
+  }
+  for (let i = 0; i < n; i++) {
+    await env.panel.locator('[data-action="open-palette"]').first().click();
+    await env.panel.locator('.palette-item[data-type="CLICK"]').click();
+    await env.panel.locator(".node-card").nth(i).waitFor({ timeout: 5000 });
+  }
+}
+
+test("more than one step can be open at the same time", async () => {
+  await _freshSteps(3);
+  const headers = env.panel.locator(".node-header");
+
+  // A newly added step opens itself, so collapse everything first: the claim is
+  // that opening is additive, not that three happen to be open.
+  for (let i = 0; i < 3; i++) {
+    const card = env.panel.locator(".node-card").nth(i);
+    if ((await card.getAttribute("class")).includes("expanded")) {
+      await headers.nth(i).click();
+    }
+  }
+  assert.equal(await env.panel.locator(".node-card.expanded").count(), 0);
+
+  await headers.nth(0).click();
+  await headers.nth(2).click();
+
+  assert.equal(
+    await env.panel.locator(".node-card.expanded").count(),
+    2,
+    "opening a second card closed the first",
+  );
+
+  // And closing one must delete a single id rather than reset the set, which
+  // would close everything as a side effect of closing one.
+  await headers.nth(0).click();
+  assert.equal(await env.panel.locator(".node-card.expanded").count(), 1);
+});
+
+test("opening a card does not rebuild the canvas", async () => {
+  // The proof: put a property on a DOM node that exists only in memory, then
+  // toggle. innerHTML would replace the node and take the property with it, so
+  // if it survives, nothing was rebuilt.
+  await env.panel.evaluate(() => {
+    document
+      .querySelectorAll(".node-card")
+      .forEach((el, i) => (el.__survivedRebuild = `card-${i}`));
+  });
+
+  await env.panel.locator(".node-header").nth(0).click();
+  await env.panel.locator(".node-header").nth(1).click();
+
+  assert.deepEqual(
+    await env.panel.evaluate(() =>
+      [...document.querySelectorAll(".node-card")].map(
+        (el) => el.__survivedRebuild ?? null,
+      ),
+    ),
+    ["card-0", "card-1", "card-2"],
+    "the canvas was rebuilt in order to open a card",
+  );
+});
+
+test("adding a step does not send a scrolled board back to the top", async () => {
+  // renderPipeline is still right for a structural change, but the redraw used
+  // to discard the scrolled position along with the nodes, sending someone who
+  // added a step at step 20 back to step 1.
+  //
+  // The viewport is shrunk rather than the board lengthened: twenty palette
+  // clicks would cost more than the rest of this file, and the assertion is
+  // about scrollTop surviving a redraw, not about how the overflow arose.
+  const scrolled = await env.panel.evaluate(() => {
+    const vp = document.getElementById("board-viewport");
+    vp.style.height = "90px";
+    vp.style.minHeight = "90px";
+    vp.scrollTop = vp.scrollHeight;
+    return vp.scrollTop;
+  });
+  assert.ok(scrolled > 0, "the board did not become scrollable");
+
+  await env.panel.locator('[data-action="open-palette"]').last().click();
+  await env.panel.locator('.palette-item[data-type="WAIT"]').click();
+  await env.panel.locator(".node-card").nth(3).waitFor({ timeout: 5000 });
+
+  const after = await env.panel.evaluate(
+    () => document.getElementById("board-viewport").scrollTop,
+  );
+  assert.ok(
+    after >= scrolled,
+    `the board jumped on redraw (${scrolled} to ${after})`,
+  );
+
+  await env.panel.evaluate(() => {
+    const vp = document.getElementById("board-viewport");
+    vp.style.height = "";
+    vp.style.minHeight = "";
+  });
+});

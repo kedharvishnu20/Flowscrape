@@ -60,7 +60,20 @@ const STEP_REGISTRY = Object.fromEntries(
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _pipeline = { steps: [] };
-let _expandedNodeId = null;
+/**
+ * Which step cards are open.
+ *
+ * This was a single id, so opening one card closed whichever was already
+ * open. Configuring a LOOP with five children under that rule is a cycle of
+ * open, read, close, open — and comparing two steps' settings, which is what
+ * you are actually doing when a selector works in one place and not another,
+ * was impossible. A set costs nothing and removes the restriction.
+ *
+ * Deliberately not persisted. It describes where you are in a piece of work,
+ * not what the pipeline is, and a panel that reopened nine cards from
+ * yesterday would be answering a question nobody asked.
+ */
+const _expandedNodeIds = new Set();
 let _insertCtx = { index: -1, parentId: "", branchKey: "" };
 let _runState = {
   active: false,
@@ -109,7 +122,7 @@ async function init() {
     SK.PIPELINE = `fs_active_pipeline_${_tabId}`;
     const saved = (await chrome.storage.local.get(SK.PIPELINE))[SK.PIPELINE];
     _pipeline = saved?.steps ? saved : { steps: [] };
-    _expandedNodeId = null;
+    _expandedNodeIds.clear();
     // A different tab is very likely a different domain, and the attestation
     // belongs to the domain rather than to the panel.
     await _refreshCaptchaAttestation();
@@ -626,7 +639,7 @@ function bindGlobalControls() {
       if (!ok) return;
 
       _pipeline.steps = [];
-      _expandedNodeId = null;
+      _expandedNodeIds.clear();
       await chrome.storage.local.remove(SK.PIPELINE);
       saveState();
       renderPipeline();
@@ -948,7 +961,7 @@ function bindGlobalControls() {
       }
 
       _pipeline = normalized;
-      _expandedNodeId = null;
+      _expandedNodeIds.clear();
       await saveState();
       renderPipeline();
       logToMonitor(
@@ -1416,7 +1429,7 @@ function _addStep(type) {
       : _pipeline.steps.splice(Math.max(0, index), 0, newStep);
   }
   elPalette.classList.remove("open");
-  _expandedNodeId = newStep.id;
+  _expandedNodeIds.add(newStep.id);
   saveState();
   renderPipeline();
 }
@@ -1442,18 +1455,44 @@ function renderPipeline() {
     _makeKeyboardAccessible(elCanvas);
     return;
   }
+  // Drop ids for steps that no longer exist. Removing a LOOP takes its
+  // children with it, so pruning at the point of removal would mean walking
+  // the deleted subtree; doing it here is one pass and self-healing, and it
+  // also covers Clear and import. Without it the set grows for the life of the
+  // panel and a re-used id would open a card nobody opened.
+  const live = new Set();
+  const collect = (steps) => {
+    for (const s of steps || []) {
+      live.add(s.id);
+      collect(s.children);
+      collect(s.ifBranch);
+      collect(s.elseBranch);
+    }
+  };
+  collect(_pipeline.steps);
+  for (const id of _expandedNodeIds)
+    if (!live.has(id)) _expandedNodeIds.delete(id);
+
+  // innerHTML discards the scrolled position along with the nodes. A redraw
+  // happens on add, remove and reorder — all of which the user performed at a
+  // particular place in a long pipeline, and none of which is a reason to send
+  // them back to the top.
+  const viewport = elCanvas.closest("#board-viewport");
+  const scrollTop = viewport?.scrollTop ?? 0;
+
   let html = `<div class="insert-step top-insert" data-action="open-palette" data-index="0" data-parent-id="" data-branch="">+</div>`;
   _pipeline.steps.forEach((step, i) => {
     html += renderStepNode(step, i, _pipeline.steps.length, "", "");
   });
   elCanvas.innerHTML = html;
+  if (viewport) viewport.scrollTop = scrollTop;
   bindConfigInputs();
   bindDragAndDrop();
   _makeKeyboardAccessible(elCanvas);
 }
 
 function renderStepNode(step, index, total, parentId, branchKey) {
-  const isExpanded = _expandedNodeId === step.id;
+  const isExpanded = _expandedNodeIds.has(step.id);
 
   let html = `<div class="node-wrapper" data-index="${index}" data-id="${step.id}" data-parent-id="${parentId}" data-branch="${branchKey}">`;
   // One custom property carries the step's category colour; the stylesheet
@@ -4122,14 +4161,40 @@ function bindDelegatedEvents() {
 }
 
 // ── Step actions ──────────────────────────────────────────────────────────────
+/**
+ * Open or close one card.
+ *
+ * This used to call renderPipeline(), which rebuilds the whole canvas with
+ * innerHTML and then rebinds every config input and drag handler on it. That
+ * was pure waste: `.node-config` is rendered for every card whether it is open
+ * or not, and `.expanded` only flips a `display` rule (see the CSS). So the
+ * rebuild changed nothing about what was on screen while costing the scroll
+ * position, any text selection, and the identity of every node in the canvas —
+ * on a forty-step pipeline, to show one card.
+ *
+ * Toggling the class does the same job and touches one element. renderPipeline
+ * is still right for add, remove and reorder, which genuinely change the tree.
+ */
 function _toggleExpand(id) {
-  _expandedNodeId = _expandedNodeId === id ? null : id;
-  renderPipeline();
+  const wasOpen = _expandedNodeIds.has(id);
+  if (wasOpen) _expandedNodeIds.delete(id);
+  else _expandedNodeIds.add(id);
+
+  const card = elCanvas.querySelector(
+    `.node-wrapper[data-id="${CSS.escape(id)}"] > .node-card`,
+  );
+  // No card in the DOM means the state and the canvas have diverged, which a
+  // class toggle cannot repair. Fall back to the redraw rather than leaving a
+  // card that answers clicks by doing nothing.
+  if (card) card.classList.toggle("expanded", !wasOpen);
+  else renderPipeline();
 }
 function _removeStep(e, id) {
   e.stopPropagation();
   _removeStepDeep(_pipeline.steps, id);
-  if (_expandedNodeId === id) _expandedNodeId = null;
+  // Only the removed step forgets it was open. Clearing the set here would
+  // close every other card as a side effect of deleting one.
+  _expandedNodeIds.delete(id);
   saveState();
   renderPipeline();
 }
@@ -4668,7 +4733,7 @@ async function _offerPageData(tabId) {
     },
   };
   _pipeline.steps.push(stepNode);
-  _expandedNodeId = stepNode.id;
+  _expandedNodeIds.add(stepNode.id);
   saveState();
   renderPipeline();
   notify(
@@ -4935,7 +5000,7 @@ async function _insertDetectedTable(table) {
   }
 
   _pipeline.steps.push(loop);
-  _expandedNodeId = extract.id;
+  _expandedNodeIds.add(extract.id);
   saveState();
   renderPipeline();
   notify(
@@ -5578,7 +5643,7 @@ function offerLearnedSelectors(payload) {
       config: { ...defaultConfig("EXTRACT"), ...payload.step.config },
     };
     _pipeline.steps.push(stepNode);
-    _expandedNodeId = stepNode.id;
+    _expandedNodeIds.add(stepNode.id);
     saveState();
     renderPipeline();
     btn.disabled = true;

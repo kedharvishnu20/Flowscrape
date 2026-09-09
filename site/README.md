@@ -1,6 +1,6 @@
 # The registry site
 
-A community catalogue and forum for FlowScrape pipelines. One static file,
+A community catalogue and forum for Verquill pipelines. One static file,
 `index.html`, with no build step and no dependencies — open it, or serve the
 directory with anything.
 

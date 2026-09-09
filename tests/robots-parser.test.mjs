@@ -124,9 +124,9 @@ test("Allow wins a tie, whichever order they appear in", () => {
 
 test("a specific user-agent group replaces the wildcard group", () => {
   const txt =
-    "User-agent: *\nDisallow: /\n\nUser-agent: FlowScrape\nAllow: /\nDisallow: /admin";
-  assert.equal(allowed(txt, "/products", "FlowScrape"), true);
-  assert.equal(allowed(txt, "/admin", "FlowScrape"), false);
+    "User-agent: *\nDisallow: /\n\nUser-agent: Verquill\nAllow: /\nDisallow: /admin";
+  assert.equal(allowed(txt, "/products", "Verquill"), true);
+  assert.equal(allowed(txt, "/admin", "Verquill"), false);
   assert.equal(allowed(txt, "/products", "OtherBot"), false);
 });
 

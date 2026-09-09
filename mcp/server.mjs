@@ -69,7 +69,7 @@ const httpSessions = new Map();
 const httpSessionServers = new Map();
 
 const server = new McpServer({
-  name: "flowscrape-v3",
+  name: "verquill-v3",
   version: VERSION,
 });
 const toolDefinitions = [];
@@ -82,7 +82,7 @@ server.tool = (...args) => {
 
 function createServerInstance() {
   const instance = new McpServer({
-    name: "flowscrape-v3",
+    name: "verquill-v3",
     version: VERSION,
   });
 
@@ -101,7 +101,7 @@ const supportedStepTypes = new Set(ALL_STEP_TYPES);
 
 server.tool(
   "repo_list_files",
-  "List files and folders inside the FlowScrape workspace.",
+  "List files and folders inside the Verquill workspace.",
   {
     directory: z.string().optional(),
     maxDepth: z.number().int().min(0).max(10).optional(),
@@ -297,7 +297,7 @@ server.tool(
 
 server.tool(
   "pipeline_compile",
-  "Compile a FlowScrape pipeline recipe into an AST.",
+  "Compile a Verquill pipeline recipe into an AST.",
   {
     recipeJson: z.string().optional(),
     recipe: z.any().optional(),

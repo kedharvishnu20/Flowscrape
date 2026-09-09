@@ -1,5 +1,5 @@
 {
-  "name": "flowscrape",
+  "name": "verquill",
   "version": "3.0.0",
   "private": true,
   "description": "Chrome MV3 extension for visual web automation and data extraction.",

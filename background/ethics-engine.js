@@ -84,7 +84,7 @@ async function _gate1_robots(targetOrigin, targetPath, bypass) {
       `Could not fetch robots.txt from ${targetOrigin} — proceeding with caution`,
     );
   }
-  const disallowed = !isAllowedByRules(robots, targetPath, "FlowScrape");
+  const disallowed = !isAllowedByRules(robots, targetPath, "Verquill");
   if (disallowed) {
     return new EthicsWarn(
       "RobotsTxt",

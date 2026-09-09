@@ -14,7 +14,7 @@ exists to stop JavaScript on the page reading the cookie — which is exactly th
 defence that stops a cross-site script from stealing your login, and exactly
 what makes the cookie invisible to `document.cookie`.
 
-So there are two ways for FlowScrape to read your session, and they are not
+So there are two ways for Verquill to read your session, and they are not
 equally good:
 
 |                                               | What it can see                                | What you get back                              |
@@ -31,7 +31,7 @@ collects a hundred rows of nothing.
 ### Turning it on
 
 Side panel → **Settings → Permissions → Cookies → Grant**. Chrome shows its own
-confirmation dialog; FlowScrape never sees your answer until you give it. Take
+confirmation dialog; Verquill never sees your answer until you give it. Take
 it back from the same place, or from `chrome://extensions`. Nothing else in the
 extension needs it, and a run that never touches SESSION never asks.
 
@@ -143,7 +143,7 @@ script exactly as it applies to the site.
 
 The only way around it is `declarativeNetRequest`, which is a rules engine the
 browser itself applies — you describe the change, Chrome makes it, and no page
-code ever touches the request. FlowScrape asks for the
+code ever touches the request. Verquill asks for the
 **`declarativeNetRequestWithHostAccess`** variant on purpose: it can only act
 on hosts you have already granted, where the plain version is a broader grant
 than this needs.

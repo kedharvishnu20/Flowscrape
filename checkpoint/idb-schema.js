@@ -23,6 +23,19 @@ import { logger } from "../utils/logger.js";
 
 const MODULE = "idb-schema";
 
+/**
+ * Deliberately still the old name after the rename to Verquill.
+ *
+ * An IndexedDB database is identified by this string. Changing it does not
+ * rename anything — it opens a *different*, empty database, and every pipeline,
+ * dataset and cached answer an existing install has collected stays in the old
+ * one, invisible, with no way back through the UI. A cosmetic rename is not
+ * worth silently emptying somebody's workspace.
+ *
+ * It is not user-visible: nothing in the panel or the exports ever shows it.
+ * If it ever needs to change, that is a migration — open the old database, copy
+ * every store across, and only then switch — not an edit to this line.
+ */
 export const DB_NAME = "flowscrape_v3";
 
 /**

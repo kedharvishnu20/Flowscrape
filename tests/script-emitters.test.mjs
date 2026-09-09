@@ -834,7 +834,7 @@ test("a failed ASSERT stops the exported script", () => {
     }),
   ]);
   assert.match(js, /_count >= 3/);
-  assert.match(js, /throw new Error\(`FlowScrape ASSERT/);
+  assert.match(js, /throw new Error\(`Verquill ASSERT/);
   assert.match(py, /_count >= 3/);
   assert.match(py, /raise AssertionError/);
 });
@@ -845,10 +845,7 @@ test("an optional ASSERT warns instead of stopping the script", () => {
   const { py, js } = emit([
     step("ASSERT", { assertion: "exists", selector: ".card", optional: true }),
   ]);
-  assert.ok(
-    !/throw new Error\(`FlowScrape ASSERT/.test(js),
-    "Node still threw",
-  );
+  assert.ok(!/throw new Error\(`Verquill ASSERT/.test(js), "Node still threw");
   assert.match(js, /console\.warn\('ASSERT/);
   assert.ok(!/raise AssertionError/.test(py), "Python still raised");
   assert.match(py, /print\("ASSERT/);
@@ -962,7 +959,7 @@ test("DOWNLOAD_FILE fetches through the browser context, and says what it saved"
   assert.match(js, /saved \$\{_saved\}, failed \$\{_failed\}/);
   // Found files and saved none is a failure in the script for the same reason
   // it is one in the run.
-  assert.match(py, /raise IOError\("FlowScrape: DOWNLOAD_FILE saved none/);
+  assert.match(py, /raise IOError\("Verquill: DOWNLOAD_FILE saved none/);
   assert.match(js, /DOWNLOAD_FILE saved none of the files/);
 });
 
@@ -1006,7 +1003,7 @@ test("the pre-download template warning ignores the fields the script fills in",
     compile([
       step("DOWNLOAD_FILE", {
         selector: "img",
-        filename: "flowscrape/{{file.name}}",
+        filename: "verquill/{{file.name}}",
       }),
     ]),
   );

@@ -1,4 +1,4 @@
-# FlowScrape — Manual Test Checklist
+# Verquill — Manual Test Checklist
 
 > **Read this first.** `npm test` now covers 137 automated cases; this file is
 > only for what needs a real browser. Roughly half of the cases below exercise
@@ -125,12 +125,12 @@
 
 ## Running the Tests
 
-Since FlowScrape has no bundler, tests are manual unless you add a test harness.
+Since Verquill has no bundler, tests are manual unless you add a test harness.
 
 **Recommended manual test flow:**
 
 1. Load extension in Chrome (Developer mode)
-2. Open `chrome://extensions/` → FlowScrape → Inspect views → Service Worker
+2. Open `chrome://extensions/` → Verquill → Inspect views → Service Worker
 3. In the SW console, run each module function directly using dynamic import
 4. For content script tests, open a test page and use the injector console
 
@@ -141,4 +141,4 @@ Since FlowScrape has no bundler, tests are manual unless you add a test harness.
 
 ---
 
-_FlowScrape v3 — Test Checklist v1.0_
+_Verquill v3 — Test Checklist v1.0_

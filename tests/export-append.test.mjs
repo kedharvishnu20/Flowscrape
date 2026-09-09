@@ -209,7 +209,7 @@ test("a plain export is untouched — new file, unique name", async () => {
   await _dispatchStep(exportStep({}), 1, runId, { extracted: {} });
   const entry = lastDownload();
   assert.equal(entry.conflictAction, "uniquify");
-  assert.match(entry.filename, /flowscrape_export_\d+\.csv/);
+  assert.match(entry.filename, /verquill_export_\d+\.csv/);
   await endRun(runId);
 });
 

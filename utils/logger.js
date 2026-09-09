@@ -1,7 +1,7 @@
 // === logger.js ===
 /**
  * @module logger
- * @description Structured, levelled logger for FlowScrape v3.
+ * @description Structured, levelled logger for Verquill v3.
  *   NEVER logs secrets, API keys, proxy credentials, or PII.
  *   All output is JSON-structured for easy parsing.
  * @dependencies none

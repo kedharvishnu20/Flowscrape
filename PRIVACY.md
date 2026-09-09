@@ -1,4 +1,4 @@
-# FlowScrape — Privacy
+# Verquill — Privacy
 
 Last updated: 2026-09-08
 
@@ -16,14 +16,14 @@ below.
 
 ## Where your data actually lives
 
-| What                          | Where                                        | Survives                              |
-| ----------------------------- | -------------------------------------------- | ------------------------------------- |
-| Pipelines you build           | `chrome.storage.local`                       | Yes, until you delete them            |
-| Rows a run extracts           | IndexedDB (`flowscrape_v3`), in your browser | Until you clear them                  |
-| Datasets an EXPORT appends to | The same IndexedDB                           | Yes                                   |
-| Cached AI answers             | The same IndexedDB, capped at 500 entries    | Until evicted                         |
-| Schedules                     | `chrome.storage.local`                       | Yes                                   |
-| **API keys**                  | `chrome.storage.session`, encrypted          | **No — gone when the browser closes** |
+| What                          | Where                                      | Survives                              |
+| ----------------------------- | ------------------------------------------ | ------------------------------------- |
+| Pipelines you build           | `chrome.storage.local`                     | Yes, until you delete them            |
+| Rows a run extracts           | IndexedDB (`verquill_v3`), in your browser | Until you clear them                  |
+| Datasets an EXPORT appends to | The same IndexedDB                         | Yes                                   |
+| Cached AI answers             | The same IndexedDB, capped at 500 entries  | Until evicted                         |
+| Schedules                     | `chrome.storage.local`                     | Yes                                   |
+| **API keys**                  | `chrome.storage.session`, encrypted        | **No — gone when the browser closes** |
 
 Keys are held in session storage, encrypted with a key that itself lives only
 in memory for the browser session. Closing the browser loses them, on purpose:
@@ -85,5 +85,5 @@ requested when you use the feature that needs them.
 
 ## Contact
 
-FlowScrape is open source. Issues, questions and corrections belong in the
+Verquill is open source. Issues, questions and corrections belong in the
 repository's issue tracker, where the answers are visible to everyone.

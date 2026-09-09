@@ -4,7 +4,7 @@
  * @description Visual scrape-zone overlay engine. Manages a shadow DOM host,
  *   zone registry, position tracker (ResizeObserver + scroll sync), and
  *   SPA re-attach via MutationObserver. This is a first-class architectural
- *   citizen in FlowScrape v3 — every DOM-touching step uses it.
+ *   citizen in Verquill v3 — every DOM-touching step uses it.
  *
  *   Design decision: We use a shadow DOM with 'closed' mode so the host page's
  *   JS cannot introspect or manipulate our overlays. Overlays use position:fixed
@@ -75,7 +75,7 @@ let _initialized = false;
 function _ensureShadowHost() {
   if (_initialized) return;
   _shadowHost = document.createElement("div");
-  _shadowHost.id = "flowscrape-v3-overlay-host";
+  _shadowHost.id = "verquill-v3-overlay-host";
   _shadowHost.style.cssText = [
     "position:fixed",
     "top:0",

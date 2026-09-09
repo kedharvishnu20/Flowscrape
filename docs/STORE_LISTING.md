@@ -11,7 +11,7 @@ is the part that can be.
 
 ## Store fields
 
-**Name:** FlowScrape
+**Name:** Verquill
 
 **Short description** (132 characters max):
 
@@ -26,7 +26,7 @@ is the part that can be.
 
 ## Detailed description
 
-> FlowScrape turns a page into a pipeline you can see: click steps together,
+> Verquill turns a page into a pipeline you can see: click steps together,
 > run them against the tab in front of you, watch each one succeed or fail, and
 > export the rows as CSV, JSON, XML or Markdown.
 >

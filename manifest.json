@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "FlowScrape v3",
+  "name": "Verquill v3",
   "version": "3.0.0",
   "description": "Visual web automation and data extraction: build a pipeline of steps, run it against a tab, export the results.",
   "minimum_chrome_version": "120",
@@ -23,7 +23,7 @@
     "default_path": "sidepanel/index.html"
   },
   "action": {
-    "default_title": "FlowScrape v3",
+    "default_title": "Verquill v3",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

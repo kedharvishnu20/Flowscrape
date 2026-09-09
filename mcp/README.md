@@ -1,6 +1,6 @@
-# FlowScrape v3 MCP
+# Verquill v3 MCP
 
-This folder contains a standalone Model Context Protocol server for the FlowScrape workspace.
+This folder contains a standalone Model Context Protocol server for the Verquill workspace.
 
 ## What it exposes
 
@@ -30,7 +30,7 @@ npm install
 Local stdio mode:
 
 ```bash
-npm start -- --root /path/to/flowscrape
+npm start -- --root /path/to/verquill
 ```
 
 Both `--root /path` and `--root=/path` work. Omit it to root the server at the
@@ -39,7 +39,7 @@ repository folder.
 HTTP mode for broader MCP clients:
 
 ```bash
-npm run start:http -- --root /path/to/flowscrape --port 3000
+npm run start:http -- --root /path/to/verquill --port 3000
 ```
 
 HTTP mode binds `127.0.0.1` by default and the SDK applies DNS-rebinding

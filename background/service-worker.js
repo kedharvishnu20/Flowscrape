@@ -2552,7 +2552,7 @@ async function _doExport(runId, config) {
   // one advantage over a real append: a page that gains a column mid-week gets
   // that column, where an append to a written CSV could only drop it.
   let rowsToWrite = allRows;
-  let stem = `flowscrape_export_${ts}`;
+  let stem = `verquill_export_${ts}`;
   if (config.append) {
     if (!APPENDABLE_FORMATS.includes(fmt)) {
       throw new Error(
@@ -2564,7 +2564,7 @@ async function _doExport(runId, config) {
     const name = datasetName(config.dataset);
     const { added, total, dropped } = await appendDatasetRows(name, allRows);
     rowsToWrite = await readDataset(name);
-    stem = `flowscrape_${name}`;
+    stem = `verquill_${name}`;
     _broadcastLog(
       dropped ? "warn-log" : "info-log",
       `EXPORT: added ${added} row${added === 1 ? "" : "s"} to "${name}" ` +
@@ -2612,7 +2612,7 @@ async function _doExport(runId, config) {
     const zipBytes = _buildZip(zipFiles);
     await chrome.downloads.download({
       url: _bytesToDataUrl(zipBytes, "application/zip"),
-      filename: `flowscrape_export_${ts}.zip`,
+      filename: `verquill_export_${ts}.zip`,
       saveAs: false,
     });
     // A short export is never silent: if the capture buffers filled, the count
@@ -3294,7 +3294,7 @@ async function _executeDownloadFile(step, tabId, runId, ctx = {}) {
   const queue = targets.slice(0, Math.min(limit, DOWNLOAD_HARD_CAP));
   const template =
     String(authored.filename ?? config.filename ?? "").trim() ||
-    "flowscrape/{{file.name}}";
+    "verquill/{{file.name}}";
   const domain = _runDomain(runState);
 
   const files = [];
@@ -5757,7 +5757,7 @@ async function _executeSteps(steps, tabId, runId, ctx, progress = null) {
     // Pace the run. Ethics gate 3 warns about request volume and nothing
     // enforced it — rate-limiter.js was imported for two form-fill handlers
     // that are themselves unreachable (audit F-09), while the emitted Python
-    // told the reader "MIN_DELAY_MS = 800  # Floor enforced by FlowScrape
+    // told the reader "MIN_DELAY_MS = 800  # Floor enforced by Verquill
     // ethics engine", which was not true of the extension. It is now.
     if (RATE_LIMITED_STEPS.has(resolvedStep.type)) {
       await acquire(_runDomain(runState));

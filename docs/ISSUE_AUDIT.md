@@ -1,4 +1,4 @@
-# FlowScrape — Full Issue Audit
+# Verquill — Full Issue Audit
 
 **Audited commit:** `b2baae8` (branch `dev`, branched from `master`)
 **Scope:** every file in the repository — extension (`manifest.json`, `background/`, `content/`, `sidepanel/`, `checkpoint/`, `data-sources/`, `exporters/`, `script-gen/`, `ethics/`, `utils/`), the MCP server (`mcp/`), and all documentation.
@@ -212,7 +212,7 @@ Every lookup uses `?.`, so it fails silently. `renderStoragePanel()` maintains `
 
 ### A-03 · BLOCKER · IndexedDB store collision silently kills checkpoint/resume
 
-`checkpoint/row-buffer.js:33` and `checkpoint/cursor-store.js:32` both open database `flowscrape_v3` **at version 1**, but declare different stores in `onupgradeneeded`:
+`checkpoint/row-buffer.js:33` and `checkpoint/cursor-store.js:32` both open database `verquill_v3` **at version 1**, but declare different stores in `onupgradeneeded`:
 
 - `cursor-store` creates `cursors`, `row_buffer`, `data_rows`
 - `row-buffer` creates **only** `data_rows`
@@ -752,7 +752,7 @@ Any pipeline built in the UI with a FILL or AUTO_EXTRACT step is reported `ok: f
 
 ### G-04 · MEDIUM · `mcp/README.md` contains the original author's absolute Windows paths
 
-Both usage examples hardcode `c:\MY SPACE\MY LAPTOP\project works\fully automated web scraper\flowscrape-v3`.
+Both usage examples hardcode `c:\MY SPACE\MY LAPTOP\project works\fully automated web scraper\verquill-v3`.
 
 ### G-05 · MEDIUM · The extension and the MCP server cannot talk to each other
 
@@ -837,7 +837,7 @@ It omits nine files that exist and are important — `content/smart-extractor.js
 
 ### H-05 · MEDIUM · The master manual's step registry is missing the three newest step types
 
-`docs/flowscrape-master-manual.md` §6 lists 18 types; the registry has 21. Missing: `UPLOAD_ACTIVITY`, `PDF_EXTRACTION`, `AUTO_EXTRACT` — i.e. everything added in the last three commits. §3 (Repository Map) omits the same files as H-02.
+`docs/verquill-master-manual.md` §6 lists 18 types; the registry has 21. Missing: `UPLOAD_ACTIVITY`, `PDF_EXTRACTION`, `AUTO_EXTRACT` — i.e. everything added in the last three commits. §3 (Repository Map) omits the same files as H-02.
 
 ### H-06 · MEDIUM · The security model table describes behaviour that does not hold
 
@@ -887,11 +887,11 @@ No `node_modules/`, no `pipelines/`, no OS/editor artefacts. `mcp/.gitignore` co
 
 **Correction, on fixing it:** by the time this was addressed the _values_ already agreed at `3.0.0` — only `mcp/package.json` was missing one. The finding still holds as written about the structure: five separate literals with nothing keeping them in step. `utils/version.js` is now the single definition, and `tests/version.test.mjs` fails if any copy drifts from `manifest.json`.
 
-`manifest.json` → `3.0.0`; `utils/strings.js` → `3.0.0`; `mcp/package.json` → no version; MCP server identity → `3.0.0`; git history → commits titled `v3`, `v3`, `v4`; README title → "FlowScrape v3". `pipeline-compiler` stamps compiled ASTs with a hardcoded `version: '3.0.0'` default.
+`manifest.json` → `3.0.0`; `utils/strings.js` → `3.0.0`; `mcp/package.json` → no version; MCP server identity → `3.0.0`; git history → commits titled `v3`, `v3`, `v4`; README title → "Verquill v3". `pipeline-compiler` stamps compiled ASTs with a hardcoded `version: '3.0.0'` default.
 
-### I-05 · LOW · The repository directory is `Flowscrape`, everything else says `flowscrape-v3`
+### I-05 · LOW · The repository directory is `Verquill`, everything else says `verquill-v3`
 
-The README's quick-start instructs "Load unpacked → select the `flowscrape-v3/` folder", which does not exist.
+The README's quick-start instructs "Load unpacked → select the `verquill-v3/` folder", which does not exist.
 
 ### I-06 · LOW · No `package.json` at the repository root
 
@@ -1034,7 +1034,7 @@ repaired pattern gives a script that runs and extracts something else.
 
 Most real sites embed JSON-LD, Schema.org microdata, or Open Graph tags: clean,
 typed, already-structured data, put there deliberately for machines to read.
-FlowScrape read none of it, and asked the user for CSS selectors instead —
+Verquill read none of it, and asked the user for CSS selectors instead —
 selectors describing data the site was handing out for free, and which break the
 next time a designer renames a class.
 
@@ -1628,7 +1628,7 @@ What was broken was everything the user could see.
 this — then read `rows` alone, announced "That run stored no rows" and wrote no
 file. A run whose whole purpose was the sniffer reported collecting nothing
 while its captures sat unread in the reply it had just received. It now writes
-`flowscrape_<run>_api.csv` alongside the row file, and the empty-run message
+`verquill_<run>_api.csv` alongside the row file, and the empty-run message
 appears only when both are empty.
 
 **The log went quiet.** Captures are named only for the first three, so that a
@@ -2271,7 +2271,7 @@ than reconstructions, entirely offline.
 
 ### K-17 · MEDIUM · Nothing could ask a model a question outside the free layers
 
-FlowScrape's free layers (`smart-extractor.js`, structured-data, the ethics
+Verquill's free layers (`smart-extractor.js`, structured-data, the ethics
 and robots gates) cover what can be done without paying. Nothing covered the
 rest: a page a selector genuinely cannot describe, a screenshot that needs a
 human-language answer, a captcha another part of this codebase solves but has

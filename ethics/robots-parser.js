@@ -16,7 +16,7 @@ import { logger } from "../utils/logger.js";
 
 const MODULE = "robots-parser";
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
-const FS_USER_AGENT = "FlowScrape";
+const FS_USER_AGENT = "Verquill";
 
 /** @type {Map<string, { rules: ParsedRobots, fetchedAt: number }>} */
 const _cache = new Map();
@@ -141,7 +141,7 @@ function _pathMatches(rulePattern, path) {
  * Longest-matching rule wins (RFC 9309 §2.2.2).
  * @param {ParsedRobots} parsed
  * @param {string} path
- * @param {string} [userAgent='FlowScrape']
+ * @param {string} [userAgent='Verquill']
  * @returns {boolean} true = allowed
  */
 export function isAllowedByRules(parsed, path, userAgent = FS_USER_AGENT) {

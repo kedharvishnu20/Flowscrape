@@ -358,7 +358,7 @@ export const STEP_TYPES = Object.freeze({
       selector: "",
       attr: "auto",
       url: "",
-      filename: "flowscrape/{{file.name}}",
+      filename: "verquill/{{file.name}}",
       max: 25,
       inFrame: false,
     },

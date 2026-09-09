@@ -12,7 +12,7 @@ bin/
 # `npm run build` writes the store package here. The loose patterns cover
 # `--out .`, which drops the zip wherever you were standing.
 dist/
-flowscrape-*.zip
+verquill-*.zip
 *.crx
 
 # ── Chrome extension signing key ─────────────────────────────────────────────

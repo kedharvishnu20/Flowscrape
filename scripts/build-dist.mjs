@@ -260,7 +260,7 @@ const entries = sorted.map((name) => ({
   bytes: new Uint8Array(readFileSync(join(ROOT, name))),
 }));
 
-const zipName = `flowscrape-${manifest.version}.zip`;
+const zipName = `verquill-${manifest.version}.zip`;
 writeFileSync(join(outDir, zipName), buildZip(entries));
 
 // Printed rather than only summarised: the check that this packaged the right

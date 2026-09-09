@@ -1,4 +1,4 @@
-# FlowScrape v3 — Known Limitations
+# Verquill v3 — Known Limitations
 
 > Platform constraints and accepted trade-offs. Bugs live in
 > [ISSUE_AUDIT.md](ISSUE_AUDIT.md); this file is for things that are the way
@@ -36,7 +36,7 @@
 | React fiber hack is fragile             | React's internal fiber keys change between versions; hack is best-effort and may fail on React 19+           |
 | `file` input type (`<input type=file>`) | DataTransfer assignment works in most browsers but may be blocked by strict site CSPs                        |
 | Shadow DOM fields                       | `document.querySelector()` does not pierce shadow roots; shadow-walker.js traversal needed for such fields   |
-| CAPTCHA auto-solve rate limits          | Third-party CAPTCHA APIs have their own rate limits independent of FlowScrape's ethics gate                  |
+| CAPTCHA auto-solve rate limits          | Third-party CAPTCHA APIs have their own rate limits independent of Verquill's ethics gate                    |
 | Custom web components                   | Non-standard input components (e.g., `<my-input>`) may not respond to native events; manual handler required |
 
 ---
@@ -86,8 +86,8 @@
 | Limitation                         | Notes                                                                                                                 |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | Geo-distance calculation           | Uses a simplified region-to-region comparison rather than true Haversine distance (> 5000km criterion is approximate) |
-| robots.txt TTL is 15 min           | A site could update robots.txt mid-run; FlowScrape will not re-check until cache expires                              |
-| `robots.txt` fetch failure = allow | If robots.txt is unreachable (network error), FlowScrape warns but does not block (conservative but permissive)       |
+| robots.txt TTL is 15 min           | A site could update robots.txt mid-run; Verquill will not re-check until cache expires                                |
+| `robots.txt` fetch failure = allow | If robots.txt is unreachable (network error), Verquill warns but does not block (conservative but permissive)         |
 
 ---
 

@@ -180,7 +180,7 @@ test("the filename template survives the run's own template pass", async () => {
   pageHas(["https://cdn.shop.test/a.jpg", "https://cdn.shop.test/b.jpg"]);
 
   await _executeStepList(
-    [step({ selector: "img", filename: "flowscrape/{{file.name}}" })],
+    [step({ selector: "img", filename: "verquill/{{file.name}}" })],
     1,
     runId,
     ctx(),
@@ -188,7 +188,7 @@ test("the filename template survives the run's own template pass", async () => {
 
   assert.deepEqual(
     calls.downloads.map((d) => d.filename),
-    ["flowscrape/a.jpg", "flowscrape/b.jpg"],
+    ["verquill/a.jpg", "verquill/b.jpg"],
   );
   await endRun(runId);
 });

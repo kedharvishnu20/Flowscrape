@@ -64,7 +64,7 @@
 
   // ── Shadow DOM host ────────────────────────────────────────────────────────────
   const _host = document.createElement("div");
-  _host.id = "flowscrape-v3-host";
+  _host.id = "verquill-v3-host";
   _host.style.cssText =
     "position:fixed;top:0;left:0;z-index:2147483647;pointer-events:none;";
   const _shadow = _host.attachShadow({ mode: "closed" });
@@ -3512,6 +3512,6 @@
   // content_scripts directly. We load it dynamically so it self-initialises
   // (overlayEngine.init() is called at the bottom of overlay-engine.js).
   import(chrome.runtime.getURL("content/overlay-engine.js")).catch((err) => {
-    console.warn("[FlowScrape] overlay-engine failed to load:", err.message);
+    console.warn("[Verquill] overlay-engine failed to load:", err.message);
   });
 })();

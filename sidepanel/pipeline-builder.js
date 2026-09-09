@@ -273,14 +273,14 @@ async function _downloadRunRows(runId) {
   const written = [];
   try {
     if (rows.length > 0) {
-      await exportRows(rows, "csv", `flowscrape_${runId}.csv`);
+      await exportRows(rows, "csv", `verquill_${runId}.csv`);
       written.push(`${rows.length} row${rows.length === 1 ? "" : "s"}`);
     }
     if (networks.length > 0) {
       // A separate file, not merged: an API capture and an extracted row have
       // nothing in common but the run they came from, and one CSV holding both
       // would have a column for every field of each.
-      await exportRows(networks, "csv", `flowscrape_${runId}_api.csv`);
+      await exportRows(networks, "csv", `verquill_${runId}_api.csv`);
       written.push(
         `${networks.length} captured request${networks.length === 1 ? "" : "s"}`,
       );
@@ -909,7 +909,7 @@ function bindGlobalControls() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `flowscrape_${format}.${format === "python" ? "py" : "mjs"}`;
+        a.download = `verquill_${format}.${format === "python" ? "py" : "mjs"}`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -980,7 +980,7 @@ function bindGlobalControls() {
         ..._pipeline,
         meta: {
           exportedAt: new Date().toISOString(),
-          source: "flowscrape-sidepanel",
+          source: "verquill-sidepanel",
         },
       };
       const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -989,7 +989,7 @@ function bindGlobalControls() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `flowscrape_pipeline_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      a.download = `verquill_pipeline_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -2926,7 +2926,7 @@ function _configFields(step) {
       "filename",
       "Save as",
       "text",
-      c.filename ?? "flowscrape/{{file.name}}",
+      c.filename ?? "verquill/{{file.name}}",
     );
     html += hint(
       "A template. {{file.name}}, {{file.stem}}, {{file.ext}}, {{file.index}} " +

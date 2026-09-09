@@ -487,7 +487,7 @@ that catches a re-implementation drifting from its original.
 ### Added — logging in, and the headers a site will accept
 
 Two capabilities that needed a Chrome permission each, and so are declared
-`optional_permissions`: installing FlowScrape asks for neither, and Chrome's own
+`optional_permissions`: installing Verquill asks for neither, and Chrome's own
 consent dialog appears at the moment you switch one on in Settings →
 Permissions. Both steps work without their permission and say exactly what they
 lose. [`docs/SESSIONS_AND_HEADERS.md`](docs/SESSIONS_AND_HEADERS.md) is the

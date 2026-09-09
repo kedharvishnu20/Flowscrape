@@ -1,7 +1,7 @@
 // === idb-schema.js ===
 /**
  * @module idb-schema
- * @description Single owner of the `flowscrape_v3` IndexedDB schema.
+ * @description Single owner of the `verquill_v3` IndexedDB schema.
  *
  *   Why this module exists: `cursor-store.js` and `row-buffer.js` each used to
  *   call `indexedDB.open(DB_NAME, 1)` with their own `onupgradeneeded` handler.
@@ -23,20 +23,20 @@ import { logger } from "../utils/logger.js";
 
 const MODULE = "idb-schema";
 
+export const DB_NAME = "verquill_v3";
+
 /**
- * Deliberately still the old name after the rename to Verquill.
+ * The database this one replaces, and the last trace of the old name anywhere
+ * in the project.
  *
- * An IndexedDB database is identified by this string. Changing it does not
- * rename anything — it opens a *different*, empty database, and every pipeline,
- * dataset and cached answer an existing install has collected stays in the old
- * one, invisible, with no way back through the UI. A cosmetic rename is not
- * worth silently emptying somebody's workspace.
- *
- * It is not user-visible: nothing in the panel or the exports ever shows it.
- * If it ever needs to change, that is a migration — open the old database, copy
- * every store across, and only then switch — not an edit to this line.
+ * An IndexedDB database is identified by its name, so renaming DB_NAME does not
+ * rename a database — it opens a different, empty one and leaves every pipeline,
+ * dataset and cached answer an existing install collected stranded in the old
+ * one with no route back through the UI. This constant exists only to carry
+ * that data across, once, and can be deleted along with `_adoptPreviousDatabase`
+ * once no install is still on the old name.
  */
-export const DB_NAME = "flowscrape_v3";
+const PREVIOUS_DB_NAME = "flowscrape_v3";
 
 /**
  * v1 — original schema (inconsistently created; see module docblock).
@@ -99,6 +99,132 @@ const STORES = [
 /** @type {Promise<IDBDatabase>|null} Cached connection, shared by all callers. */
 let _dbPromise = null;
 
+/** Every record in one store of an already-open database. */
+function _readAll(db, storeName) {
+  return new Promise((resolve) => {
+    if (!db.objectStoreNames.contains(storeName)) return resolve([]);
+    let req;
+    try {
+      req = db
+        .transaction([storeName], "readonly")
+        .objectStore(storeName)
+        .getAll();
+    } catch {
+      return resolve([]);
+    }
+    req.onsuccess = () => resolve(req.result ?? []);
+    req.onerror = () => resolve([]);
+  });
+}
+
+/** Open a database at whatever version it already is, or null if absent. */
+function _openExisting(name) {
+  return new Promise((resolve) => {
+    let req;
+    try {
+      req = indexedDB.open(name);
+    } catch {
+      return resolve(null);
+    }
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+    req.onblocked = () => resolve(null);
+  });
+}
+
+/**
+ * Move a previous install's data onto the current database name, once.
+ *
+ * Best-effort by construction, and that is the point rather than a shortcut:
+ * this runs on the path every row write and cursor read depends on, so it is
+ * written so that no failure inside it can stop the database opening. Every
+ * step swallows its own errors and the caller wraps the whole thing again. The
+ * worst outcome is the empty database the rename would have produced anyway;
+ * it can never be a broken extension.
+ *
+ * Runs only when the new database does not exist yet and the old one does, so
+ * it cannot overwrite live data and cannot run twice. The old database is left
+ * in place rather than deleted — it costs nothing, and it is the only copy of
+ * the data if this ever gets something subtly wrong.
+ */
+async function _adoptPreviousDatabase() {
+  // Firefox before 126 and older Safari have no databases(); there is no way to
+  // ask what exists, so skip rather than guess.
+  if (typeof indexedDB.databases !== "function") return;
+
+  const names = (await indexedDB.databases().catch(() => [])).map(
+    (d) => d.name,
+  );
+  if (!names.includes(PREVIOUS_DB_NAME)) return;
+  if (names.includes(DB_NAME)) return; // already created, so already past this
+
+  const previous = await _openExisting(PREVIOUS_DB_NAME);
+  if (!previous) return;
+
+  try {
+    const carried = {};
+    for (const store of STORES) {
+      carried[store.name] = await _readAll(previous, store.name);
+    }
+    previous.close();
+
+    const rows = Object.values(carried).reduce((n, r) => n + r.length, 0);
+    if (!rows) return;
+
+    // Opening at DB_VERSION creates the stores through the normal upgrade path,
+    // so the schema is the one STORES declares rather than a copy of the old.
+    const fresh = await new Promise((resolve) => {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        for (const store of STORES) {
+          if (db.objectStoreNames.contains(store.name)) continue;
+          const created = db.createObjectStore(store.name, store.options);
+          for (const index of store.indexes ?? []) {
+            created.createIndex(index.name, index.keyPath, index.options);
+          }
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+    if (!fresh) return;
+
+    await new Promise((resolve) => {
+      const names = STORES.map((s) => s.name);
+      const tx = fresh.transaction(names, "readwrite");
+      tx.oncomplete = resolve;
+      tx.onerror = resolve;
+      tx.onabort = resolve;
+      for (const store of STORES) {
+        const target = tx.objectStore(store.name);
+        for (const record of carried[store.name]) {
+          // Stores with a keyPath carry their own key; autoIncrement ones are
+          // re-keyed on insert, which is fine — nothing references those ids.
+          try {
+            target.add(record);
+          } catch {
+            /* one bad record must not abandon the rest */
+          }
+        }
+      }
+    });
+    fresh.close();
+
+    logger.info(MODULE, "adopted-previous-database", {
+      from: PREVIOUS_DB_NAME,
+      rows,
+    });
+  } catch (err) {
+    logger.warn(MODULE, "adopt-previous-failed", { error: err?.message });
+    try {
+      previous.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
 /**
  * Open (or reuse) the shared database connection.
  *
@@ -106,12 +232,28 @@ let _dbPromise = null;
  * and one upgrade transaction. If the connection is closed by a competing
  * upgrade elsewhere, the cache is dropped so the next call reopens.
  *
+ * A previous install's data is adopted first, at most once — see
+ * `_adoptPreviousDatabase`. It cannot fail in a way that stops the open.
+ *
  * @returns {Promise<IDBDatabase>}
  */
 export function openDB() {
   if (_dbPromise) return _dbPromise;
 
-  const attempt = new Promise((resolve, reject) => {
+  const attempt = _adoptPreviousDatabase()
+    .catch(() => {})
+    .then(() => _openCurrent());
+
+  _dbPromise = attempt;
+  attempt.catch(() => {
+    if (_dbPromise === attempt) _dbPromise = null;
+  });
+  return attempt;
+}
+
+/** Open the current database, creating or upgrading its stores. */
+function _openCurrent() {
+  return new Promise((resolve, reject) => {
     let req;
     try {
       req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -172,14 +314,6 @@ export function openDB() {
       reject(req.error);
     };
   });
-
-  _dbPromise = attempt;
-  // Any failure, however it arrived, un-caches the attempt so the next caller
-  // opens a fresh connection instead of inheriting this one's error.
-  attempt.catch(() => {
-    if (_dbPromise === attempt) _dbPromise = null;
-  });
-  return attempt;
 }
 
 /**

@@ -1,7 +1,7 @@
 // Regression tests for audit finding A-03.
 //
 // cursor-store.js and row-buffer.js each used to call
-// indexedDB.open('flowscrape_v3', 1) with their own onupgradeneeded handler
+// indexedDB.open('verquill_v3', 1) with their own onupgradeneeded handler
 // declaring different object stores. Only the first opener runs an upgrade, so
 // whichever module opened the database first decided which stores existed.
 // row-buffer won that race in practice, `cursors` was never created, and every

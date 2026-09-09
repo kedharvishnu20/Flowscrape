@@ -1049,6 +1049,81 @@ function bindGlobalControls() {
     }
   });
 
+  // --- Library Dropdown Logic ---
+  const libBtn = document.getElementById("btn-library-dropdown");
+  const libDropdown = document.getElementById("library-dropdown");
+  const libList = document.getElementById("library-list");
+
+  if (libBtn) {
+    libBtn.addEventListener("click", async () => {
+      libDropdown.classList.toggle("hidden");
+      if (libDropdown.classList.contains("hidden")) return;
+
+      libList.innerHTML = `<div style="color: var(--dim); font-size: 11px; padding: 4px;">Loading...</div>`;
+      
+      const res = await chrome.storage.local.get(["fs_github_pat", "fs_github_repo"]);
+      const pat = res.fs_github_pat;
+      let repoUrl = res.fs_github_repo;
+      if (!pat || !repoUrl) {
+         libList.innerHTML = `<div style="color: var(--red); font-size: 11px; padding: 4px;">Configure GitHub in Marketplace first.</div>`;
+         return;
+      }
+      
+      let repoPath = repoUrl.replace('https://github.com/', '').replace('.git', '');
+      try {
+        const getRes = await fetch(`https://api.github.com/repos/${repoPath}/contents/registry.json`, {
+           headers: { "Authorization": `token ${pat}`, "Accept": "application/vnd.github.v3+json" }
+        });
+        
+        if (getRes.status === 404) {
+           libList.innerHTML = `<div style="color: var(--dim); font-size: 11px; padding: 4px;">Library is empty.</div>`;
+           return;
+        }
+        if (!getRes.ok) throw new Error("API Error");
+        
+        const getData = await getRes.json();
+        const pipelines = JSON.parse(atob(getData.content));
+
+        if (!pipelines.length) {
+           libList.innerHTML = `<div style="color: var(--dim); font-size: 11px; padding: 4px;">Library empty.</div>`;
+           return;
+        }
+
+        libList.innerHTML = '';
+        pipelines.forEach(p => {
+           const btn = document.createElement("button");
+           btn.className = "btn";
+           btn.style.justifyContent = "flex-start";
+           btn.style.width = "100%";
+           btn.textContent = p.name || p.id;
+           btn.title = p.description || "";
+           btn.onclick = () => {
+              _pipeline = p;
+              renderCanvas();
+              chrome.storage.local.set({ [SK.PIPELINE]: _pipeline });
+              libDropdown.classList.add("hidden");
+           };
+           libList.appendChild(btn);
+        });
+      } catch (e) {
+        libList.innerHTML = `<div style="color: var(--red); font-size: 11px; padding: 4px;">Failed to fetch from GitHub.</div>`;
+      }
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener("click", (e) => {
+      if (!libBtn.contains(e.target) && !libDropdown.contains(e.target)) {
+         libDropdown.classList.add("hidden");
+      }
+    });
+  }
+
+  document
+    .getElementById("btn-open-registry")
+    ?.addEventListener("click", () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL("site/dist/index.html") });
+    });
+
   document
     .getElementById("btn-download-pipeline")
     ?.addEventListener("click", async () => {
@@ -5406,6 +5481,24 @@ function _registerKey(stepId) {
 
 // ── System listeners ──────────────────────────────────────────────────────────
 function listenToSystem() {
+  // ── Marketplace "Run Now" / "Load" bridge ───────────────────────────────
+  // The marketplace SPA cannot know our tab-scoped SK.PIPELINE key, so it
+  // writes to a shared key fs_marketplace_load. We pick it up here and
+  // immediately load it into the active canvas, then clear the bridge key.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (!changes.fs_marketplace_load) return;
+    const pipeline = changes.fs_marketplace_load.newValue;
+    if (!pipeline || typeof pipeline !== "object" || !Array.isArray(pipeline.steps)) return;
+
+    _pipeline = pipeline;
+    renderPipeline();
+    chrome.storage.local.set({ [SK.PIPELINE]: _pipeline });
+    // Clear the bridge key so this won't re-trigger
+    chrome.storage.local.remove("fs_marketplace_load");
+    notify("info-log", `Pipeline "${pipeline.name || pipeline.id}" loaded from Marketplace.`);
+  });
+
   chrome.runtime.onMessage.addListener((msg) => {
     // If msg provides a tabId, only log/update if it matches our sidepanel's tab
     if (msg.payload?.tabId && msg.payload.tabId !== _tabId) return;

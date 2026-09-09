@@ -62,6 +62,7 @@ const INCLUDE_DIRS = [
   "script-gen",
   "sidepanel",
   "utils",
+  "site/dist",
 ];
 
 /** Loose files that belong in the package. */

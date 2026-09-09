@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { fetchPipelines, pushPipelines, publishToGlobal } from "./github-api";
+import { fetchPipelines, pushPipeline, publishToGlobal, removePipeline, fetchGlobalPipelines } from "./github-api";
 import "./index.css";
 
 const REPO_OWNER = "kedharvishnu20";
@@ -30,6 +30,10 @@ export default function App() {
   const [reviewModal,  setReviewModal]  = useState(false);
   const [reviewJson,   setReviewJson]   = useState("");
   const [reviewJsonErr, setReviewJsonErr] = useState(null);
+  const [pushModal, setPushModal] = useState(null);
+  const [pushName,  setPushName]  = useState("");
+  const [pushUrl,   setPushUrl]   = useState("");
+  const [sourceStatus, setSourceStatus] = useState(null);
   const [toast, setToast] = useState(null);
 
   const showToast = (msg, type = "ok") => {
@@ -66,6 +70,7 @@ export default function App() {
   const loadData = async (effectivePat = pat, effectiveRepo = repoUrl) => {
     setLoading(true);
     const all = [];
+    const status = { local: 0, github: null, global: null };
 
     if (typeof chrome !== "undefined" && chrome.storage?.local) {
       try {
@@ -83,10 +88,12 @@ export default function App() {
               if (!all.find(x => x.id === p.id)) all.push(p);
             }
           });
+        status.local = all.length;
       } catch (_) {}
     }
 
-    if (effectivePat && effectiveRepo) {
+    // Public repo â€” reading needs no PAT (the token is only required to push).
+    if (effectiveRepo) {
       try {
         const github = await fetchPipelines(effectiveRepo, effectivePat);
         github.forEach(p => {
@@ -94,25 +101,28 @@ export default function App() {
           p._displayId = p.id;
           if (!all.find(x => x.id === p.id && x.source === "github")) all.push(p);
         });
+        status.github = github.length;
       } catch (e) {
+        status.github = `error: ${e.message}`;
         console.warn("GitHub fetch failed:", e.message);
       }
     }
 
     try {
-      const globalUrl = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/global/registry.json`;
-      const res = await fetch(globalUrl);
-      if (res.ok) {
-        const global = await res.json();
-        global.forEach(p => {
-          p.source = "global";
-          p._displayId = p.id;
-          if (!all.find(x => x.id === p.id && x.source === "global")) all.push(p);
-        });
-      }
-    } catch (_) {}
+      const global = await fetchGlobalPipelines(REPO_OWNER, REPO_NAME, effectivePat);
+      let added = 0;
+      global.forEach(p => {
+        p.source = "global";
+        p._displayId = p.id;
+        if (!all.find(x => x.id === p.id && x.source === "global")) { all.push(p); added++; }
+      });
+      status.global = added;
+    } catch (e) {
+      status.global = `error: ${e.message}`;
+    }
 
     setPipelines(all);
+    setSourceStatus(status);
     setLoading(false);
   };
 
@@ -135,15 +145,28 @@ export default function App() {
     }
   };
 
+  const openPushModal = (p) => {
+    if (!repoUrl || !pat) return showToast("Configure GitHub in Sync Settings first.", "err");
+    setPushName(p.name || "");
+    setPushUrl(p.website || p.url || "");
+    setPushModal({ pipeline: p });
+  };
+
+  const confirmPush = async () => {
+    if (!pushModal) return;
+    const name = pushName.trim();
+    if (!name) return showToast("Pipeline name is required.", "err");
+    const edited = { ...pushModal.pipeline, name, website: pushUrl.trim() };
+    setPushModal(null);
+    await handlePushToGitHub(edited);
+  };
+
   const handlePushToGitHub = async (p) => {
     if (!repoUrl || !pat) return showToast("Configure GitHub in Sync Settings first.", "err");
     try {
-      const current = await fetchPipelines(repoUrl, pat);
       const copy = scrubCredentials(p);
-      const idx = current.findIndex(x => x.id === copy.id);
-      if (idx >= 0) current[idx] = copy; else current.push(copy);
-      await pushPipelines(repoUrl, pat, current);
-      showToast(`"${p.name}" pushed to GitHub.`);
+      await pushPipeline(repoUrl, pat, copy);
+      showToast(`"${copy.name}" pushed to GitHub.`);
       loadData(pat, repoUrl);
     } catch (e) {
       showToast("Push failed: " + e.message, "err");
@@ -167,8 +190,7 @@ export default function App() {
     if (!window.confirm(`Remove "${p.name}" from your GitHub library?`)) return;
     if (!repoUrl || !pat) return showToast("Configure GitHub in Sync Settings first.", "err");
     try {
-      const current = await fetchPipelines(repoUrl, pat);
-      await pushPipelines(repoUrl, pat, current.filter(x => x.id !== p.id));
+      await removePipeline(repoUrl, pat, p);
       showToast(`"${p.name}" removed.`);
       loadData(pat, repoUrl);
     } catch (e) {
@@ -229,17 +251,37 @@ export default function App() {
         }}>{toast.msg}</div>
       )}
 
+      {pushModal && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1100, background: "rgba(0,0,0,0.9)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ width: "100%", maxWidth: 460, background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow-fly)" }}>
+            <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--line)", fontFamily: "var(--mono)", fontSize: "11px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--amber)" }}>
+              Push to GitHub Â· Pipeline Details
+            </div>
+            <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 12 }}>
+              <label style={{ fontFamily: "var(--mono)", fontSize: "11px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--dim)" }}>Pipeline Name</label>
+              <input className="field" value={pushName} onChange={e => setPushName(e.target.value)} placeholder="e.g. Amazon Product Extractor" style={{ width: "100%" }} autoFocus />
+              <label style={{ fontFamily: "var(--mono)", fontSize: "11px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--dim)", marginTop: 8 }}>Website Link</label>
+              <input className="field" value={pushUrl} onChange={e => setPushUrl(e.target.value)} placeholder="https://example.com" style={{ width: "100%" }} />
+            </div>
+            <div style={{ padding: "14px 24px", borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 12 }}>
+              <button className="btn" onClick={() => setPushModal(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={confirmPush}>Push</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {reviewModal && (
         <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.9)", display: "flex", flexDirection: "column" }}>
           <div style={{ padding: "16px 24px", borderBottom: "1px solid var(--line)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 16 }}>
             <span style={{ fontFamily: "var(--mono)", fontSize: "11px", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--amber)", flex: 1 }}>
-              Review Pipeline · Confirm Before Publishing
+              Review Pipeline Â· Confirm Before Publishing
             </span>
             <button className="btn" onClick={() => setReviewModal(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={confirmPublish}>Confirm Publish</button>
           </div>
           <div style={{ padding: "10px 24px", background: "rgba(239,83,80,0.08)", borderBottom: "1px solid rgba(239,83,80,0.25)", fontFamily: "var(--mono)", fontSize: "11px", color: "#ef5350", letterSpacing: "0.04em" }}>
-            Caution · We tried our best to strip credentials. Verify the JSON below and remove anything sensitive before confirming.
+            Caution Â· We tried our best to strip credentials. Verify the JSON below and remove anything sensitive before confirming.
           </div>
           {reviewJsonErr && (
             <div style={{ padding: "6px 24px", background: "rgba(239,83,80,0.15)", fontFamily: "var(--mono)", fontSize: "11px", color: "#ef5350" }}>{reviewJsonErr}</div>
@@ -291,6 +333,18 @@ export default function App() {
               <button className="btn" onClick={() => loadData(pat, repoUrl)}>Refresh</button>
             </div>
 
+            {sourceStatus && (
+              <div style={{ marginTop: 10, fontFamily: "var(--mono)", fontSize: 10, letterSpacing: "0.10em", textTransform: "uppercase", color: "var(--dim)", display: "flex", gap: 16, flexWrap: "wrap" }}>
+                <span>Local: {sourceStatus.local}</span>
+                <span style={{ color: typeof sourceStatus.github === "string" ? "#ef5350" : "var(--dim)" }}>
+                  GitHub: {sourceStatus.github === null ? "-" : sourceStatus.github}
+                </span>
+                <span style={{ color: typeof sourceStatus.global === "string" ? "#ef5350" : "var(--dim)" }}>
+                  Global: {sourceStatus.global === null ? "-" : sourceStatus.global}
+                </span>
+              </div>
+            )}
+
             <div className="rows-head">
               <div>Source</div><div>Pipeline</div><div></div><div>Actions</div>
             </div>
@@ -301,7 +355,7 @@ export default function App() {
                 <div className="empty" style={{ textAlign: "center", padding: "48px 0" }}>
                   <div style={{ marginBottom: 10 }}>No pipelines found.</div>
                   <div style={{ fontSize: 12, color: "var(--muted)", maxWidth: 360, margin: "0 auto", lineHeight: 1.7 }}>
-                    {sourceFilter === "local" ? "Build a pipeline in the Verquill sidepanel — it will appear here automatically."
+                    {sourceFilter === "local" ? "Build a pipeline in the Verquill sidepanel â€” it will appear here automatically."
                     : sourceFilter === "github" ? "Configure your GitHub token in Sync Settings to load your personal repository."
                     : sourceFilter === "global" ? "The global community registry is empty or unreachable."
                     : "Build a pipeline in the sidepanel, or configure GitHub sync to see your library here."}
@@ -327,7 +381,7 @@ export default function App() {
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
                     {p.source === "local" && <>
                       <button className="btn btn-primary" onClick={() => handleLoad(p)}>Load</button>
-                      <button className="btn" onClick={() => handlePushToGitHub(p)}>Push to GitHub</button>
+                      <button className="btn" onClick={() => openPushModal(p)}>Push to GitHub</button>
                       <button className="btn" onClick={() => openPublishModal(p)}>Publish</button>
                     </>}
                     {p.source === "github" && <>
@@ -337,7 +391,7 @@ export default function App() {
                     </>}
                     {p.source === "global" && <>
                       <button className="btn btn-primary" onClick={() => handleLoad(p)}>Run Now</button>
-                      <button className="btn" onClick={() => handlePushToGitHub(p)}>Save to GitHub</button>
+                      <button className="btn" onClick={() => openPushModal(p)}>Save to GitHub</button>
                       <button className="btn" onClick={() => handleSaveLocally(p)}>Save Locally</button>
                     </>}
                   </div>
@@ -367,8 +421,8 @@ export default function App() {
       </main>
 
       <footer>
-        <span>Verquill Registry · pipelines are reviewed, not trusted</span>
-        <span>MIT · no account · no tracking</span>
+        <span>Verquill Registry Â· pipelines are reviewed, not trusted</span>
+        <span>MIT Â· no account Â· no tracking</span>
       </footer>
     </>
   );

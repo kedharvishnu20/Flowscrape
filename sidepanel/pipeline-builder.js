@@ -1060,53 +1060,122 @@ function bindGlobalControls() {
       if (libDropdown.classList.contains("hidden")) return;
 
       libList.innerHTML = `<div style="color: var(--dim); font-size: 11px; padding: 4px;">Loading...</div>`;
-      
+
       const res = await chrome.storage.local.get(["fs_github_pat", "fs_github_repo"]);
       const pat = res.fs_github_pat;
-      let repoUrl = res.fs_github_repo;
-      if (!pat || !repoUrl) {
-         libList.innerHTML = `<div style="color: var(--red); font-size: 11px; padding: 4px;">Configure GitHub in Marketplace first.</div>`;
-         return;
-      }
-      
-      let repoPath = repoUrl.replace('https://github.com/', '').replace('.git', '');
+      let repoUrl = res.fs_github_repo || "https://github.com/kedharvishnu20/Verquill_Market_place.git";
+
+      let repoPath = repoUrl.replace('https://github.com/', '').replace('.git', '').replace(/\/$/, '');
+      const headers = { "Accept": "application/vnd.github.v3+json" };
+      if (pat) headers["Authorization"] = `token ${pat}`;
+      const decode = (c) => JSON.parse(decodeURIComponent(escape(atob(String(c).replace(/\s/g, "")))));
+
+      const pipelines = [];
+      const seen = new Set();
+      const add = (p, source) => {
+        if (!p || typeof p !== "object" || !Array.isArray(p.steps)) return;
+        const id = p.id || p.name;
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        p.__source = source;
+        pipelines.push(p);
+      };
+
+      // 1) Local pipelines you built in the sidepanel (chrome.storage). Always shown.
       try {
-        const getRes = await fetch(`https://api.github.com/repos/${repoPath}/contents/registry.json`, {
-           headers: { "Authorization": `token ${pat}`, "Accept": "application/vnd.github.v3+json" }
-        });
-        
-        if (getRes.status === 404) {
-           libList.innerHTML = `<div style="color: var(--dim); font-size: 11px; padding: 4px;">Library is empty.</div>`;
-           return;
-        }
-        if (!getRes.ok) throw new Error("API Error");
-        
-        const getData = await getRes.json();
-        const pipelines = JSON.parse(atob(getData.content));
+        const stored = await chrome.storage.local.get(null);
+        Object.keys(stored)
+          .filter((k) => k.startsWith("fs_active_pipeline"))
+          .forEach((k) => {
+            const p = stored[k];
+            if (p && typeof p === "object" && Array.isArray(p.steps)) {
+              if (!p.id) p.id = k;
+              add(p, "local");
+            }
+          });
+      } catch (_) {}
 
-        if (!pipelines.length) {
-           libList.innerHTML = `<div style="color: var(--dim); font-size: 11px; padding: 4px;">Library empty.</div>`;
-           return;
+      // 2) GitHub personal library (per-file + legacy). Best-effort.
+      let githubError = false;
+      try {
+        const dirRes = await fetch(`https://api.github.com/repos/${repoPath}/contents/pipelines`, { headers, cache: "no-store" });
+        if (dirRes.ok) {
+          const items = await dirRes.json();
+          for (const it of (Array.isArray(items) ? items : [])) {
+            if (it.type !== "file" || !it.name.toLowerCase().endsWith(".json") || it.name.toLowerCase() === "registry.json") continue;
+            try {
+              const fr = await fetch(it.url, { headers, cache: "no-store" });
+              if (!fr.ok) continue;
+              add(decode((await fr.json()).content), "github");
+            } catch (_) {}
+          }
         }
+        const legRes = await fetch(`https://api.github.com/repos/${repoPath}/contents/registry.json`, { headers, cache: "no-store" });
+        if (legRes.ok) {
+          const arr = decode((await legRes.json()).content);
+          (Array.isArray(arr) ? arr : []).forEach((p) => add(p, "github"));
+        }
+      } catch (_) {
+        githubError = true;
+      }
 
-        libList.innerHTML = '';
-        pipelines.forEach(p => {
-           const btn = document.createElement("button");
-           btn.className = "btn";
-           btn.style.justifyContent = "flex-start";
-           btn.style.width = "100%";
-           btn.textContent = p.name || p.id;
-           btn.title = p.description || "";
-           btn.onclick = () => {
-              _pipeline = p;
-              renderCanvas();
-              chrome.storage.local.set({ [SK.PIPELINE]: _pipeline });
-              libDropdown.classList.add("hidden");
-           };
-           libList.appendChild(btn);
+      // 3) Render.
+      if (!pipelines.length) {
+        libList.innerHTML = githubError
+          ? `<div style="color: var(--red); font-size: 11px; padding: 8px;">Couldn't reach GitHub, and no local pipelines found.</div>`
+          : `<div style="color: var(--dim); font-size: 11px; padding: 8px;">No pipelines yet. Build one on the canvas, or push from the Marketplace.</div>`;
+        return;
+      }
+
+      libList.innerHTML = '';
+      pipelines.forEach((p) => {
+        const stepCount = Array.isArray(p.steps) ? p.steps.length : 0;
+        const name = p.name || p.id || "Untitled Pipeline";
+        const srcLabel = p.__source === "github" ? "GITHUB" : "LOCAL";
+
+        const item = document.createElement("button");
+        item.type = "button";
+        item.title = p.description || p.desc || "";
+        item.style.cssText =
+          "display:flex;flex-direction:column;align-items:flex-start;gap:2px;" +
+          "width:100%;padding:8px 10px;background:transparent;border:1px solid transparent;" +
+          "border-radius:var(--radius);cursor:pointer;text-align:left;color:var(--ink);";
+        item.addEventListener("mouseenter", () => {
+          item.style.background = "var(--void)";
+          item.style.borderColor = "var(--line)";
         });
-      } catch (e) {
-        libList.innerHTML = `<div style="color: var(--red); font-size: 11px; padding: 4px;">Failed to fetch from GitHub.</div>`;
+        item.addEventListener("mouseleave", () => {
+          item.style.background = "transparent";
+          item.style.borderColor = "transparent";
+        });
+
+        const nameEl = document.createElement("div");
+        nameEl.textContent = name;
+        nameEl.style.cssText = "font-size:12px;font-weight:600;line-height:1.3;word-break:break-word;";
+
+        const metaEl = document.createElement("div");
+        metaEl.textContent = `${srcLabel} · ${stepCount} step${stepCount === 1 ? "" : "s"}` + (p.author ? ` · @${p.author}` : "");
+        metaEl.style.cssText = "font-family:var(--mono);font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--dim);";
+
+        item.appendChild(nameEl);
+        item.appendChild(metaEl);
+        item.onclick = async () => {
+          try { _pipeline = _normalizeImportedPipeline(p); }
+          catch (_) { _pipeline = p; }
+          _expandedNodeIds.clear();
+          await saveState();
+          renderPipeline();
+          libDropdown.classList.add("hidden");
+          logToMonitor("info-log", `Loaded "${name}" from library (${(_pipeline.steps || []).length} top-level steps).`);
+        };
+        libList.appendChild(item);
+      });
+
+      if (githubError) {
+        const note = document.createElement("div");
+        note.textContent = "GitHub unreachable — showing local only.";
+        note.style.cssText = "color: var(--red); font-size: 10px; padding: 6px 8px;";
+        libList.appendChild(note);
       }
     });
 

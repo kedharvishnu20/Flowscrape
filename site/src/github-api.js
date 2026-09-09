@@ -1,4 +1,18 @@
 ﻿// github-api.js
+//
+// Storage layout in the Verquill_Market_place repo:
+//   pipelines/<slug>.json      — one file per personal ("My GitHub") pipeline
+//   global/<slug>.json         — one file per published (community) pipeline
+//   registry.json              — LEGACY personal array (still read, migrated away on save)
+//   global/registry.json       — LEGACY global array (still read, migrated away on publish)
+//
+// Each per-pipeline file contains a single pipeline object, named after the
+// pipeline so the repo is browsable by name instead of one opaque registry.json.
+
+const PERSONAL_DIR = "pipelines";
+const GLOBAL_DIR = "global";
+const LEGACY_PERSONAL = "registry.json";
+const LEGACY_GLOBAL = "global/registry.json";
 
 function getRepoInfo(repoUrl) {
   const match = repoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
@@ -6,90 +20,199 @@ function getRepoInfo(repoUrl) {
   return { owner: match[1], repo: match[2] };
 }
 
+function slugify(name, fallback = "pipeline") {
+  const clean = (v) =>
+    String(v || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const s = clean(name).slice(0, 60);
+  if (s) return s;
+  const f = clean(fallback).slice(0, 60);
+  return f || "pipeline";
+}
+
+function ghHeaders(pat, extra = {}) {
+  const h = { "Accept": "application/vnd.github.v3+json", ...extra };
+  if (pat) h["Authorization"] = `token ${pat}`;
+  return h;
+}
+
+function decodeContent(b64) {
+  return JSON.parse(decodeURIComponent(escape(atob(String(b64).replace(/\s/g, "")))));
+}
+
+function encodeContent(obj) {
+  return btoa(unescape(encodeURIComponent(JSON.stringify(obj, null, 2))));
+}
+
+const api = (owner, repo, path) =>
+  `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+
+// Returns { sha, json } or null on 404.
+async function getFile(owner, repo, path, pat) {
+  const res = await fetch(api(owner, repo, path), { headers: ghHeaders(pat), cache: "no-store" });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  const d = await res.json();
+  return { sha: d.sha, json: decodeContent(d.content) };
+}
+
+// Lists *.json files in a directory (excluding the legacy registry.json). [] on 404.
+async function listJsonFiles(owner, repo, dir, pat) {
+  const res = await fetch(api(owner, repo, dir), { headers: ghHeaders(pat), cache: "no-store" });
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  const items = await res.json();
+  if (!Array.isArray(items)) return [];
+  return items.filter(
+    (i) => i.type === "file" && i.name.toLowerCase().endsWith(".json") && i.name.toLowerCase() !== "registry.json"
+  );
+}
+
+async function deleteFile(owner, repo, path, sha, pat, message) {
+  const res = await fetch(api(owner, repo, path), {
+    method: "DELETE",
+    headers: ghHeaders(pat, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ message, sha }),
+  });
+  if (!res.ok && res.status !== 404) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(e.message || "Delete failed");
+  }
+}
+
+// Drop a pipeline id from the legacy array file so it does not show twice.
+// Deletes the legacy file entirely once it is empty.
+async function removeFromLegacy(owner, repo, legacyPath, pat, id) {
+  const got = await getFile(owner, repo, legacyPath, pat).catch(() => null);
+  if (!got || !Array.isArray(got.json)) return;
+  const next = got.json.filter((p) => p && p.id !== id);
+  if (next.length === got.json.length) return;
+  if (next.length === 0) {
+    await deleteFile(owner, repo, legacyPath, got.sha, pat, "Remove empty legacy registry.json").catch(() => {});
+    return;
+  }
+  await fetch(api(owner, repo, legacyPath), {
+    method: "PUT",
+    headers: ghHeaders(pat, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ message: `Migrate ${id} out of legacy registry`, content: encodeContent(next), sha: got.sha }),
+  });
+}
+
+// Read every pipeline from a per-file directory plus its legacy array file.
+async function readDir(owner, repo, dir, legacyPath, pat) {
+  const out = [];
+  const seen = new Set();
+  const push = (p) => { if (p && p.id && !seen.has(p.id)) { seen.add(p.id); out.push(p); } };
+
+  const files = await listJsonFiles(owner, repo, dir, pat).catch(() => []);
+  for (const f of files) {
+    const got = await getFile(owner, repo, `${dir}/${f.name}`, pat).catch(() => null);
+    if (got && got.json && !Array.isArray(got.json)) push(got.json);
+  }
+  const legacy = await getFile(owner, repo, legacyPath, pat).catch(() => null);
+  if (legacy && Array.isArray(legacy.json)) legacy.json.forEach(push);
+  return out;
+}
+
+// Write one pipeline as <dir>/<slug>.json. The new file is written FIRST; only
+// after that succeeds do we clean up (delete an older file that held the same id
+// under a different name, and drop the id from the legacy array). Doing the
+// destructive work first would lose data whenever the write failed.
+async function upsertPipelineFile(owner, repo, dir, legacyPath, pat, pipeline, message) {
+  let slug = slugify(pipeline.name, pipeline.id);
+  let targetPath = `${dir}/${slug}.json`;
+
+  // Snapshot the directory up front (read-only) for post-write cleanup.
+  const existing = await listJsonFiles(owner, repo, dir, pat).catch(() => []);
+
+  // Avoid overwriting a different pipeline that already owns this filename.
+  if (existing.some((f) => `${dir}/${f.name}` === targetPath)) {
+    const got = await getFile(owner, repo, targetPath, pat).catch(() => null);
+    if (got && got.json && got.json.id && got.json.id !== pipeline.id) {
+      const suffix = String(pipeline.id || Date.now()).replace(/[^a-z0-9]+/gi, "").slice(-6).toLowerCase() || "1";
+      slug = `${slug}-${suffix}`;
+      targetPath = `${dir}/${slug}.json`;
+    }
+  }
+
+  // 1) Write the new named file.
+  let sha;
+  const cur = await getFile(owner, repo, targetPath, pat).catch(() => null);
+  if (cur) sha = cur.sha;
+  const body = { message, content: encodeContent(pipeline) };
+  if (sha) body.sha = sha;
+  const res = await fetch(api(owner, repo, targetPath), {
+    method: "PUT",
+    headers: ghHeaders(pat, { "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(e.message || "Write failed");
+  }
+  const result = await res.json();
+
+  // 2) Cleanup only after the write succeeded (non-fatal on error).
+  for (const f of existing) {
+    if (`${dir}/${f.name}` === targetPath) continue;
+    const got = await getFile(owner, repo, `${dir}/${f.name}`, pat).catch(() => null);
+    if (got && got.json && got.json.id === pipeline.id) {
+      await deleteFile(owner, repo, `${dir}/${f.name}`, f.sha, pat, `Rename pipeline file for ${pipeline.name}`).catch(() => {});
+    }
+  }
+  await removeFromLegacy(owner, repo, legacyPath, pat, pipeline.id).catch(() => {});
+
+  return { path: targetPath, result };
+}
+
+// ---- Personal ("My GitHub") library -----------------------------------------
+
 export async function fetchPipelines(repoUrl, pat) {
   if (!repoUrl) return [];
   const { owner, repo } = getRepoInfo(repoUrl);
-  const headers = { "Accept": "application/vnd.github.v3+json" };
-  if (pat) headers["Authorization"] = `token ${pat}`;
-  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/registry.json`, { headers });
-  if (res.status === 404) return [];
-  if (!res.ok) throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
-  const data = await res.json();
-  return JSON.parse(atob(data.content.replace(/\s/g, "")));
+  return readDir(owner, repo, PERSONAL_DIR, LEGACY_PERSONAL, pat);
 }
 
-export async function pushPipelines(repoUrl, pat, pipelines) {
+export async function pushPipeline(repoUrl, pat, pipeline) {
   if (!repoUrl || !pat) throw new Error("Repo URL and PAT required to push");
   const { owner, repo } = getRepoInfo(repoUrl);
-  const headers = {
-    "Accept": "application/vnd.github.v3+json",
-    "Authorization": `token ${pat}`,
-    "Content-Type": "application/json"
-  };
-  let sha;
-  const getRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/registry.json`, { headers });
-  if (getRes.ok) sha = (await getRes.json()).sha;
-  const content = btoa(unescape(encodeURIComponent(JSON.stringify(pipelines, null, 2))));
-  const body = { message: "Update registry.json from Verquill extension", content };
-  if (sha) body.sha = sha;
-  const putRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/registry.json`, {
-    method: "PUT", headers, body: JSON.stringify(body)
-  });
-  if (!putRes.ok) {
-    const err = await putRes.json();
-    throw new Error(err.message || "Push failed");
+  return upsertPipelineFile(owner, repo, PERSONAL_DIR, LEGACY_PERSONAL, pat, pipeline, `Save pipeline: ${pipeline.name}`);
+}
+
+export async function removePipeline(repoUrl, pat, pipeline) {
+  if (!repoUrl || !pat) throw new Error("Repo URL and PAT required to remove");
+  const { owner, repo } = getRepoInfo(repoUrl);
+  const files = await listJsonFiles(owner, repo, PERSONAL_DIR, pat).catch(() => []);
+  for (const f of files) {
+    const got = await getFile(owner, repo, `${PERSONAL_DIR}/${f.name}`, pat).catch(() => null);
+    if (got && got.json && got.json.id === pipeline.id) {
+      await deleteFile(owner, repo, `${PERSONAL_DIR}/${f.name}`, f.sha, pat, `Remove pipeline: ${pipeline.name}`);
+    }
   }
-  return putRes.json();
+  await removeFromLegacy(owner, repo, LEGACY_PERSONAL, pat, pipeline.id).catch(() => {});
+}
+
+// ---- Global (community) registry --------------------------------------------
+
+export async function fetchGlobalPipelines(owner, repo, pat) {
+  return readDir(owner, repo, GLOBAL_DIR, LEGACY_GLOBAL, pat);
 }
 
 /**
- * Publish directly to global/registry.json in the same repo.
+ * Publish directly to global/<slug>.json in the same repo.
  * No fork needed — the user owns this repo.
  */
 export async function publishToGlobal(repoOwner, repoName, pat, pipeline) {
-  const headers = {
-    "Accept": "application/vnd.github.v3+json",
-    "Authorization": `token ${pat}`,
-    "Content-Type": "application/json"
-  };
-
-  // 1. Get caller identity
-  const userRes = await fetch("https://api.github.com/user", { headers });
+  const userRes = await fetch("https://api.github.com/user", { headers: ghHeaders(pat) });
   if (!userRes.ok) throw new Error("Could not verify GitHub identity. Check your PAT.");
   const user = await userRes.json();
   pipeline.author = user.login;
-
-  // 2. Fetch existing global/registry.json (404 is fine — first publish)
-  let sha;
-  let registry = [];
-  const getRes = await fetch(
-    `https://api.github.com/repos/${repoOwner}/${repoName}/contents/global/registry.json`,
-    { headers }
+  return upsertPipelineFile(
+    repoOwner,
+    repoName,
+    GLOBAL_DIR,
+    LEGACY_GLOBAL,
+    pat,
+    pipeline,
+    `Publish pipeline: ${pipeline.name} by @${user.login}`
   );
-  if (getRes.ok) {
-    const d = await getRes.json();
-    sha = d.sha;
-    registry = JSON.parse(atob(d.content.replace(/\s/g, "")));
-  } else if (getRes.status !== 404) {
-    throw new Error("Could not read global registry. Check repo permissions (Contents: Read & Write required).");
-  }
-
-  // 3. Upsert pipeline
-  const idx = registry.findIndex(p => p.id === pipeline.id);
-  if (idx >= 0) registry[idx] = pipeline; else registry.push(pipeline);
-
-  // 4. Commit
-  const content = btoa(unescape(encodeURIComponent(JSON.stringify(registry, null, 2))));
-  const body = { message: `Publish pipeline: ${pipeline.name} by @${user.login}`, content };
-  if (sha) body.sha = sha;
-
-  const putRes = await fetch(
-    `https://api.github.com/repos/${repoOwner}/${repoName}/contents/global/registry.json`,
-    { method: "PUT", headers, body: JSON.stringify(body) }
-  );
-  if (!putRes.ok) {
-    const err = await putRes.json();
-    throw new Error(err.message || "Failed to publish to global registry");
-  }
-  return putRes.json();
 }

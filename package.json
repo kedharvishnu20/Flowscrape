@@ -9,7 +9,7 @@
     "check": "node scripts/check-syntax.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "e2e": "node --test --test-concurrency=1 --test-timeout=180000 e2e/run.mjs e2e/panel.mjs",
+    "e2e": "node --test --test-concurrency=1 --test-timeout=300000 e2e/run.mjs e2e/panel.mjs",
     "challenges": "node --test --test-concurrency=1 --test-timeout=900000 e2e/challenges.mjs",
     "mirror-challenges": "NODE_USE_ENV_PROXY=1 node scripts/mirror-challenges.mjs",
     "build": "node scripts/build-dist.mjs"

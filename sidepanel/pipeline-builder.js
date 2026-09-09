@@ -1492,7 +1492,7 @@ function renderStepNode(step, index, total, parentId, branchKey) {
   html += `<div class="node-card ${isExpanded ? "expanded" : ""}" style="--step-color:var(--step-${step.type});" draggable="true" data-drag-id="${step.id}" data-step-type="${step.type}">`;
   html += `<div class="node-header" data-action="toggle-expand" data-id="${step.id}">
     <div class="node-title-group">
-      <div class="node-title">${step.type} <span class="node-status-icon running-spinner">⏳</span></div>
+      <div class="node-title">${stepCardTitle(step)}<span class="node-status-icon running-spinner">⏳</span></div>
       <div class="node-subtitle">${getStepSubtitle(step)}</div>
     </div>
     <div class="node-actions">
@@ -1540,6 +1540,39 @@ function renderStepNode(step, index, total, parentId, branchKey) {
   html += `<div class="insert-step" data-action="open-palette" data-index="${index + 1}" data-parent-id="${parentId}" data-branch="${branchKey}">+</div>`;
   html += `</div>`; // end .node-wrapper
   return html;
+}
+
+/**
+ * The card's human-facing name.
+ *
+ * The registry has carried an `icon` and a `desc` for every step type since it
+ * was written, and the card used neither: it rendered `step.type`, so the most
+ * visible text in the builder was AUTO_EXTRACT, UPLOAD_ACTIVITY and
+ * PAGINATE_PROBE. The friendly name already existed and was being thrown away.
+ *
+ * The enum is demoted rather than dropped. It is what the docs, the exported
+ * Playwright script and the run log all call the step, so someone reading any
+ * of those needs to be able to find it on the board.
+ */
+function stepCardTitle(step) {
+  const meta = STEP_TYPES[step.type] || {};
+  const glyph = meta.icon
+    ? `<span class="node-glyph" aria-hidden="true">${meta.icon}</span>`
+    : "";
+  // An unregistered type has no friendly name to fall back on, so it shows the
+  // raw one rather than the word "undefined".
+  const label = meta.desc || step.type;
+
+  // The chip is only worth its space when the name does not already contain
+  // the enum. "Smart Auto-Extract AUTO_EXTRACT" and "Loop / Repeat LOOP" say
+  // the same thing twice; "Read the page's structured data" genuinely does not
+  // tell you it is PAGE_DATA, which is what the exported script will call it.
+  const flatten = (s) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const chip = flatten(label).includes(flatten(step.type))
+    ? ""
+    : `<span class="node-type">${esc(step.type)}</span>`;
+
+  return `${glyph}<span class="node-label">${esc(label)}</span>${chip}`;
 }
 
 function getStepSubtitle(step) {

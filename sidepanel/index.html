@@ -918,6 +918,38 @@
         display: flex;
         align-items: center;
         gap: 6px;
+        /* So the name below can truncate instead of pushing the type chip and
+           the status glyph out of a 400px strip. */
+        min-width: 0;
+      }
+
+      /* The registry's own glyph for the step. Carries the category before the
+         name is read, the same job the colour bar does down the left edge. */
+      .node-glyph {
+        font-size: 12px;
+        line-height: 1;
+        flex: none;
+      }
+
+      .node-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /*
+       * The raw step type, demoted to a chip. The card leads with the human
+       * name now, but the docs, the exported script and the run log all call
+       * the step by this, so it stays findable.
+       */
+      .node-type {
+        flex: none;
+        font-size: 8.5px;
+        letter-spacing: 0.06em;
+        color: var(--text-dim);
+        border: 1px solid var(--bg-border);
+        padding: 1px 4px;
       }
 
       /*

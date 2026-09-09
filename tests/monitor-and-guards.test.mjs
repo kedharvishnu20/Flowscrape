@@ -38,10 +38,24 @@ const swSrc = await readFile(
   "utf8",
 );
 
+/**
+ * Strip module syntax from an extracted span.
+ *
+ * These tests pull real function bodies out of the panel source and evaluate
+ * them with `new Function`, which is what makes them tests of the code rather
+ * than of a copy of it. `export` is a syntax error inside that body, so a
+ * helper becoming shared — as `notify` did when the overlay panel started using
+ * it — would break the extraction rather than the behaviour. The keyword is
+ * irrelevant to everything asserted below, so it is removed rather than
+ * matched around.
+ */
+const stripExports = (s) =>
+  s.replace(/\bexport (?=(async )?function |const |let )/g, "");
+
 function extract(pattern) {
   const m = src.match(pattern);
   assert.ok(m, `could not find ${pattern}`);
-  return m[0];
+  return stripExports(m[0]);
 }
 
 // ── E-04: the row count ──────────────────────────────────────────────────────
@@ -100,9 +114,11 @@ test("notify writes to the log pane and shows a banner", () => {
   );
   const { document } = dom.window;
 
-  const notifySrc = src.match(
-    /const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/,
-  )[0];
+  const notifySrc = stripExports(
+    src.match(
+      /const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/,
+    )[0],
+  );
   const notify = new Function(
     "document",
     "setTimeout",
@@ -126,9 +142,11 @@ test("a toast carries page text as text, never as markup", () => {
   const dom = new JSDOM(
     `<!doctype html><body><div id="mon-logs"></div></body>`,
   );
-  const notifySrc = src.match(
-    /const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/,
-  )[0];
+  const notifySrc = stripExports(
+    src.match(
+      /const MAX_LOG_ENTRIES[\s\S]*?\nfunction logToMonitor[\s\S]*?\n\}/,
+    )[0],
+  );
   const notify = new Function(
     "document",
     "setTimeout",

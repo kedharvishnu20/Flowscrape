@@ -4571,7 +4571,7 @@ function _confirmEthicsWarnings(warnings) {
  * @param {number} tabId
  * @returns {Promise<boolean>} false when the page refuses injection
  */
-async function _ensureContentReady(tabId) {
+export async function _ensureContentReady(tabId) {
   const res = await chrome.runtime
     .sendMessage({ type: "content:ensure", payload: { tabId } })
     .catch(() => null);
@@ -5512,7 +5512,7 @@ const MAX_LOG_ENTRIES = 500;
  * @param {'info-log'|'warn-log'|'error-log'} levelClass
  * @param {string} message
  */
-function notify(levelClass, message) {
+export function notify(levelClass, message) {
   logToMonitor(levelClass, message);
 
   let host = document.getElementById("fs-toasts");

@@ -605,3 +605,60 @@ test("adding a step does not send a scrolled board back to the top", async () =>
     vp.style.minHeight = "";
   });
 });
+
+// ── settings sections must not be squashed ───────────────────────────────────
+//
+// The Settings view is a flex column, so each accordion section inherited
+// flex-shrink: 1 and gave up height rather than overflowing. Open two of them
+// and every section was squeezed slightly, while `overflow: hidden` on the
+// section sliced the bottom off whichever ran past its shrunk height — the AI
+// Gateway's Save and Test Connection buttons were cut in half.
+//
+// The part that made it a bug rather than a blemish: because nothing
+// overflowed, the view's own `overflow-y: auto` had nothing to scroll and no
+// scrollbar appeared, so those buttons could not be reached at all.
+test("two open settings sections overflow into a scroll, not into each other", async () => {
+  await env.panel.setViewportSize({ width: 400, height: 700 });
+  await env.panel.locator('.nav-pill[data-tab="config"]').click();
+
+  for (const name of ["CAPTCHA SOLVER", "AI GATEWAY"]) {
+    const header = env.panel
+      .locator("#view-config .accordion-header", { hasText: name })
+      .first();
+    if (
+      !(await header.locator("xpath=..").getAttribute("class"))?.includes(
+        "open",
+      )
+    ) {
+      await header.click();
+    }
+  }
+  await env.panel.waitForTimeout(200);
+
+  // No section may clip its own content. This is the squash, measured.
+  const clipped = await env.panel.evaluate(() =>
+    [...document.querySelectorAll("#view-config .accordion-section")]
+      .filter((el) => el.scrollHeight > el.clientHeight + 1)
+      .map((el) => el.querySelector(".accordion-header")?.textContent?.trim()),
+  );
+  assert.deepEqual(
+    clipped,
+    [],
+    "a settings section is cutting off its content",
+  );
+
+  // And the content that no longer fits has to be reachable.
+  const view = await env.panel.evaluate(() => {
+    const v = document.getElementById("view-config");
+    return { scrollH: v.scrollHeight, clientH: v.clientHeight };
+  });
+  assert.ok(
+    view.scrollH > view.clientH,
+    "the settings view did not become scrollable, so the overflow is unreachable",
+  );
+
+  // The button the report was actually about.
+  const btn = env.panel.locator("#btn-gateway-test");
+  await btn.scrollIntoViewIfNeeded();
+  await btn.click({ trial: true });
+});

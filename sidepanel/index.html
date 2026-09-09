@@ -1566,6 +1566,21 @@
         margin-bottom: 6px;
         background: var(--bg-raised);
         overflow: hidden;
+        /*
+         * The view these sit in is a flex column, so a section inherits
+         * flex-shrink: 1 and gives up height rather than overflowing. With two
+         * accordions open the stack no longer fit, every section was squeezed
+         * a little, and `overflow: hidden` above quietly sliced the bottom off
+         * whichever one ran past its shrunk height — the AI Gateway's Save and
+         * Test Connection buttons were cut in half. Worse, because nothing
+         * overflowed, the view's own `overflow-y: auto` saw nothing to scroll
+         * and no scrollbar ever appeared, so the buttons were unreachable
+         * rather than merely ugly.
+         *
+         * Refusing to shrink is what lets the content overflow, which is what
+         * gives the view something to scroll.
+         */
+        flex-shrink: 0;
       }
 
       .accordion-header {

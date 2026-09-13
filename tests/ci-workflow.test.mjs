@@ -132,3 +132,64 @@ test("the package declares the licence it ships", () => {
   // reads was not.
   assert.equal(pkg.license, "MIT");
 });
+
+// ── Release ─────────────────────────────────────────────────────────────────
+
+test("a release cannot ship a package whose version disagrees with its tag", () => {
+  // Chrome only accepts an update whose version is higher than the installed
+  // one. A release tagged v3.1.0 carrying a manifest that still says 3.0.0
+  // uploads cleanly, reviews cleanly, and reaches nobody — and nothing in the
+  // process says so until someone notices the install count did not move.
+  const release = read("../.github/workflows/release.yml");
+  assert.match(release, /manifest\.json'\)\.version/);
+  assert.match(release, /package\.json'\)\.version/);
+  assert.match(release, /github\.ref_name/);
+});
+
+test("manifest.json and package.json already agree", () => {
+  // The workflow checks this at release time. This checks it now, because
+  // discovering a mismatch while cutting a release is the expensive moment.
+  const manifest = JSON.parse(read("../manifest.json"));
+  assert.equal(
+    manifest.version,
+    pkg.version,
+    "manifest.json and package.json state different versions",
+  );
+});
+
+test("the release runs the same gates as CI", () => {
+  // A tag is the worst moment to find out the tree was red.
+  const release = read("../.github/workflows/release.yml");
+  for (const script of ["check", "lint", "format:check", "build"]) {
+    assert.ok(
+      release.includes(`npm run ${script}`),
+      `the release workflow does not run ${script}`,
+    );
+  }
+  assert.match(release, /npm test/);
+});
+
+test("the release drafts rather than publishes", () => {
+  // CHANGELOG.md is prose explaining why each change exists. A generated commit
+  // list is not a substitute, so a person writes the notes.
+  const release = read("../.github/workflows/release.yml");
+  assert.match(release, /--draft/);
+});
+
+test("dependabot watches the tooling, the site and the actions", () => {
+  // The extension ships no dependencies. Everything watched here is tooling or
+  // the separate website — which is where a supply-chain problem actually
+  // reaches this project.
+  const dep = read("../.github/dependabot.yml");
+  for (const dir of ["/", "/site"]) {
+    assert.ok(
+      new RegExp(`directory: ${dir === "/" ? "/\\s" : dir}`).test(dep),
+      `dependabot does not watch ${dir}`,
+    );
+  }
+  assert.match(dep, /github-actions/);
+  // Monthly and grouped, on purpose: a pull request nobody reads is not a
+  // security control, and that is what weekly ungrouped updates become.
+  assert.match(dep, /interval: monthly/);
+  assert.match(dep, /groups:/);
+});

@@ -179,7 +179,8 @@ e2e/                           85 checks against a real Chromium, plus 8 on
                                mirrored real pages
 scripts/check-syntax.mjs       Parses every source file
 scripts/build-dist.mjs         Packages the extension zip
-docs/                          Audit, architecture, manual, template guide
+docs/                          Audit, architecture, manual, and the guide
+                               to how all of them are written
 examples/                      Pipeline JSON you can import
 ```
 
@@ -446,13 +447,22 @@ See [`mcp/README.md`](mcp/README.md).
 
 ## Docs
 
-| File                                                               | What it is                            |
-| ------------------------------------------------------------------ | ------------------------------------- |
-| [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md)                       | Full issue inventory, with fix status |
-| [`docs/verquill-master-manual.md`](docs/verquill-master-manual.md) | Per-function reference (partly stale) |
-| [`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md)         | Template syntax                       |
-| [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)           | Platform constraints                  |
-| [`docs/TEST_CHECKLIST.md`](docs/TEST_CHECKLIST.md)                 | Manual browser checks                 |
+| File                                                               | What it is                                               |
+| ------------------------------------------------------------------ | -------------------------------------------------------- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                     | Why the parts are shaped the way they are                |
+| [`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md)                       | Full issue inventory, all 192 with fix status            |
+| [`docs/CAPABILITY_REVIEW.md`](docs/CAPABILITY_REVIEW.md)           | Gaps — things not broken because never built             |
+| [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)           | What it does not do, and why not                         |
+| [`docs/verquill-master-manual.md`](docs/verquill-master-manual.md) | Per-module reference; links and exports checked by test  |
+| [`docs/SESSIONS_AND_HEADERS.md`](docs/SESSIONS_AND_HEADERS.md)     | What SESSION and SET_HEADERS buy, and what they cost     |
+| [`docs/JinjaTemplateGuide.md`](docs/JinjaTemplateGuide.md)         | Template syntax                                          |
+| [`docs/TEST_CHECKLIST.md`](docs/TEST_CHECKLIST.md)                 | The manual checks automation cannot reach                |
+| [`docs/DOCUMENTATION_GUIDE.md`](docs/DOCUMENTATION_GUIDE.md)       | The format every file here follows, and why              |
+| [`docs/STORE_LISTING.md`](docs/STORE_LISTING.md)                   | Store copy and a justification per permission            |
+| [`docs/YOUR_BUCKET.md`](docs/YOUR_BUCKET.md)                       | What is left, and why it needs a person                  |
+| [`SECURITY.md`](SECURITY.md)                                       | What counts as a vulnerability, and the trust boundaries |
+| [`PRIVACY.md`](PRIVACY.md)                                         | Where data lives and what leaves the machine             |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)                         | Argue with the code, not the person                      |
 
 ---
 

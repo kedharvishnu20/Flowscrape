@@ -1602,7 +1602,29 @@ function _normalizeImportedStep(step, where, seenIds) {
     );
   }
 
-  let id = typeof step.id === "string" && step.id.trim() ? step.id.trim() : "";
+  // The id is the one imported value that reaches the DOM unescaped. It is
+  // interpolated into `data-id="…"` and `id="cfg-…"` attributes in more than
+  // sixty places across renderStepNode and generateConfigHtml, and unlike every
+  // other untrusted value in this file it never passes through esc(). An id of
+  //
+  //   x" onmouseenter="…
+  //
+  // therefore closes the attribute and adds one of its own. The extension's CSP
+  // (`script-src 'self'`, no unsafe-inline) stops that handler from running, so
+  // this is attribute injection rather than script execution — but `data-id` is
+  // the lookup key every step action uses (`target.dataset.id` → _findStepDeep),
+  // so a crafted id lets one element carry another's identity, and the CSP is
+  // the only thing standing between that and the rest.
+  //
+  // Escaping sixty-one call sites would leave the sixty-second to whoever adds
+  // it next. Constraining the value where it enters means there is nothing to
+  // escape: ids are ours to choose, an imported one is only a hint, and a
+  // pipeline whose ids are rewritten still works because _normalizeImportedStep
+  // already rewrites duplicates and remaps children to match.
+  const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+  const offered =
+    typeof step.id === "string" && step.id.trim() ? step.id.trim() : "";
+  let id = SAFE_ID.test(offered) ? offered : "";
   if (!id || seenIds.has(id)) {
     id = _nextStepId();
   }

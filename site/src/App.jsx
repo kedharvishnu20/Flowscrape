@@ -82,11 +82,28 @@ export default function App() {
 
   useEffect(() => {
     if (typeof chrome !== "undefined" && chrome.storage?.local) {
-      chrome.storage.local.get(["fs_github_pat", "fs_github_repo"], (res) => {
-        if (res.fs_github_pat) setPat(res.fs_github_pat);
+      // The repository URL is a preference and persists. The token does not:
+      // it lives in session storage, which Chrome clears when the browser
+      // closes. The extension already holds every other API key that way, on
+      // the stated view that a scraping tool keeping a credential on disk
+      // forever is a worse trade than retyping it — and a token with
+      // Contents: Read & Write on your repositories is the last one that
+      // should have been the exception.
+      chrome.storage.local.get(["fs_github_repo"], (res) => {
         if (res.fs_github_repo) setRepoUrl(res.fs_github_repo);
-        setSettingsLoaded(true);
+        if (chrome.storage.session) {
+          chrome.storage.session.get(["fs_github_pat"], (s) => {
+            if (s?.fs_github_pat) setPat(s.fs_github_pat);
+            setSettingsLoaded(true);
+          });
+        } else {
+          setSettingsLoaded(true);
+        }
       });
+      // Anything left in local by a previous version is swept rather than
+      // read. Moving where new tokens go would otherwise leave the old one on
+      // disk indefinitely, which is most of the exposure this fix is about.
+      chrome.storage.local.remove("fs_github_pat");
     } else {
       setSettingsLoaded(true);
     }
@@ -170,10 +187,18 @@ export default function App() {
       loadData(pat, repoUrl);
     };
     if (typeof chrome !== "undefined" && chrome.storage?.local) {
-      chrome.storage.local.set(
-        { fs_github_pat: pat, fs_github_repo: repoUrl },
-        done,
-      );
+      chrome.storage.local.set({ fs_github_repo: repoUrl }, () => {
+        if (chrome.storage.session) {
+          chrome.storage.session.set({ fs_github_pat: pat }, done);
+        } else {
+          // No session storage means no safe place to keep it. It stays in
+          // this page's memory for as long as the tab is open and is not
+          // written anywhere — quietly falling back to local would put the
+          // token back on disk while the interface said it had been saved
+          // securely.
+          done();
+        }
+      });
     } else {
       setTimeout(done, 400);
     }

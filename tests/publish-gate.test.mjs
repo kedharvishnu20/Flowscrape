@@ -208,3 +208,46 @@ test("the interface no longer claims a pull request it did not open", () => {
     "the publish toast still claims a PR was created",
   );
 });
+
+// ── Where the token lives ────────────────────────────────────────────────────
+//
+// The registry token was written to chrome.storage.local, which persists
+// across browser restarts. Every other API key in this extension is held in
+// chrome.storage.session, encrypted, on the stated view that a scraping tool
+// keeping a credential on disk forever is a worse trade than retyping it — and
+// a token carrying Contents: Read & Write on the user's repositories is the
+// last one that should have been the exception.
+
+test("the token is written to session storage, never local", () => {
+  const save = app.match(/const saveSettings = \(\) => \{[\s\S]*?\n  \};/)?.[0];
+  assert.ok(save, "saveSettings should still exist");
+  assert.match(save, /chrome\.storage\.session\.set\(\{ fs_github_pat/);
+  assert.ok(
+    !/local\.set\([\s\S]{0,80}fs_github_pat/.test(save),
+    "the token is still being written to local storage",
+  );
+});
+
+test("the repository URL still persists, because it is not a secret", () => {
+  // Moving everything to session would log the user out of their own settings
+  // on every restart for no gain.
+  const save = app.match(/const saveSettings = \(\) => \{[\s\S]*?\n  \};/)?.[0];
+  assert.match(save, /local\.set\(\{ fs_github_repo/);
+});
+
+test("a token left in local by an older version is swept, not read", () => {
+  // Changing where new tokens go would otherwise leave the old one on disk
+  // indefinitely — which is most of the exposure this was about.
+  assert.match(app, /local\.remove\("fs_github_pat"\)/);
+});
+
+test("no session storage means no storage, not a quiet fallback", () => {
+  // Falling back to local would put the token back on disk while the interface
+  // reported it saved safely.
+  const save = app.match(/const saveSettings = \(\) => \{[\s\S]*?\n  \};/)?.[0];
+  const elseArm = save.slice(save.indexOf("chrome.storage.session"));
+  assert.ok(
+    !/local\.set[\s\S]{0,60}fs_github_pat/.test(elseArm),
+    "it falls back to writing the token to disk",
+  );
+});

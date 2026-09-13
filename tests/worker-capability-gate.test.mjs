@@ -99,3 +99,39 @@ test("an ordinary pipeline still runs without ceremony", () => {
   };
   assert.notEqual(analyzePipeline(pipeline).verdict, VERDICT.BLOCKED);
 });
+
+test("a scheduled run goes through the gated handler, not around it", () => {
+  // This is the property that makes the worker gate worth having. A schedule
+  // fires hours after the panel was closed, from an alarm, with a pipeline read
+  // straight out of chrome.storage — no import dialog, no publish check, and
+  // nobody watching. If _runSchedule called the executor directly it would be
+  // the one run path with no capability check at all, which is precisely the
+  // run a malicious pipeline would want to be.
+  //
+  // So it must call the PIPELINE_START handler, where the gate lives.
+  const fn = worker.match(
+    /async function _runSchedule\(id\) \{[\s\S]*?\n\}/,
+  )?.[0];
+  assert.ok(fn, "_runSchedule should still exist");
+  assert.match(
+    fn,
+    /_handlers\.get\(MSG\.PIPELINE_START\)/,
+    "the scheduler no longer starts runs through the gated handler",
+  );
+  assert.ok(
+    !/_executePipeline\(/.test(fn),
+    "the scheduler calls the executor directly, skipping every gate",
+  );
+});
+
+test("a blocked scheduled run is reported rather than swallowed", () => {
+  // The gate throwing is only half of it. An alarm has no caller to return an
+  // error to, so a refusal that is not logged is a schedule that quietly stops
+  // producing data — which looks exactly like a site that stopped having any.
+  const fn = worker.match(
+    /async function _runSchedule\(id\) \{[\s\S]*?\n\}/,
+  )?.[0];
+  const cat = fn.slice(fn.indexOf("} catch"));
+  assert.match(cat, /markRun\(id, `failed/);
+  assert.match(cat, /_broadcastLog\(\s*"error-log"/);
+});

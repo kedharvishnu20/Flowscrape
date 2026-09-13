@@ -29,7 +29,7 @@ test("there is a CI workflow at all", () => {
 test("every gate a contributor is told to run is also run by CI", () => {
   // If a script is worth telling people to run, it is worth blocking a merge
   // on. A gate that exists only locally is a gate only the careful use.
-  for (const script of ["check", "format:check", "test", "build"]) {
+  for (const script of ["check", "lint", "format:check", "test", "build"]) {
     assert.ok(pkg.scripts[script], `package.json lost the ${script} script`);
     assert.ok(
       ci.includes(`npm run ${script}`) || ci.includes("npm test"),
@@ -96,6 +96,35 @@ test("the test script does not depend on the shell expanding a glob", () => {
   // at all by cmd.exe, so on Windows node received the literal pattern and ran
   // nothing. Quoted, node expands it itself and both platforms agree.
   assert.match(pkg.scripts.test, /"tests\/\*\.test\.mjs"/);
+});
+
+test("linting is a gate, not an ad-hoc npx invocation", () => {
+  // `npm run check` parses; it cannot see a reference to a name that is not in
+  // scope. A mechanical dead-code removal in this repository left orphaned
+  // statements behind that were syntactically valid and referenced variables
+  // that no longer existed. All 1420 unit tests passed. Only the browser suite
+  // caught it, four minutes later and on a nightly schedule.
+  //
+  // The linter is pinned as a devDependency rather than run through npx so CI
+  // and a contributor's machine run the same version, and so a network blip
+  // cannot silently skip the gate.
+  assert.equal(typeof pkg.devDependencies?.oxlint, "string");
+  assert.match(
+    pkg.devDependencies.oxlint,
+    /^\d+\.\d+\.\d+$/,
+    "the linter is on a floating range; two machines can disagree about a gate",
+  );
+  assert.ok(
+    existsSync(new URL("../.oxlintrc.json", import.meta.url)),
+    "the lint config is gone, so the rules are whatever the default is",
+  );
+});
+
+test("the lint config keeps the rule that catches an undefined reference", () => {
+  // no-undef is the whole reason this gate was added. Turned off, the gate
+  // still passes and still catches nothing.
+  const rc = JSON.parse(read("../.oxlintrc.json"));
+  assert.equal(rc.rules["no-undef"], "error");
 });
 
 test("the package declares the licence it ships", () => {

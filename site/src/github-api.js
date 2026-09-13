@@ -56,7 +56,6 @@ const api = (owner, repo, path) =>
 async function getFile(owner, repo, path, pat) {
   const res = await fetch(api(owner, repo, path), {
     headers: ghHeaders(pat),
-    cache: "no-store",
   });
   if (res.status === 404) return null;
   if (!res.ok)
@@ -69,13 +68,25 @@ async function getFile(owner, repo, path, pat) {
 async function listJsonFiles(owner, repo, dir, pat) {
   const res = await fetch(api(owner, repo, dir), {
     headers: ghHeaders(pat),
-    cache: "no-store",
   });
   if (res.status === 404) return [];
   if (!res.ok)
     throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
   const items = await res.json();
   if (!Array.isArray(items)) return [];
+
+  // The contents API returns at most 1000 entries for a directory and gives no
+  // indication that it stopped. A registry that quietly lost everything past
+  // the thousandth pipeline would look like it was working. Reaching the cap is
+  // reported rather than truncated silently; moving to the Git Trees API is the
+  // real fix and belongs with the prebuilt index.
+  if (items.length >= 1000) {
+    throw new Error(
+      `${dir} has reached the 1000-entry limit of the GitHub contents API. ` +
+        `Some pipelines are not being listed.`,
+    );
+  }
+
   return items.filter(
     (i) =>
       i.type === "file" &&
@@ -137,11 +148,24 @@ async function readDir(owner, repo, dir, legacyPath, pat) {
   };
 
   const files = await listJsonFiles(owner, repo, dir, pat).catch(() => []);
-  for (const f of files) {
-    const got = await getFile(owner, repo, `${dir}/${f.name}`, pat).catch(
-      () => null,
+
+  // One request per pipeline, previously awaited one at a time: a hundred
+  // pipelines meant a hundred and one serial round trips before the page could
+  // show anything. Batched instead — in order, so the listing stays stable, and
+  // bounded, because firing several hundred at once is how an unauthenticated
+  // visitor burns the whole rate limit in a single page load.
+  const BATCH = 8;
+  for (let i = 0; i < files.length; i += BATCH) {
+    const batch = await Promise.all(
+      files
+        .slice(i, i + BATCH)
+        .map((f) =>
+          getFile(owner, repo, `${dir}/${f.name}`, pat).catch(() => null),
+        ),
     );
-    if (got && got.json && !Array.isArray(got.json)) push(got.json);
+    batch.forEach((got) => {
+      if (got && got.json && !Array.isArray(got.json)) push(got.json);
+    });
   }
   const legacy = await getFile(owner, repo, legacyPath, pat).catch(() => null);
   if (legacy && Array.isArray(legacy.json)) legacy.json.forEach(push);

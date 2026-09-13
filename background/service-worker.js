@@ -115,6 +115,10 @@ import {
   EthicsBlock,
   collectDeclaredOrigins,
 } from "./ethics-engine.js";
+// The same analyser the panel's import gate and the registry's publish gate
+// use. Enforced here as well because this is the only place every pipeline
+// passes through — see the check beside the ethics gates below.
+import { analyzePipeline, VERDICT } from "../utils/pipeline-capabilities.js";
 import {
   initBuffer,
   pushRow,
@@ -1250,6 +1254,30 @@ _registerHandler(MSG.PIPELINE_START, async (payload, sender) => {
   await chrome.storage.local.set({
     fs_run_log: { runId, startedAt: Date.now(), status: "running" },
   });
+
+  // Refuse a pipeline that reads credentials and also talks to somewhere it
+  // never declared it scrapes. The panel checks this on import and the registry
+  // checks it on publish, and neither is enough on its own: a pipeline reaches
+  // this function from the MCP server, from a schedule firing hours later, and
+  // from anything that can write to chrome.storage — none of which go anywhere
+  // near the panel's import dialog.
+  //
+  // Same reasoning as the ethics gates immediately below, which already re-run
+  // rather than trusting a preflight: enforcement must not depend on the caller
+  // having asked politely. This is the choke point, so this is where it binds.
+  const capabilities = analyzePipeline(pipeline);
+  if (capabilities.verdict === VERDICT.BLOCKED) {
+    _runStates.delete(runId);
+    if (_runStates.size === 0) _stopHeartbeat();
+    await _disableSniffer(runId);
+    logger.warn(MODULE, "capability-block", {
+      runId,
+      // Origins, never the pipeline: a refusal that logs the payload puts
+      // whatever it was carrying into the log.
+      thirdParty: capabilities.thirdPartyOrigins,
+    });
+    throw new EthicsBlock("CAPABILITY_BLOCK", capabilities.blockedReason);
+  }
 
   // Run ethics gates first. Re-run rather than trusting the preflight result:
   // enforcement must not depend on the caller having asked politely.

@@ -63,6 +63,15 @@ jobs:
       - name: Format
         run: npm run format:check
 
+      # `npm run check` only parses. It cannot see a reference to a name that
+      # does not exist, which is exactly the bug a mechanical dead-code removal
+      # left behind here: orphaned statements that were syntactically perfect
+      # and referenced variables that were no longer in scope. Every unit test
+      # passed; only the browser suite caught it. oxlint's no-undef catches it
+      # in under a second.
+      - name: Lint
+        run: npm run lint
+
       - name: Unit tests
         run: npm test
 

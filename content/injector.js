@@ -14,7 +14,7 @@
  *   clamped, never used to choose an action.
  *
  *   This file must stay under 40 KB. Heavy logic lives in form-filler.js,
- *   field-auto-mapper.js, etc. — which are injected via chrome.scripting
+ *   overlay-engine.js, etc. — which are injected via chrome.scripting
  *   on demand, not bundled here.
  *
  * @dependencies (none — minimal entry point)

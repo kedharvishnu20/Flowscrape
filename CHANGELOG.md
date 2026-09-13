@@ -10,14 +10,19 @@ if any copy of it drifts.
 ## [Unreleased]
 
 Everything below was found by a full-repository audit
-([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 171 findings) and fixed against
+([`docs/ISSUE_AUDIT.md`](docs/ISSUE_AUDIT.md), 192 findings) and fixed against
 it. Entries name the finding, so the audit and this file can be read together.
 
 Every fix landed with regression tests, and every test was run against the
 pre-fix tree first to confirm it failed. The suite went from **zero tests to
-818**, plus **69 end-to-end checks** that load the extension into a real
-Chromium and drive it — which is what caught four of them, including the two
-worst.
+1422**, plus **85 end-to-end checks** that load the extension into a real
+Chromium and drive it and **8 against real pages mirrored into the repo** —
+which is what caught several of them, including the two worst.
+
+Counts inside individual entries below are deliberately left as they were
+written. "It passed 442 unit tests" is a fact about the moment a bug was found,
+and rewriting it to today's number would destroy the only thing it was there to
+say.
 
 ### Added — the model's answer has to be on the page
 

@@ -143,9 +143,12 @@ decision:
 | J-01 … J-05 | _this batch_ | WAIT's element and DOM-settle modes reachable at last; infinite scroll; pagination that knows when the pages run out; navigation that waits for the page; the seven step types that had no configuration UI |
 | F-08, G-09, H-11 | _earlier commits_ | Fixed as a side effect and only noted in their own entries: F-08 by the `overlay:reloadPrefs` handler in `9502845`, G-09 by the shared row formatter in `c7ccc95`, H-11 by nested template resolution in `7b7d669`. Listed here so the count reconciles |
 
-**Still open: nothing.** 191 of 192 findings fixed; A-07 (a phantom `FORM_FILL`
-step type) is the one left by decision. A-06 was a third — the dead captcha detector — and
-is now closed by K-02. The count grew from the original 126 because four
+**Still open: nothing.** 192 of 192 findings fixed. A-07 (a phantom `FORM_FILL`
+step type) was the last one left standing by decision, and is now closed too:
+the gate was rewritten to scan extracted rows rather than a step type that had
+never existed, and `field-auto-mapper.js` was deleted with its one useful part
+moved into `utils/levenshtein.js`. A-06, the dead captcha detector, was closed
+earlier by K-02. The count grew from the original 126 because four
 findings were discovered while testing the fixes for others and added to the
 audit rather than fixed silently — A-10 (a cached IndexedDB failure), A-11 (PDF
 stream framing), A-12 (`EXPORT` downloading nothing at all) and A-13 (every page

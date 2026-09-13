@@ -1061,14 +1061,25 @@ function bindGlobalControls() {
 
       libList.innerHTML = `<div style="color: var(--dim); font-size: 11px; padding: 4px;">Loading...</div>`;
 
-      const res = await chrome.storage.local.get(["fs_github_pat", "fs_github_repo"]);
+      const res = await chrome.storage.local.get([
+        "fs_github_pat",
+        "fs_github_repo",
+      ]);
       const pat = res.fs_github_pat;
-      let repoUrl = res.fs_github_repo || "https://github.com/kedharvishnu20/Verquill_Market_place.git";
+      let repoUrl =
+        res.fs_github_repo ||
+        "https://github.com/kedharvishnu20/Verquill_Market_place.git";
 
-      let repoPath = repoUrl.replace('https://github.com/', '').replace('.git', '').replace(/\/$/, '');
-      const headers = { "Accept": "application/vnd.github.v3+json" };
+      let repoPath = repoUrl
+        .replace("https://github.com/", "")
+        .replace(".git", "")
+        .replace(/\/$/, "");
+      const headers = { Accept: "application/vnd.github.v3+json" };
       if (pat) headers["Authorization"] = `token ${pat}`;
-      const decode = (c) => JSON.parse(decodeURIComponent(escape(atob(String(c).replace(/\s/g, "")))));
+      const decode = (c) =>
+        JSON.parse(
+          decodeURIComponent(escape(atob(String(c).replace(/\s/g, "")))),
+        );
 
       const pipelines = [];
       const seen = new Set();
@@ -1098,11 +1109,19 @@ function bindGlobalControls() {
       // 2) GitHub personal library (per-file + legacy). Best-effort.
       let githubError = false;
       try {
-        const dirRes = await fetch(`https://api.github.com/repos/${repoPath}/contents/pipelines`, { headers, cache: "no-store" });
+        const dirRes = await fetch(
+          `https://api.github.com/repos/${repoPath}/contents/pipelines`,
+          { headers, cache: "no-store" },
+        );
         if (dirRes.ok) {
           const items = await dirRes.json();
-          for (const it of (Array.isArray(items) ? items : [])) {
-            if (it.type !== "file" || !it.name.toLowerCase().endsWith(".json") || it.name.toLowerCase() === "registry.json") continue;
+          for (const it of Array.isArray(items) ? items : []) {
+            if (
+              it.type !== "file" ||
+              !it.name.toLowerCase().endsWith(".json") ||
+              it.name.toLowerCase() === "registry.json"
+            )
+              continue;
             try {
               const fr = await fetch(it.url, { headers, cache: "no-store" });
               if (!fr.ok) continue;
@@ -1110,7 +1129,10 @@ function bindGlobalControls() {
             } catch (_) {}
           }
         }
-        const legRes = await fetch(`https://api.github.com/repos/${repoPath}/contents/registry.json`, { headers, cache: "no-store" });
+        const legRes = await fetch(
+          `https://api.github.com/repos/${repoPath}/contents/registry.json`,
+          { headers, cache: "no-store" },
+        );
         if (legRes.ok) {
           const arr = decode((await legRes.json()).content);
           (Array.isArray(arr) ? arr : []).forEach((p) => add(p, "github"));
@@ -1127,7 +1149,7 @@ function bindGlobalControls() {
         return;
       }
 
-      libList.innerHTML = '';
+      libList.innerHTML = "";
       pipelines.forEach((p) => {
         const stepCount = Array.isArray(p.steps) ? p.steps.length : 0;
         const name = p.name || p.id || "Untitled Pipeline";
@@ -1151,22 +1173,32 @@ function bindGlobalControls() {
 
         const nameEl = document.createElement("div");
         nameEl.textContent = name;
-        nameEl.style.cssText = "font-size:12px;font-weight:600;line-height:1.3;word-break:break-word;";
+        nameEl.style.cssText =
+          "font-size:12px;font-weight:600;line-height:1.3;word-break:break-word;";
 
         const metaEl = document.createElement("div");
-        metaEl.textContent = `${srcLabel} · ${stepCount} step${stepCount === 1 ? "" : "s"}` + (p.author ? ` · @${p.author}` : "");
-        metaEl.style.cssText = "font-family:var(--mono);font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--dim);";
+        metaEl.textContent =
+          `${srcLabel} · ${stepCount} step${stepCount === 1 ? "" : "s"}` +
+          (p.author ? ` · @${p.author}` : "");
+        metaEl.style.cssText =
+          "font-family:var(--mono);font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--dim);";
 
         item.appendChild(nameEl);
         item.appendChild(metaEl);
         item.onclick = async () => {
-          try { _pipeline = _normalizeImportedPipeline(p); }
-          catch (_) { _pipeline = p; }
+          try {
+            _pipeline = _normalizeImportedPipeline(p);
+          } catch (_) {
+            _pipeline = p;
+          }
           _expandedNodeIds.clear();
           await saveState();
           renderPipeline();
           libDropdown.classList.add("hidden");
-          logToMonitor("info-log", `Loaded "${name}" from library (${(_pipeline.steps || []).length} top-level steps).`);
+          logToMonitor(
+            "info-log",
+            `Loaded "${name}" from library (${(_pipeline.steps || []).length} top-level steps).`,
+          );
         };
         libList.appendChild(item);
       });
@@ -1174,7 +1206,8 @@ function bindGlobalControls() {
       if (githubError) {
         const note = document.createElement("div");
         note.textContent = "GitHub unreachable — showing local only.";
-        note.style.cssText = "color: var(--red); font-size: 10px; padding: 6px 8px;";
+        note.style.cssText =
+          "color: var(--red); font-size: 10px; padding: 6px 8px;";
         libList.appendChild(note);
       }
     });
@@ -1182,7 +1215,7 @@ function bindGlobalControls() {
     // Close dropdown when clicking outside
     document.addEventListener("click", (e) => {
       if (!libBtn.contains(e.target) && !libDropdown.contains(e.target)) {
-         libDropdown.classList.add("hidden");
+        libDropdown.classList.add("hidden");
       }
     });
   }
@@ -1190,7 +1223,9 @@ function bindGlobalControls() {
   document
     .getElementById("btn-open-registry")
     ?.addEventListener("click", () => {
-      chrome.tabs.create({ url: chrome.runtime.getURL("site/dist/index.html") });
+      chrome.tabs.create({
+        url: chrome.runtime.getURL("site/dist/index.html"),
+      });
     });
 
   document
@@ -5558,14 +5593,22 @@ function listenToSystem() {
     if (area !== "local") return;
     if (!changes.fs_marketplace_load) return;
     const pipeline = changes.fs_marketplace_load.newValue;
-    if (!pipeline || typeof pipeline !== "object" || !Array.isArray(pipeline.steps)) return;
+    if (
+      !pipeline ||
+      typeof pipeline !== "object" ||
+      !Array.isArray(pipeline.steps)
+    )
+      return;
 
     _pipeline = pipeline;
     renderPipeline();
     chrome.storage.local.set({ [SK.PIPELINE]: _pipeline });
     // Clear the bridge key so this won't re-trigger
     chrome.storage.local.remove("fs_marketplace_load");
-    notify("info-log", `Pipeline "${pipeline.name || pipeline.id}" loaded from Marketplace.`);
+    notify(
+      "info-log",
+      `Pipeline "${pipeline.name || pipeline.id}" loaded from Marketplace.`,
+    );
   });
 
   chrome.runtime.onMessage.addListener((msg) => {

@@ -22,7 +22,11 @@ function getRepoInfo(repoUrl) {
 
 function slugify(name, fallback = "pipeline") {
   const clean = (v) =>
-    String(v || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    String(v || "")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
   const s = clean(name).slice(0, 60);
   if (s) return s;
   const f = clean(fallback).slice(0, 60);
@@ -30,13 +34,15 @@ function slugify(name, fallback = "pipeline") {
 }
 
 function ghHeaders(pat, extra = {}) {
-  const h = { "Accept": "application/vnd.github.v3+json", ...extra };
+  const h = { Accept: "application/vnd.github.v3+json", ...extra };
   if (pat) h["Authorization"] = `token ${pat}`;
   return h;
 }
 
 function decodeContent(b64) {
-  return JSON.parse(decodeURIComponent(escape(atob(String(b64).replace(/\s/g, "")))));
+  return JSON.parse(
+    decodeURIComponent(escape(atob(String(b64).replace(/\s/g, "")))),
+  );
 }
 
 function encodeContent(obj) {
@@ -48,22 +54,33 @@ const api = (owner, repo, path) =>
 
 // Returns { sha, json } or null on 404.
 async function getFile(owner, repo, path, pat) {
-  const res = await fetch(api(owner, repo, path), { headers: ghHeaders(pat), cache: "no-store" });
+  const res = await fetch(api(owner, repo, path), {
+    headers: ghHeaders(pat),
+    cache: "no-store",
+  });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  if (!res.ok)
+    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
   const d = await res.json();
   return { sha: d.sha, json: decodeContent(d.content) };
 }
 
 // Lists *.json files in a directory (excluding the legacy registry.json). [] on 404.
 async function listJsonFiles(owner, repo, dir, pat) {
-  const res = await fetch(api(owner, repo, dir), { headers: ghHeaders(pat), cache: "no-store" });
+  const res = await fetch(api(owner, repo, dir), {
+    headers: ghHeaders(pat),
+    cache: "no-store",
+  });
   if (res.status === 404) return [];
-  if (!res.ok) throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  if (!res.ok)
+    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
   const items = await res.json();
   if (!Array.isArray(items)) return [];
   return items.filter(
-    (i) => i.type === "file" && i.name.toLowerCase().endsWith(".json") && i.name.toLowerCase() !== "registry.json"
+    (i) =>
+      i.type === "file" &&
+      i.name.toLowerCase().endsWith(".json") &&
+      i.name.toLowerCase() !== "registry.json",
   );
 }
 
@@ -87,13 +104,24 @@ async function removeFromLegacy(owner, repo, legacyPath, pat, id) {
   const next = got.json.filter((p) => p && p.id !== id);
   if (next.length === got.json.length) return;
   if (next.length === 0) {
-    await deleteFile(owner, repo, legacyPath, got.sha, pat, "Remove empty legacy registry.json").catch(() => {});
+    await deleteFile(
+      owner,
+      repo,
+      legacyPath,
+      got.sha,
+      pat,
+      "Remove empty legacy registry.json",
+    ).catch(() => {});
     return;
   }
   await fetch(api(owner, repo, legacyPath), {
     method: "PUT",
     headers: ghHeaders(pat, { "Content-Type": "application/json" }),
-    body: JSON.stringify({ message: `Migrate ${id} out of legacy registry`, content: encodeContent(next), sha: got.sha }),
+    body: JSON.stringify({
+      message: `Migrate ${id} out of legacy registry`,
+      content: encodeContent(next),
+      sha: got.sha,
+    }),
   });
 }
 
@@ -101,11 +129,18 @@ async function removeFromLegacy(owner, repo, legacyPath, pat, id) {
 async function readDir(owner, repo, dir, legacyPath, pat) {
   const out = [];
   const seen = new Set();
-  const push = (p) => { if (p && p.id && !seen.has(p.id)) { seen.add(p.id); out.push(p); } };
+  const push = (p) => {
+    if (p && p.id && !seen.has(p.id)) {
+      seen.add(p.id);
+      out.push(p);
+    }
+  };
 
   const files = await listJsonFiles(owner, repo, dir, pat).catch(() => []);
   for (const f of files) {
-    const got = await getFile(owner, repo, `${dir}/${f.name}`, pat).catch(() => null);
+    const got = await getFile(owner, repo, `${dir}/${f.name}`, pat).catch(
+      () => null,
+    );
     if (got && got.json && !Array.isArray(got.json)) push(got.json);
   }
   const legacy = await getFile(owner, repo, legacyPath, pat).catch(() => null);
@@ -117,7 +152,15 @@ async function readDir(owner, repo, dir, legacyPath, pat) {
 // after that succeeds do we clean up (delete an older file that held the same id
 // under a different name, and drop the id from the legacy array). Doing the
 // destructive work first would lose data whenever the write failed.
-async function upsertPipelineFile(owner, repo, dir, legacyPath, pat, pipeline, message) {
+async function upsertPipelineFile(
+  owner,
+  repo,
+  dir,
+  legacyPath,
+  pat,
+  pipeline,
+  message,
+) {
   let slug = slugify(pipeline.name, pipeline.id);
   let targetPath = `${dir}/${slug}.json`;
 
@@ -128,7 +171,11 @@ async function upsertPipelineFile(owner, repo, dir, legacyPath, pat, pipeline, m
   if (existing.some((f) => `${dir}/${f.name}` === targetPath)) {
     const got = await getFile(owner, repo, targetPath, pat).catch(() => null);
     if (got && got.json && got.json.id && got.json.id !== pipeline.id) {
-      const suffix = String(pipeline.id || Date.now()).replace(/[^a-z0-9]+/gi, "").slice(-6).toLowerCase() || "1";
+      const suffix =
+        String(pipeline.id || Date.now())
+          .replace(/[^a-z0-9]+/gi, "")
+          .slice(-6)
+          .toLowerCase() || "1";
       slug = `${slug}-${suffix}`;
       targetPath = `${dir}/${slug}.json`;
     }
@@ -154,12 +201,23 @@ async function upsertPipelineFile(owner, repo, dir, legacyPath, pat, pipeline, m
   // 2) Cleanup only after the write succeeded (non-fatal on error).
   for (const f of existing) {
     if (`${dir}/${f.name}` === targetPath) continue;
-    const got = await getFile(owner, repo, `${dir}/${f.name}`, pat).catch(() => null);
+    const got = await getFile(owner, repo, `${dir}/${f.name}`, pat).catch(
+      () => null,
+    );
     if (got && got.json && got.json.id === pipeline.id) {
-      await deleteFile(owner, repo, `${dir}/${f.name}`, f.sha, pat, `Rename pipeline file for ${pipeline.name}`).catch(() => {});
+      await deleteFile(
+        owner,
+        repo,
+        `${dir}/${f.name}`,
+        f.sha,
+        pat,
+        `Rename pipeline file for ${pipeline.name}`,
+      ).catch(() => {});
     }
   }
-  await removeFromLegacy(owner, repo, legacyPath, pat, pipeline.id).catch(() => {});
+  await removeFromLegacy(owner, repo, legacyPath, pat, pipeline.id).catch(
+    () => {},
+  );
 
   return { path: targetPath, result };
 }
@@ -175,20 +233,44 @@ export async function fetchPipelines(repoUrl, pat) {
 export async function pushPipeline(repoUrl, pat, pipeline) {
   if (!repoUrl || !pat) throw new Error("Repo URL and PAT required to push");
   const { owner, repo } = getRepoInfo(repoUrl);
-  return upsertPipelineFile(owner, repo, PERSONAL_DIR, LEGACY_PERSONAL, pat, pipeline, `Save pipeline: ${pipeline.name}`);
+  return upsertPipelineFile(
+    owner,
+    repo,
+    PERSONAL_DIR,
+    LEGACY_PERSONAL,
+    pat,
+    pipeline,
+    `Save pipeline: ${pipeline.name}`,
+  );
 }
 
 export async function removePipeline(repoUrl, pat, pipeline) {
   if (!repoUrl || !pat) throw new Error("Repo URL and PAT required to remove");
   const { owner, repo } = getRepoInfo(repoUrl);
-  const files = await listJsonFiles(owner, repo, PERSONAL_DIR, pat).catch(() => []);
+  const files = await listJsonFiles(owner, repo, PERSONAL_DIR, pat).catch(
+    () => [],
+  );
   for (const f of files) {
-    const got = await getFile(owner, repo, `${PERSONAL_DIR}/${f.name}`, pat).catch(() => null);
+    const got = await getFile(
+      owner,
+      repo,
+      `${PERSONAL_DIR}/${f.name}`,
+      pat,
+    ).catch(() => null);
     if (got && got.json && got.json.id === pipeline.id) {
-      await deleteFile(owner, repo, `${PERSONAL_DIR}/${f.name}`, f.sha, pat, `Remove pipeline: ${pipeline.name}`);
+      await deleteFile(
+        owner,
+        repo,
+        `${PERSONAL_DIR}/${f.name}`,
+        f.sha,
+        pat,
+        `Remove pipeline: ${pipeline.name}`,
+      );
     }
   }
-  await removeFromLegacy(owner, repo, LEGACY_PERSONAL, pat, pipeline.id).catch(() => {});
+  await removeFromLegacy(owner, repo, LEGACY_PERSONAL, pat, pipeline.id).catch(
+    () => {},
+  );
 }
 
 // ---- Global (community) registry --------------------------------------------
@@ -202,8 +284,11 @@ export async function fetchGlobalPipelines(owner, repo, pat) {
  * No fork needed — the user owns this repo.
  */
 export async function publishToGlobal(repoOwner, repoName, pat, pipeline) {
-  const userRes = await fetch("https://api.github.com/user", { headers: ghHeaders(pat) });
-  if (!userRes.ok) throw new Error("Could not verify GitHub identity. Check your PAT.");
+  const userRes = await fetch("https://api.github.com/user", {
+    headers: ghHeaders(pat),
+  });
+  if (!userRes.ok)
+    throw new Error("Could not verify GitHub identity. Check your PAT.");
   const user = await userRes.json();
   pipeline.author = user.login;
   return upsertPipelineFile(
@@ -213,6 +298,6 @@ export async function publishToGlobal(repoOwner, repoName, pat, pipeline) {
     LEGACY_GLOBAL,
     pat,
     pipeline,
-    `Publish pipeline: ${pipeline.name} by @${user.login}`
+    `Publish pipeline: ${pipeline.name} by @${user.login}`,
   );
 }

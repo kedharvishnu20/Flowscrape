@@ -2287,15 +2287,47 @@
                 <option value="node">Node</option>
               </select>
               <button class="btn" id="btn-upload-pipeline">Load Local</button>
-              <button class="btn btn-accent" id="btn-library-dropdown">My Library ▼</button>
-              <div id="library-dropdown" class="hidden" style="
-                position: absolute; background: var(--panel); border: 1px solid var(--line);
-                padding: 6px; z-index: 1000; top: 40px; border-radius: var(--radius);
-                box-shadow: var(--shadow-fly); width: 280px; max-height: 340px; overflow-y: auto;
-              ">
-                <div style="font-family: var(--mono); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--dim); padding: 6px 8px 8px; border-bottom: 1px solid var(--line); margin-bottom: 6px;">My Library</div>
-                <div id="library-list" style="display: flex; flex-direction: column; gap: 2px;">
-                   <div style="color: var(--dim); font-size: 11px; padding: 8px;">Loading...</div>
+              <button class="btn btn-accent" id="btn-library-dropdown">
+                My Library ▼
+              </button>
+              <div
+                id="library-dropdown"
+                class="hidden"
+                style="
+                  position: absolute;
+                  background: var(--panel);
+                  border: 1px solid var(--line);
+                  padding: 6px;
+                  z-index: 1000;
+                  top: 40px;
+                  border-radius: var(--radius);
+                  box-shadow: var(--shadow-fly);
+                  width: 280px;
+                  max-height: 340px;
+                  overflow-y: auto;
+                "
+              >
+                <div
+                  style="
+                    font-family: var(--mono);
+                    font-size: 9px;
+                    letter-spacing: 0.16em;
+                    text-transform: uppercase;
+                    color: var(--dim);
+                    padding: 6px 8px 8px;
+                    border-bottom: 1px solid var(--line);
+                    margin-bottom: 6px;
+                  "
+                >
+                  My Library
+                </div>
+                <div
+                  id="library-list"
+                  style="display: flex; flex-direction: column; gap: 2px"
+                >
+                  <div style="color: var(--dim); font-size: 11px; padding: 8px">
+                    Loading...
+                  </div>
                 </div>
               </div>
 

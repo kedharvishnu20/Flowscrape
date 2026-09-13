@@ -21,6 +21,7 @@ import {
 } from "../utils/row-dedupe.js";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { emitPython } from "../script-gen/python-emitter.js";
+import { skipWithoutPython } from "./helpers/python.mjs";
 
 const ctx = () => ({ extracted: {} });
 const step = (type, config = {}, extra = {}) => ({
@@ -211,7 +212,7 @@ test("'across runs' becomes a file the script reads and rewrites", () => {
   assert.ok(!/FS_SEEN_FILE/.test(emitPython(runScoped)));
 });
 
-test("both generated scripts are still programs", async () => {
+test("both generated scripts are still programs", async (t) => {
   const { execFileSync } = await import("node:child_process");
   const { writeFileSync, mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -224,5 +225,9 @@ test("both generated scripts are still programs", async () => {
 
   const pyFile = join(dir, "run.py");
   writeFileSync(pyFile, emitPython(WITH_DEDUPE));
-  execFileSync("python3", ["-m", "py_compile", pyFile]);
+  // Python is an optional test dependency. Skipped rather than failed when
+  // it is absent, and skipped visibly rather than passing quietly.
+  const python = skipWithoutPython(t);
+  if (!python) return;
+  execFileSync(python, ["-m", "py_compile", pyFile]);
 });

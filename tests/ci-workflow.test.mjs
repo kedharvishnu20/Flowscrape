@@ -1,0 +1,105 @@
+// The gates, and the promise that they run.
+//
+// README and CONTRIBUTING both described checks running "in CI" while no CI
+// existed. That is not a documentation slip on its own — it is why a rewrite
+// landed on `dev` with eight tests failing and nobody noticed, and why an
+// outside audit of the same tree reported 51 failures that were mostly its own
+// environment. A claim about enforcement is worth nothing unless something
+// enforces it.
+//
+// These tests are cheap and blunt on purpose. They cannot prove GitHub ran a
+// workflow; they can prove the workflow exists, names every gate the project
+// tells contributors to rely on, and did not quietly lose one.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+
+const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+const ci = read("../.github/workflows/ci.yml");
+const browser = read("../.github/workflows/browser.yml");
+const pkg = JSON.parse(read("../package.json"));
+
+test("there is a CI workflow at all", () => {
+  assert.ok(
+    existsSync(new URL("../.github/workflows/ci.yml", import.meta.url)),
+    "the docs promise CI; the workflow is gone",
+  );
+});
+
+test("every gate a contributor is told to run is also run by CI", () => {
+  // If a script is worth telling people to run, it is worth blocking a merge
+  // on. A gate that exists only locally is a gate only the careful use.
+  for (const script of ["check", "format:check", "test", "build"]) {
+    assert.ok(pkg.scripts[script], `package.json lost the ${script} script`);
+    assert.ok(
+      ci.includes(`npm run ${script}`) || ci.includes("npm test"),
+      `CI does not run ${script}`,
+    );
+  }
+  assert.match(ci, /npm test/);
+});
+
+test("CI installs from the lockfile rather than resolving afresh", () => {
+  // `npm ci` fails when package.json and the lockfile disagree. That check is
+  // the point, not a side effect of a faster install.
+  //
+  // Read from the `run:` steps rather than the whole file, because the file
+  // also explains in a comment why `npm ci` is used instead of the other one —
+  // and a test that cannot tell a command from a sentence about that command
+  // would forbid the workflow from documenting its own reasoning.
+  const commands = [...ci.matchAll(/^\s*(?:- )?run: (.+)$/gm)].map((m) => m[1]);
+  assert.ok(commands.includes("npm ci"), "CI does not install the lockfile");
+  assert.ok(
+    !commands.some((c) => c.startsWith("npm install")),
+    "a CI step resolves dependencies instead of installing the lockfile",
+  );
+});
+
+test("CI runs on Windows as well as Linux", () => {
+  // Four tests spawned python3 with no guard and one guarded with `sh -c`,
+  // which is itself POSIX-only. Both survived because nothing ever ran this
+  // suite anywhere but Linux.
+  assert.match(ci, /ubuntu-latest/);
+  assert.match(ci, /windows-latest/);
+  assert.match(ci, /fail-fast: false/);
+});
+
+test("CI installs Python, so the optional-dependency skips hide nothing", () => {
+  // The skips are honest, but a skip on every runner is not coverage.
+  assert.match(ci, /setup-python/);
+});
+
+test("CI builds the site, because it shares the security module", () => {
+  // site/src/App.jsx imports utils/pipeline-capabilities.js across directories.
+  // If that import stops resolving the site loses its publish gate silently,
+  // which is the failure this repository has now had twice.
+  assert.match(ci, /working-directory: site/);
+  assert.match(ci, /npm run build/);
+});
+
+test("the browser suites run somewhere, just not on every pull request", () => {
+  // Four minutes per run. A gate that slow gets worked around rather than
+  // waited for — but it still has to run, because it covers what no unit test
+  // can reach.
+  assert.match(browser, /schedule:/);
+  assert.match(browser, /cron:/);
+  assert.match(browser, /npm run e2e/);
+  assert.match(browser, /npm run challenges/);
+  assert.ok(
+    !/pull_request/.test(browser),
+    "the slow suites are back on the pull-request path",
+  );
+});
+
+test("the test script does not depend on the shell expanding a glob", () => {
+  // `node --test tests/*.test.mjs` is expanded by the shell on Linux and not
+  // at all by cmd.exe, so on Windows node received the literal pattern and ran
+  // nothing. Quoted, node expands it itself and both platforms agree.
+  assert.match(pkg.scripts.test, /"tests\/\*\.test\.mjs"/);
+});
+
+test("the package declares the licence it ships", () => {
+  // LICENSE has always been there; the field npm and every downstream tool
+  // reads was not.
+  assert.equal(pkg.license, "MIT");
+});

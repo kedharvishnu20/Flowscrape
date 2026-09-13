@@ -32,11 +32,22 @@ Chrome 120 or newer.
 
 ```bash
 npm install     # jsdom + fake-indexeddb, for the tests only
-npm test        # 660 tests, ~35s, no browser needed
-npm run e2e     # 69 checks in a real Chromium with the extension loaded
+npm test        # 1404 tests, ~50s, no browser needed
+npm run e2e     # 85 checks in a real Chromium with the extension loaded
 npm run check   # parses every source file as an ES module
-npm run format  # prettier; `npm run format:check` in CI
+npm run format  # prettier; `npm run format:check` is the gate
+npm run build   # packages the extension for the store
 ```
+
+Every one of those runs in CI on Linux and Windows for each push and pull
+request (`.github/workflows/ci.yml`), so a gate that passes locally is the same
+gate that gates a merge. The browser suites are slower and run nightly
+(`.github/workflows/browser.yml`) rather than blocking a review.
+
+Python 3 is an optional test dependency: a handful of tests compile the Python
+that `script-gen/` emits, which is the only way to know the generated script is
+valid rather than merely well-shaped. Without it those tests skip, visibly, and
+the rest still run. CI installs it so the skip never hides anything there.
 
 The extension itself has no dependencies and nothing to build — `npm install`
 is only for the test suite.

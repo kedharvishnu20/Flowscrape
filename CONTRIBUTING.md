@@ -112,7 +112,7 @@ about how something works.
 
 ## Conventions
 
-- Prettier, checked in CI-style by `npm run format:check`.
+- Prettier, enforced by `npm run format:check` in CI.
 - ES modules everywhere except `content/injector.js` and
   `content/page-sniffer.js`, which are classic scripts and cannot import.
 - No dependencies in the extension. If you need a library, you probably need a

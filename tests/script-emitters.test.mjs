@@ -396,6 +396,7 @@ import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { skipWithoutPython } from "./helpers/python.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "fs-emit-"));
 
@@ -486,15 +487,11 @@ test("the emitted Node script parses", () => {
 });
 
 test("the emitted Python script compiles", (t) => {
-  let python;
-  try {
-    python = execFileSync("sh", ["-c", "command -v python3"], {
-      encoding: "utf8",
-    }).trim();
-  } catch {
-    t.skip("no python3 on this machine");
-    return;
-  }
+  // This guard used to shell out to `sh -c "command -v python3"`, which needs
+  // a POSIX shell — so on the Windows machines it existed to protect, the
+  // guard itself failed before the thing it was guarding could.
+  const python = skipWithoutPython(t);
+  if (!python) return;
   const file = join(dir, "out.py");
   writeFileSync(file, emit([...KITCHEN_SINK, ...NESTED]).py);
   execFileSync(python, ["-m", "py_compile", file]);
@@ -592,15 +589,11 @@ test("the JavaScript PAGE_DATA hands to the browser is itself valid JavaScript",
   // Read it back the way Python will: the text in the .py file is not what
   // reaches the browser, because Python resolves the escapes in it first.
   // Checking the raw text passes with this broken, which is how it got here.
-  let python;
-  try {
-    python = execFileSync("sh", ["-c", "command -v python3"], {
-      encoding: "utf8",
-    }).trim();
-  } catch {
-    t.skip("no python3 on this machine");
-    return;
-  }
+  // This guard used to shell out to `sh -c "command -v python3"`, which needs
+  // a POSIX shell — so on the Windows machines it existed to protect, the
+  // guard itself failed before the thing it was guarding could.
+  const python = skipWithoutPython(t);
+  if (!python) return;
   const pyFile = join(dir, "pd.py");
   writeFileSync(pyFile, py);
   const reader = join(dir, "read_snippet.py");
@@ -735,15 +728,11 @@ test("the emitted branches still parse with every condition in them", (t) => {
   writeFileSync(jsFile, js);
   execFileSync(process.execPath, ["--check", jsFile]);
 
-  let python;
-  try {
-    python = execFileSync("sh", ["-c", "command -v python3"], {
-      encoding: "utf8",
-    }).trim();
-  } catch {
-    t.skip("no python3 on this machine");
-    return;
-  }
+  // This guard used to shell out to `sh -c "command -v python3"`, which needs
+  // a POSIX shell — so on the Windows machines it existed to protect, the
+  // guard itself failed before the thing it was guarding could.
+  const python = skipWithoutPython(t);
+  if (!python) return;
   const pyFile = join(dir, "branches.py");
   writeFileSync(pyFile, py);
   execFileSync(python, ["-m", "py_compile", pyFile]);

@@ -17,6 +17,7 @@ import {
 import { loadInjector } from "./helpers/content-harness.mjs";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { emitPython } from "../script-gen/python-emitter.js";
+import { skipWithoutPython } from "./helpers/python.mjs";
 
 const ctx = () => ({ extracted: {} });
 const step = (type, config = {}, extra = {}) => ({
@@ -342,7 +343,7 @@ test("the exported URL-pattern loop stops on an empty page", () => {
   );
 });
 
-test("both paginating scripts are still programs", async () => {
+test("both paginating scripts are still programs", async (t) => {
   // The emitters build source by concatenating strings, and the paginate
   // branches now carry a block of JavaScript inside a Python triple-quote.
   const { execFileSync } = await import("node:child_process");
@@ -357,5 +358,9 @@ test("both paginating scripts are still programs", async () => {
 
   const pyFile = join(dir, "run.py");
   writeFileSync(pyFile, emitPython(PAGINATE));
-  execFileSync("python3", ["-m", "py_compile", pyFile]);
+  // Python is an optional test dependency. Skipped rather than failed when
+  // it is absent, and skipped visibly rather than passing quietly.
+  const python = skipWithoutPython(t);
+  if (!python) return;
+  execFileSync(python, ["-m", "py_compile", pyFile]);
 });

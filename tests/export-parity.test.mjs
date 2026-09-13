@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { emitNode } from "../script-gen/node-emitter.js";
 import { emitPython } from "../script-gen/python-emitter.js";
 import { formatRows } from "../exporters/row-formatters.js";
+import { pythonBin, skipWithoutPython } from "./helpers/python.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "fs-parity-"));
 
@@ -61,6 +62,14 @@ async function runtime() {
 }
 
 /** Run the generated Python helpers and hand back what they printed. */
+/**
+ * Run a snippet against the emitted Python helpers.
+ *
+ * Callers guard with skipWithoutPython first; this throws rather than skipping
+ * because it has no test context to skip with, and a helper that silently
+ * returned an empty string would turn a missing interpreter into a wrong
+ * assertion about the emitter.
+ */
 function runPy(body) {
   const head = py.slice(0, py.indexOf("# What an IF_ELSE branch reads"));
   const file = join(dir, `probe-${Math.random().toString(36).slice(2)}.py`);
@@ -76,7 +85,9 @@ function runPy(body) {
       "\n" +
       body,
   );
-  return execFileSync("python3", [file], { encoding: "utf8" });
+  const python = pythonBin();
+  if (!python) throw new Error("no Python 3 on this machine");
+  return execFileSync(python, [file], { encoding: "utf8" });
 }
 
 const ROWS = [
@@ -96,14 +107,23 @@ test("EXPORT emits code that writes a file, in both languages", () => {
   assert.ok(!/Write to file here/.test(py));
 });
 
-test("an unknown export format refuses instead of writing nothing", () => {
+test("an unknown export format refuses instead of writing nothing", (t) => {
+  // runPy spawns an interpreter, so these skip where there is none rather than
+  // failing. Linux CI installs Python, so the skip never hides a regression on
+  // the runner that gates merges.
+  const python = skipWithoutPython(t);
+  if (!python) return;
   const bad = pipeline([{ type: "EXPORT", config: { format: "parquet" } }]);
   assert.match(emitNode(bad), /unknown export format 'parquet'/);
   assert.match(emitPython(bad), /unknown export format 'parquet'/);
 });
 
 for (const fmt of ["csv", "json", "jsonl", "tsv", "xml", "markdown"]) {
-  test(`the emitted ${fmt} is byte-for-byte what the extension writes`, async () => {
+  test(`the emitted ${fmt} is byte-for-byte what the extension writes`, async (t) => {
+    // Generated inside a loop, so the guard has to be inside it too — these
+    // reach Python through runPy like the rest.
+    const python = skipWithoutPython(t);
+    if (!python) return;
     const expected = formatRows(ROWS, fmt);
     assert.equal((await runtime()).fsFormatRows(ROWS, fmt), expected);
 
@@ -154,7 +174,12 @@ test("an element is read the way the extension reads it", () => {
 
 // ── FS-09: scientific notation ───────────────────────────────────────────────
 
-test("a number in scientific notation survives both scripts", async () => {
+test("a number in scientific notation survives both scripts", async (t) => {
+  // runPy spawns an interpreter, so these skip where there is none rather than
+  // failing. Linux CI installs Python, so the skip never hides a regression on
+  // the runner that gates merges.
+  const python = skipWithoutPython(t);
+  if (!python) return;
   // scrapethissite.com reports Antarctica's area as "1.4E7". The general
   // numeric pattern stopped at the E and turned fourteen million into 1.4 — a
   // wrong number that looks entirely plausible in a column of areas.
@@ -166,14 +191,24 @@ test("a number in scientific notation survives both scripts", async () => {
   assert.equal(runPy(`print(fs_number("3 EUR"))`).trim(), "3");
 });
 
-test("a non-breaking space between thousands is not a separator", async () => {
+test("a non-breaking space between thousands is not a separator", async (t) => {
+  // runPy spawns an interpreter, so these skip where there is none rather than
+  // failing. Linux CI installs Python, so the skip never hides a regression on
+  // the runner that gates merges.
+  const python = skipWithoutPython(t);
+  if (!python) return;
   assert.equal((await runtime()).fsNumber("1 234,56"), 1234.56);
   assert.equal(runPy(`print(fs_number("1\\u00a0234,56"))`).trim(), "1234.56");
 });
 
 // ── FS-11: base64 that is not text ───────────────────────────────────────────
 
-test("base64 that decodes to invalid UTF-8 is null, not mangled text", async () => {
+test("base64 that decodes to invalid UTF-8 is null, not mangled text", async (t) => {
+  // runPy spawns an interpreter, so these skip where there is none rather than
+  // failing. Linux CI installs Python, so the skip never hides a regression on
+  // the runner that gates merges.
+  const python = skipWithoutPython(t);
+  if (!python) return;
   // Buffer.toString('utf8') replaces bad bytes with U+FFFD and hands back a
   // string, where the in-page decoder uses { fatal: true } and returns null.
   // A plausible wrong answer is worse than an empty cell.
@@ -228,11 +263,15 @@ test("ASSERT and IF_ELSE read textContent, the way the extension does", () => {
 
 // ── and both files are still programs ────────────────────────────────────────
 
-test("the generated files parse", () => {
+test("the generated files parse", (t) => {
   const jsFile = join(dir, "run.mjs");
   writeFileSync(jsFile, js);
   execFileSync(process.execPath, ["--check", jsFile]);
   const pyFile = join(dir, "run.py");
   writeFileSync(pyFile, py);
-  execFileSync("python3", ["-m", "py_compile", pyFile]);
+  // Python is an optional test dependency. Skipped rather than failed when
+  // it is absent, and skipped visibly rather than passing quietly.
+  const python = skipWithoutPython(t);
+  if (!python) return;
+  execFileSync(python, ["-m", "py_compile", pyFile]);
 });
